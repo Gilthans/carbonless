@@ -1,4 +1,4 @@
-import { readdir } from "node:fs/promises";
+import { readdir, statfs } from "node:fs/promises";
 import { join } from "node:path";
 import { pauseCatFile } from "./catFile.js";
 import { repoLockLastUsed, withRepoLock } from "./clone.js";
@@ -58,10 +58,17 @@ export async function countObjects(path: string): Promise<ObjectCounts> {
 /** `git version`'s major and minor, read once per process. */
 let versionOnce: Promise<[number, number]> | null = null;
 const gitVersion = (path: string) => {
-	versionOnce ??= runGit(path, ["version"]).then((text) => {
-		const match = text.match(/(\d+)\.(\d+)/);
-		return match ? [Number(match[1]), Number(match[2])] : [0, 0];
-	});
+	versionOnce ??= runGit(path, ["version"]).then(
+		(text) => {
+			const match = text.match(/(\d+)\.(\d+)/);
+			return match ? [Number(match[1]), Number(match[2])] : [0, 0];
+		},
+		(error) => {
+			// Asked again next time (a git that failed to start under load).
+			versionOnce = null;
+			throw error;
+		},
+	);
 	return versionOnce;
 };
 
@@ -113,18 +120,39 @@ export type MaintenanceResult =
 			after: ObjectCounts;
 			ms: number;
 	  }
-	| { ran: false; reason: "recent" | "busy" | "failed"; error?: string };
+	| {
+			ran: false;
+			/**
+			 * recent: ran within the day. busy: the clone was in use.
+			 * yielded: an open came, or crb stopped, mid-run (tried again on a
+			 * later pass). disk: too little free space for the repack's copy.
+			 */
+			reason: "recent" | "busy" | "yielded" | "disk" | "failed";
+			error?: string;
+	  };
 
 export interface MaintainOptions {
 	/** The time now (epoch ms); tests move it. */
 	now?: number;
 	/** Runs even if the last run was recent (the idle check still applies). */
 	force?: boolean;
-	/** Awaited once the lock is held, before any git (tests). */
-	gate?: Promise<void>;
+	/** Awaited once the lock is held, before any git, with the run's stop signal (tests). */
+	gate?: (signal: AbortSignal) => Promise<void>;
+	/** These gits instead of maintenanceCommands' (tests: one that hangs). */
+	steps?: string[][];
 	/** Plans for this git version instead of the installed one's (tests). */
 	gitVersion?: [number, number];
+	/** Stops the run (crb stopping): its git is killed, nothing recorded. */
+	signal?: AbortSignal;
+	/** Free bytes on the clone's disk instead of statfs's answer (tests). */
+	freeBytes?: (path: string) => Promise<number>;
 }
+
+/**
+ * Longest a maintenance git may run: a backstop against a hung git holding
+ * the clone's lock (a real first run measured under 2 s on a loaded box).
+ */
+const GIT_BACKSTOP_MS = 30 * 60_000;
 
 const lastRun = async (path: string): Promise<number> => {
 	const text = await runGit(path, ["config", "--get", MAINTAINED_AT], {
@@ -134,12 +162,26 @@ const lastRun = async (path: string): Promise<number> => {
 	return Number.isFinite(at) ? at : 0;
 };
 
+const record = (path: string) =>
+	runGit(path, ["config", MAINTAINED_AT, String(Date.now())], {
+		allowFailure: true,
+	});
+
+const statfsFree = async (path: string) => {
+	const fs = await statfs(path);
+	return fs.bavail * fs.bsize;
+};
+
 /**
  * One maintenance of the clone at `path`, unless it ran within the day or
  * the clone is busy: this process used its lock within IDLE_MS, or anyone
  * holds it now (an open or a fetch, of this crb or another). It holds the
- * repo lock throughout, so no open or fetch runs beside it. A failed run is
- * recorded too, so it is tried again only a day later.
+ * repo lock throughout, so no open or fetch runs beside it, and gives way:
+ * an open of this crb that starts waiting for the lock, or `signal`, kills
+ * the git under way (safe at any point: git renames a new pack into place
+ * before deleting anything) and hands the lock over at once. A run that
+ * ends, failed or not, is recorded, so the next is a day later; one that
+ * gave way isn't.
  */
 export async function maintainClone(
 	path: string,
@@ -150,68 +192,106 @@ export async function maintainClone(
 	if (used !== undefined && now - used < IDLE_MS) {
 		return { ran: false, reason: "busy" };
 	}
-	if (!options.force && now - (await lastRun(path)) < MAINTENANCE_EVERY_MS) {
-		return { ran: false, reason: "recent" };
-	}
+	const recent = async () =>
+		!options.force && now - (await lastRun(path)) < MAINTENANCE_EVERY_MS;
+	if (await recent()) return { ran: false, reason: "recent" };
+	if (options.signal?.aborted) return { ran: false, reason: "yielded" };
+	const stop = new AbortController();
+	const onAbort = () => stop.abort();
+	options.signal?.addEventListener("abort", onAbort, { once: true });
 	let locked = false;
 	try {
 		return await withRepoLock(
 			path,
 			async () => {
 				locked = true;
-				await options.gate;
-				return run(path, options.gitVersion);
+				// Another crb on the same cache may have run it meanwhile.
+				if (await recent()) return { ran: false, reason: "recent" } as const;
+				await options.gate?.(stop.signal);
+				return run(path, options, stop.signal);
 			},
 			// Never waits: a holder means the clone is in use.
-			{ timeoutMs: 0 },
+			{ timeoutMs: 0, onWaiter: onAbort },
 		);
 	} catch (error) {
 		if (!locked && error instanceof GitError) {
 			return { ran: false, reason: "busy" };
 		}
+		// Recorded too, so a clone that can't even be locked (EACCES) is
+		// tried daily, not hourly.
+		await record(path);
 		throw error;
+	} finally {
+		options.signal?.removeEventListener("abort", onAbort);
 	}
 }
 
 async function run(
 	path: string,
-	version?: [number, number],
+	options: MaintainOptions,
+	signal: AbortSignal,
 ): Promise<MaintenanceResult> {
 	const traced = tracer();
 	const span = traced.start(
 		"crb: maintenance",
-		{ repo: path.split(/[\\/]/).slice(-2).join("/") },
+		{ repo: shortName(path) },
 		{ parent: null },
 	);
 	return traced.run(span, async () => {
 		const started = Date.now();
+		let yielded = false;
 		try {
 			const before = await countObjects(path);
 			span.set(prefixed("before", before));
+			// The repack writes its pack beside the ones it rolls up (a full
+			// roll-up peaked at about the clone's size again, measured).
+			const need = 2 * (before.packKiB + before.looseKiB) * 1024;
+			const free = await (options.freeBytes ?? statfsFree)(path);
+			if (free < need) {
+				const error = `${Math.round(free / 2 ** 20)} MiB free, ${Math.round(need / 2 ** 20)} MiB needed`;
+				span.end({ skipped: "disk" }, error);
+				return { ran: false, reason: "disk", error } as const;
+			}
 			// No long-running reader holds a pack open while they go
 			// (Windows can't delete one); reads meanwhile run their own.
-			const resume = await pauseCatFile(path);
+			const resume = await pauseCatFile(path, signal);
 			try {
-				for (const args of maintenanceCommands(
-					version ?? (await gitVersion(path)),
-				)) {
-					await runGit(path, args, { lowPriority: true });
+				const steps =
+					options.steps ??
+					maintenanceCommands(options.gitVersion ?? (await gitVersion(path)));
+				for (const args of steps) {
+					if (signal.aborted) break;
+					await runGit(path, args, {
+						lowPriority: true,
+						signal,
+						// A timed git gets its own process group: a kill reaches
+						// pack-objects too.
+						timeoutMs: GIT_BACKSTOP_MS,
+					});
 				}
 			} finally {
 				resume();
+			}
+			if (signal.aborted) {
+				yielded = true;
+				span.end({ yielded: true });
+				return { ran: false, reason: "yielded" } as const;
 			}
 			const after = await countObjects(path);
 			const ms = Date.now() - started;
 			span.end(prefixed("after", after));
 			return { ran: true, before, after, ms } as const;
 		} catch (error) {
+			if (signal.aborted) {
+				yielded = true;
+				span.end({ yielded: true });
+				return { ran: false, reason: "yielded" } as const;
+			}
 			const message = (error as Error).message;
 			span.end(undefined, message);
 			return { ran: false, reason: "failed", error: message } as const;
 		} finally {
-			await runGit(path, ["config", MAINTAINED_AT, String(Date.now())], {
-				allowFailure: true,
-			});
+			if (!yielded) await record(path);
 		}
 	});
 }
@@ -241,14 +321,16 @@ export async function maintainClones(
 	options: {
 		root?: string;
 		log?: (message: string) => void;
-		/** Stops before the next clone. */
-		stopped?: () => boolean;
+		/** Stops the run under way and the pass. */
+		signal?: AbortSignal;
 	} = {},
 ): Promise<Map<string, MaintenanceResult>> {
 	const results = new Map<string, MaintenanceResult>();
 	for (const path of await listClones(options.root)) {
-		if (options.stopped?.()) break;
-		const result = await maintainClone(path).catch(
+		if (options.signal?.aborted) break;
+		const result = await maintainClone(path, {
+			...(options.signal ? { signal: options.signal } : {}),
+		}).catch(
 			(error: Error): MaintenanceResult => ({
 				ran: false,
 				reason: "failed",
@@ -261,31 +343,50 @@ export async function maintainClones(
 			options.log?.(
 				`maintenance ${shortName(path)}: ${b.loose} loose, ${b.packs} packs → ${a.loose} loose, ${a.packs} packs (${result.ms} ms)`,
 			);
-		} else if (result.reason === "failed") {
-			options.log?.(`maintenance ${shortName(path)} failed: ${result.error}`);
+		} else if (result.reason === "failed" || result.reason === "disk") {
+			options.log?.(
+				`maintenance ${shortName(path)} ${result.reason === "disk" ? "skipped, low disk" : "failed"}: ${result.error}`,
+			);
 		}
 	}
 	return results;
 }
 
 /** First pass this long after start (a start is busy enough). */
-const FIRST_PASS_MS = 10 * 60_000;
+export const FIRST_PASS_MS = 10 * 60_000;
 /** Later passes: each clone is due once a day, so an hourly look is enough. */
-const PASS_EVERY_MS = 60 * 60_000;
+export const PASS_EVERY_MS = 60 * 60_000;
+
+/**
+ * Whether `crb serve` maintains its clones: always, except under the test
+ * harness (`$CRB_TEST_HOOKS`), where its gits would be a test's leftovers.
+ */
+export const maintenanceOn = (testHooks: string | null): boolean => !testHooks;
 
 /**
  * crb serve's background maintenance: a pass FIRST_PASS_MS after start and
  * every PASS_EVERY_MS, never two at once, off every request's path. The
- * timers don't keep the process alive; `stop` waits for a pass under way.
+ * timers don't keep the process alive; `stop` kills the git under way and
+ * settles once the pass has ended.
  */
 export function startMaintenance(
-	options: { log?: (message: string) => void; root?: string } = {},
+	options: {
+		log?: (message: string) => void;
+		root?: string;
+		/** The pass to run (tests). */
+		pass?: typeof maintainClones;
+	} = {},
 ): { stop(): Promise<void> } {
-	let stopped = false;
+	const stopping = new AbortController();
+	const runPass = options.pass ?? maintainClones;
 	let pass: Promise<unknown> | null = null;
 	const tick = () => {
-		if (stopped || pass !== null) return;
-		pass = maintainClones({ ...options, stopped: () => stopped })
+		if (stopping.signal.aborted || pass !== null) return;
+		pass = runPass({
+			...(options.log ? { log: options.log } : {}),
+			...(options.root ? { root: options.root } : {}),
+			signal: stopping.signal,
+		})
 			.catch(() => {})
 			.finally(() => {
 				pass = null;
@@ -297,7 +398,7 @@ export function startMaintenance(
 	every.unref();
 	return {
 		async stop() {
-			stopped = true;
+			stopping.abort();
 			clearTimeout(first);
 			clearInterval(every);
 			await pass;

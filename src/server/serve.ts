@@ -3,7 +3,7 @@ import { setServerMcp, setServerPort } from "./agent/host.js";
 import { buildApp } from "./app.js";
 import { readConfig, updateConfig } from "./config.js";
 import { configAccess, HomeService } from "./home/homeService.js";
-import { startMaintenance } from "./maintenance.js";
+import { maintenanceOn, startMaintenance } from "./maintenance.js";
 import { SessionRegistry } from "./registry.js";
 import {
 	accessKey,
@@ -143,7 +143,9 @@ export async function startServer(opts: {
 	void updater.start().catch(() => {});
 	// Packs each clone once a day while it is idle (maintenance.ts). Not
 	// under the test harness: its gits would be a test's leftovers.
-	const maintenance = testHooks ? null : startMaintenance({ log });
+	const maintenance = maintenanceOn(testHooks)
+		? startMaintenance({ log })
+		: null;
 
 	let closed: Promise<void> | null = null;
 	return {

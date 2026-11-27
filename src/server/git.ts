@@ -239,7 +239,10 @@ export function runGitFull(
 		if (opts.timeoutMs !== undefined) trackDetached(child);
 		if (opts.lowPriority && child.pid !== undefined) {
 			try {
-				// Its children (pack-objects) inherit it.
+				// Its children (pack-objects) inherit it. CPU only: no I/O
+				// priority. On Windows, git on PATH is often a launcher that
+				// starts the real git at once, which may then keep normal
+				// priority (a race): gentler, never wrong.
 				setPriority(child.pid, 19);
 			} catch {
 				// Not allowed here: it runs at normal priority.

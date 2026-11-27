@@ -193,10 +193,10 @@ describe("catFile", () => {
 		// A read out when the pause comes is answered, not failed.
 		const out = readBlob(fx.path, `${commit}:big.bin`);
 		const resume = await pauseCatFile(fx.path);
-		expect((await out).equals(big)).toBe(true);
-		expect(catFileCount()).toBe(0);
 		const spawns = countSpawns();
 		try {
+			expect((await out).equals(big)).toBe(true);
+			expect(catFileCount()).toBe(0);
 			expect((await readBlob(fx.path, `${commit}:dir/b.txt`)).toString()).toBe(
 				"bee\n",
 			);
@@ -205,10 +205,29 @@ describe("catFile", () => {
 			expect(catFileCount()).toBe(0);
 		} finally {
 			spawns.stop();
+			resume();
 		}
-		resume();
 		await readBlob(fx.path, `${commit}:a.txt`);
 		expect(catFileCount()).toBe(1);
+	});
+
+	it("a pause never fails the reads queued on the clone's process, however many or slow", async () => {
+		await readBlob(fx.path, `${commit}:a.txt`);
+		// A burst of big reads queued just before the pause.
+		const out = Array.from({ length: 40 }, () =>
+			readBlob(fx.path, `${commit}:big.bin`),
+		);
+		// On the clone's process, not reads of their own.
+		expect(catFileCount()).toBe(1);
+		const resume = await pauseCatFile(fx.path);
+		try {
+			for (const blob of await Promise.all(out)) {
+				expect(blob.equals(big)).toBe(true);
+			}
+			expect(catFileCount()).toBe(0);
+		} finally {
+			resume();
+		}
 	});
 
 	it("closes its process once idle", async () => {

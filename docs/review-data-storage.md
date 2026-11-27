@@ -204,7 +204,12 @@ same repo. So `crb serve` maintains its clones (`src/server/maintenance.ts`):
   them.
   Compaction (below) makes old review commits unreachable; dropping them
   needs a prune policy that knows which heads crb still reads, which is not
-  built.
+  built. So a clone only grows (packed, it grows slowly). A future prune
+  must rewrite the commit-graph in the same step, as `git gc` does: the
+  `--split` layers keep the pruned commits, and git trusts a graph entry
+  without checking the object is there (`GIT_COMMIT_GRAPH_PARANOIA` is off
+  by default), so a pruned PR head would read as present and never be
+  fetched again by commit ID.
 - **When.** At most once a day per clone (the time of the last run, failed
   or not, is the clone's `crb.maintainedAt` config, read through `git
   config`), in a background pass 10 minutes after `crb serve` starts and
@@ -212,9 +217,32 @@ same repo. So `crb serve` maintains its clones (`src/server/maintenance.ts`):
   skipped while busy: when this crb used its repo lock within the last 5
   minutes, or anyone holds the lock now (it never waits for it). The run
   holds the repo lock itself, so no open or fetch, of this crb or another,
-  runs beside it; an open that comes meanwhile waits for it, as it waits for
-  another open's fetch. Its gits run at the lowest CPU priority. Not under
-  the test harness (`$CRB_TEST_HOOKS`): its gits would be a test's leftovers.
+  runs beside it.
+- **It gives way.** An open or fetch of this crb that starts waiting for
+  the lock kills the git under way and gets the lock at once (it waits only
+  for that git to exit); `crb serve` stopping (Ctrl-C, systemd, an update's
+  restart) does the same. A run that gave way isn't recorded, so a later
+  pass tries again. Killing it at any point is safe: git renames a new pack
+  into place before it deletes anything. A killed `pack-objects` can leave a
+  `tmp_pack_*` file in `objects/pack`, which only `git gc`/`prune` would
+  remove and crb doesn't run (`git count-objects -v` shows it as garbage).
+  Its gits run in their own process group (a kill reaches `pack-objects`
+  too), at the lowest CPU priority, with a 30-minute backstop against a
+  hung git. Another crb process on the same cache can't make it give way:
+  it waits for the run, like behind another open's fetch.
+- **Disk.** A roll-up writes the new pack before deleting the old ones; a
+  run is skipped (and logged) while free space is under twice the clone's
+  pack and loose size.
+- **Measured** on copies of the largest real clones (on tmpfs, nice 19, load
+  9-15 on 8 cores, git 2.53): a 380 MB clone (2 packs, 15 loose) took
+  0.04 s and changed nothing worth noting; a 290 MB clone with 29 packs and
+  1,903 loose objects became 2 packs and 0 loose in 0.7 s (CPU 0.65 s,
+  37 MB RSS), 11 MB smaller, `rev-list --objects --all` 0.28 → 0.20 s CPU.
+  The worst case, a roll-up that takes in the main pack too (forced with
+  `--geometric=1000`), took 1.9 s and 357 MB RSS and peaked at the pack's
+  size again on disk (278 → 552 MB, then 276 MB).
+- **Not under the test harness** (`$CRB_TEST_HOOKS`): its gits would be a
+  test's leftovers.
 - **Readers beside it.** Reads don't take the repo lock. The clone's
   long-running `cat-file --batch` (`catFile.ts`) is paused for the run: its
   reads out are answered, it closes and exits before the repack starts, and

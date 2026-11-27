@@ -399,17 +399,20 @@ export async function closeCatFiles(): Promise<void> {
 /** Clones whose reads each run a `cat-file` of their own for now, and by how many pausers. */
 const paused = new Map<string, number>();
 
-/** Longest a pause waits for the reads out to be answered before closing. */
-const DRAIN_MS = 10_000;
-
 /**
  * Keeps `repo` without a long-running process until the returned resume is
  * called (clone maintenance: on Windows an open reader keeps a repack from
- * deleting the packs it rolled up). Reads meanwhile each run a `cat-file`
- * of their own; the process up now gets its reads out answered (up to
- * DRAIN_MS), then closes, and this settles once it has exited.
+ * deleting the packs it rolled up). From the call on, every read of the
+ * clone runs a `cat-file` of its own that exits when answered, so no read
+ * can start a long one meanwhile. The process up now answers every read
+ * it has (never failed for the pause), then closes; this settles once it
+ * has exited, or at once when `signal` aborts (the pause stays until
+ * resumed; the process closes itself once idle).
  */
-export async function pauseCatFile(repo: string): Promise<() => void> {
+export async function pauseCatFile(
+	repo: string,
+	signal?: AbortSignal,
+): Promise<() => void> {
 	paused.set(repo, (paused.get(repo) ?? 0) + 1);
 	let resumed = false;
 	const resume = () => {
@@ -422,12 +425,18 @@ export async function pauseCatFile(repo: string): Promise<() => void> {
 	const up = processes.get(repo);
 	if (up) {
 		processes.delete(repo);
-		const deadline = Date.now() + DRAIN_MS;
-		while (!up.dead && !up.idle && Date.now() < deadline) {
+		while (!up.dead && !up.idle && !signal?.aborted) {
 			await new Promise((r) => setTimeout(r, 10));
 		}
-		up.close();
-		await up.exited;
+		if (up.idle) {
+			up.close();
+			await Promise.race([
+				up.exited,
+				new Promise<void>((r) =>
+					signal?.addEventListener("abort", () => r(), { once: true }),
+				),
+			]);
+		}
 	}
 	return resume;
 }

@@ -52,6 +52,12 @@ export interface LockOptions {
 	staleMs?: number;
 	/** How often the holder refreshes the lock's mtime. */
 	heartbeatMs?: number;
+	/**
+	 * Called once when someone in this process starts waiting for the lock
+	 * while `fn` holds it: a holder that can give way (clone maintenance)
+	 * stops, so the waiter gets the lock at once.
+	 */
+	onWaiter?: () => void;
 }
 
 const LOCK_DEFAULTS = {
@@ -99,6 +105,9 @@ async function removeIfUnchanged(lock: string, content: string) {
 /** This process's holder of each repo lock: what a waiter shows. */
 const lockHolders = new Map<string, Activity>();
 
+/** The holders that give way to a waiter (LockOptions.onWaiter), by repo. */
+const yielders = new Map<string, () => void>();
+
 /** When this process last took or released each repo's lock. */
 const lockUsed = new Map<string, number>();
 
@@ -131,6 +140,11 @@ export async function withRepoLock<T>(
 	try {
 		for (;;) {
 			if (await tryCreate(lock, mine)) break;
+			// A holder that gives way (maintenance) stops for us; asked on
+			// every look, in case it took the lock just as we came.
+			const yielder = yielders.get(path);
+			yielders.delete(path);
+			yielder?.();
 			endWait ??= beginStep("wait", "crb: repo lock", undefined, () =>
 				lockHolders.get(path),
 			);
@@ -164,6 +178,8 @@ export async function withRepoLock<T>(
 	const holder = new Activity();
 	lockHolders.set(path, holder);
 	lockUsed.set(path, Date.now());
+	const { onWaiter } = options;
+	if (onWaiter) yielders.set(path, onWaiter);
 	const heartbeat = setInterval(() => {
 		const now = new Date();
 		readLock(lock).then((c) => {
@@ -175,6 +191,7 @@ export async function withRepoLock<T>(
 		return await waitOn(runIn(holder, fn), () => holder);
 	} finally {
 		if (lockHolders.get(path) === holder) lockHolders.delete(path);
+		if (onWaiter && yielders.get(path) === onWaiter) yielders.delete(path);
 		lockUsed.set(path, Date.now());
 		clearInterval(heartbeat);
 		if ((await readLock(lock)) === mine) await rm(lock, { force: true });

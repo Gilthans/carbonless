@@ -6,21 +6,27 @@ import {
 	readdirSync,
 	rmSync,
 } from "node:fs";
-import { tmpdir } from "node:os";
+import { getPriority, tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { GIT_TEST_TIMEOUTS, testGitEnv } from "../../test/git-fixture";
 import { catFileCount, closeCatFiles, readObject } from "./catFile";
 import { withRepoLock } from "./clone";
+import { gitChildren } from "./git";
 import {
 	countObjects,
+	FIRST_PASS_MS,
 	IDLE_MS,
 	MAINTAINED_AT,
 	MAINTENANCE_EVERY_MS,
+	type MaintenanceResult,
 	maintainClone,
 	maintainClones,
 	maintenanceCommands,
+	maintenanceOn,
+	PASS_EVERY_MS,
+	startMaintenance,
 } from "./maintenance";
 
 // Real git processes: see GIT_TEST_TIMEOUTS.
@@ -167,7 +173,9 @@ describe("clone maintenance", () => {
 				...(old ? { gitVersion: [2, 30] as [number, number] } : {}),
 			});
 			if (old) {
-				// git's maintenance tasks finish each step on the next run.
+				// git's maintenance tasks finish each step on the next run. This
+				// runs 2.30's plan on the installed git; on git 2.30.2 itself
+				// (reviewed in Docker) it gave the same: 0 loose, nothing lost.
 				expect(
 					await maintainClone(grown.clone, {
 						force: true,
@@ -324,13 +332,14 @@ describe("clone maintenance", () => {
 		).toMatchObject({ ran: true });
 	});
 
-	it("never overlaps an open: one that comes during a run waits for it", async () => {
+	it("never overlaps an open: one that comes during a run gets the lock once the run has given way", async () => {
 		const { clone } = grow(tmp, 2);
 		const order: string[] = [];
-		let release = () => {};
-		const gate = new Promise<void>((r) => {
-			release = r;
-		});
+		// Held until the run is told to give way: only the open can end it.
+		const gate = (signal: AbortSignal) =>
+			new Promise<void>((r) =>
+				signal.addEventListener("abort", () => r(), { once: true }),
+			);
 		const run = maintainClone(clone, { gate }).then((r) => {
 			order.push("maintenance done");
 			return r;
@@ -340,10 +349,9 @@ describe("clone maintenance", () => {
 		const open = withRepoLock(clone, async () => {
 			order.push("open");
 		});
-		release();
 		await Promise.all([run, open]);
 		expect(order).toEqual(["maintenance done", "open"]);
-		expect(await run).toMatchObject({ ran: true });
+		expect(await run).toEqual({ ran: false, reason: "yielded" });
 	});
 
 	it("goes through every clone one at a time, skipping what isn't one", async () => {
@@ -369,6 +377,149 @@ describe("clone maintenance", () => {
 		expect(lines[1]).toMatch(
 			/^maintenance acme\/widget\.git: \d+ loose, \d+ packs → 0 loose, \d+ packs/,
 		);
+	});
+});
+
+/** A git step that never ends by itself: a shell alias (its own child, `sleep`). */
+const hang = (tag: string) => ["-c", `alias.crbhang=!sleep 6${tag}`, "crbhang"];
+
+/** Pids of `sleep 6<tag>` still running (Linux and macOS only). */
+const sleepers = (tag: string) => {
+	try {
+		return execFileSync("pgrep", ["-f", `^sleep 6${tag}$`], {
+			encoding: "utf8",
+		})
+			.trim()
+			.split("\n")
+			.filter(Boolean)
+			.map(Number);
+	} catch {
+		return [];
+	}
+};
+const posix = process.platform !== "win32";
+
+describe("maintenance gives way", () => {
+	let tmp: string;
+	beforeEach(() => {
+		tmp = mkdtempSync(join(tmpdir(), "crb-maint-yield-"));
+	});
+	afterEach(async () => {
+		// A failed test's hang must not outlive it.
+		if (posix) {
+			for (const t of [0, 1]) {
+				for (const pid of sleepers(`${String(process.pid).slice(-4)}${t}`)) {
+					process.kill(pid, "SIGKILL");
+				}
+			}
+		}
+		await closeCatFiles();
+		rmSync(tmp, { recursive: true, force: true });
+	});
+
+	it("to an open that starts waiting for the lock: its git is killed with its children, the open gets the lock, nothing is lost", async () => {
+		const grown = grow(tmp, 4);
+		const { clone } = grown;
+		const tag = `${String(process.pid).slice(-4)}0`;
+		const geometric = maintenanceCommands([2, 53])[0] as string[];
+		const run = maintainClone(clone, { steps: [geometric, hang(tag)] });
+		// The repack has run; the next step hangs, holding the lock.
+		await vi.waitFor(() =>
+			expect(gitChildren().some((c) => c.includes(`6${tag}`))).toBe(true),
+		);
+		if (posix) {
+			await vi.waitFor(() => expect(sleepers(tag)).toHaveLength(1));
+			// lowPriority: what it starts runs at the lowest priority.
+			expect(getPriority(sleepers(tag)[0])).toBe(19);
+		}
+		// An open: it would wait 120 s, the hang 600 s; it gets the lock now.
+		const opened = await withRepoLock(clone, async () => "opened");
+		expect(opened).toBe("opened");
+		expect(await run).toEqual({ ran: false, reason: "yielded" });
+		// The whole group went: no sleep left behind.
+		if (posix) expect(sleepers(tag)).toEqual([]);
+		// Not recorded: the next pass tries again.
+		expect(
+			git(clone, ["config", "--default", "", "--get", MAINTAINED_AT]),
+		).toBe("");
+		expect((await countObjects(clone)).loose).toBe(0);
+		expect(
+			missing(clone, [...grown.dangling, ...grown.looseUnreachable]),
+		).toEqual([]);
+	});
+
+	it("to crb stopping: the signal kills its git and the run ends at once", async () => {
+		const { clone } = grow(tmp, 2);
+		const tag = `${String(process.pid).slice(-4)}1`;
+		const stop = new AbortController();
+		const run = maintainClone(clone, {
+			steps: [hang(tag)],
+			signal: stop.signal,
+		});
+		await vi.waitFor(() =>
+			expect(gitChildren().some((c) => c.includes(`6${tag}`))).toBe(true),
+		);
+		stop.abort();
+		expect(await run).toEqual({ ran: false, reason: "yielded" });
+		await vi.waitFor(() =>
+			expect(gitChildren().filter((c) => c.includes(`6${tag}`))).toEqual([]),
+		);
+		if (posix) expect(sleepers(tag)).toEqual([]);
+		expect(existsSync(`${clone}.lock`)).toBe(false);
+	});
+
+	it("skips a clone without room for the repack's copy, and says why", async () => {
+		const { clone } = grow(tmp, 2);
+		const before = await countObjects(clone);
+		const result = await maintainClone(clone, { freeBytes: async () => 1024 });
+		expect(result).toMatchObject({ ran: false, reason: "disk" });
+		expect(result.ran === false && result.error).toMatch(
+			/MiB free, \d+ MiB needed/,
+		);
+		expect(await countObjects(clone)).toEqual(before);
+		// Recorded: tried again in a day, not logged every hour.
+		expect(git(clone, ["config", "--get", MAINTAINED_AT])).not.toBe("");
+	});
+});
+
+describe("startMaintenance", () => {
+	afterEach(() => {
+		vi.useRealTimers();
+	});
+
+	it("runs a pass after FIRST_PASS_MS and hourly, never two at once; stop aborts the pass under way and waits for it", async () => {
+		vi.useFakeTimers();
+		const signals: AbortSignal[] = [];
+		let end = () => {};
+		const pass = vi.fn(
+			(options: { signal?: AbortSignal } = {}) =>
+				new Promise<Map<string, MaintenanceResult>>((resolve) => {
+					if (options.signal) signals.push(options.signal);
+					end = () => resolve(new Map());
+					options.signal?.addEventListener("abort", () => end());
+				}),
+		);
+		const m = startMaintenance({ pass, root: "/nowhere" });
+		await vi.advanceTimersByTimeAsync(FIRST_PASS_MS - 1);
+		expect(pass).toHaveBeenCalledTimes(0);
+		await vi.advanceTimersByTimeAsync(1);
+		expect(pass).toHaveBeenCalledTimes(1);
+		// Still under way an hour later: no second pass beside it.
+		await vi.advanceTimersByTimeAsync(PASS_EVERY_MS);
+		expect(pass).toHaveBeenCalledTimes(1);
+		end();
+		await vi.advanceTimersByTimeAsync(PASS_EVERY_MS);
+		expect(pass).toHaveBeenCalledTimes(2);
+		expect(signals[1]?.aborted).toBe(false);
+		await m.stop();
+		expect(signals[1]?.aborted).toBe(true);
+		await vi.advanceTimersByTimeAsync(3 * PASS_EVERY_MS);
+		expect(pass).toHaveBeenCalledTimes(2);
+	});
+
+	it("is on for crb serve, off under the test harness", () => {
+		expect(maintenanceOn(null)).toBe(true);
+		expect(maintenanceOn("0123456789abcdef0123456789abcdef")).toBe(false);
 	});
 });
 
