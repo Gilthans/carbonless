@@ -122,6 +122,99 @@ export class RefStore {
 		return { tip, events: [...events] };
 	}
 
+	/**
+	 * The tip of every ref matching `patterns` (for-each-ref patterns under
+	 * refs/crb/), by ref name: one git call however many refs match, where a
+	 * `tip` per ref would start a git each.
+	 */
+	async tips(patterns: readonly string[]): Promise<Map<string, string>> {
+		for (const p of patterns) {
+			if (!p.startsWith("refs/crb/") || p.startsWith("-")) {
+				throw new Error(`Not a crb ref pattern: ${p}`);
+			}
+		}
+		const out = await runGit(this.repo, [
+			"for-each-ref",
+			"--format=%(objectname) %(refname)",
+			"--end-of-options",
+			...patterns,
+		]);
+		const tips = new Map<string, string>();
+		for (const line of out.split("\n")) {
+			const space = line.indexOf(" ");
+			if (space < 0) continue;
+			tips.set(line.slice(space + 1), line.slice(0, space));
+		}
+		return tips;
+	}
+
+	/**
+	 * The events reachable from each of `tips` (commit OIDs), as readEvents
+	 * reads one ref's: all of them in one `git log`, split by walking each
+	 * tip's parents, so a caller reading many refs starts one git, not one per
+	 * ref. A tip whose history can't be read in that pass (a missing parent)
+	 * is read alone, so a broken history costs only its own entry: an Error.
+	 */
+	async eventsOfTips(
+		tips: readonly string[],
+	): Promise<Map<string, CrbEvent[] | Error>> {
+		const wanted = [...new Set(tips)];
+		for (const t of wanted) checkOid(t);
+		const result = new Map<string, CrbEvent[] | Error>();
+		if (wanted.length === 0) return result;
+		const commits = new Map<string, { parents: string[]; body: string }>();
+		try {
+			const out = await runGit(
+				this.repo,
+				[
+					"--no-replace-objects",
+					"-c",
+					"log.showSignature=false",
+					"-c",
+					"i18n.logOutputEncoding=UTF-8",
+					"log",
+					"-z",
+					"--no-color",
+					"--format=%H %P%n%B",
+					"--stdin",
+				],
+				{ input: `${wanted.join("\n")}\n` },
+			);
+			for (const record of out.split("\0")) {
+				const nl = record.indexOf("\n");
+				const head = (nl < 0 ? record : record.slice(0, nl)).trim();
+				if (!head) continue;
+				const [oid, ...parents] = head.split(" ").filter(Boolean);
+				if (!oid) continue;
+				commits.set(oid, {
+					parents,
+					body: nl < 0 ? "" : record.slice(nl + 1),
+				});
+			}
+		} catch {
+			// Some tip's history is broken: each is read alone below.
+		}
+		const alone: string[] = [];
+		for (const tip of wanted) {
+			const events = eventsFrom(tip, commits);
+			if (events) result.set(tip, events);
+			else alone.push(tip);
+		}
+		await Promise.all(
+			alone.map(async (tip) => {
+				try {
+					result.set(tip, await this.#logEvents(tip));
+				} catch (error) {
+					result.set(
+						tip,
+						error instanceof Error ? error : new Error(String(error)),
+					);
+				}
+			}),
+		);
+		return result;
+	}
+
 	async #logEvents(tip: string): Promise<CrbEvent[]> {
 		// Pin everything user config could change about the bytes we read.
 		const out = await runGit(this.repo, [
@@ -299,6 +392,37 @@ export class RefStore {
 		});
 		return out.trim();
 	}
+}
+
+/**
+ * The events of every commit reachable from `tip` in `commits` (OID →
+ * parents and message), parents before children as `git log --reverse`
+ * gives them; null when a commit in its history is missing.
+ */
+function eventsFrom(
+	tip: string,
+	commits: ReadonlyMap<string, { parents: string[]; body: string }>,
+): CrbEvent[] | null {
+	const order: string[] = [];
+	const seen = new Set<string>();
+	// Iterative post-order: a long history never runs out of stack.
+	const stack: { oid: string; next: number }[] = [{ oid: tip, next: 0 }];
+	seen.add(tip);
+	while (stack.length > 0) {
+		const top = stack[stack.length - 1] as { oid: string; next: number };
+		const commit = commits.get(top.oid);
+		if (!commit) return null;
+		const parent = commit.parents[top.next++];
+		if (parent === undefined) {
+			order.push(top.oid);
+			stack.pop();
+		} else if (!seen.has(parent)) {
+			seen.add(parent);
+			stack.push({ oid: parent, next: 0 });
+		}
+	}
+	// parseEventLines skips a message's first line, as `%B` gives it.
+	return order.flatMap((oid) => parseEventLines(commits.get(oid)?.body ?? ""));
 }
 
 /**

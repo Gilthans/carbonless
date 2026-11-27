@@ -4,9 +4,9 @@ import { join } from "node:path";
 import type { Coverage } from "../../shared/home.js";
 import type { Snapshot } from "../../shared/types.js";
 import { buildSnapshot } from "../diff/snapshot.js";
-import { runGit } from "../git.js";
 import { cacheDir } from "../paths.js";
 import { buildReviewView } from "../review/coverage.js";
+import type { CrbEvent } from "../review/events.js";
 import { foldProgress } from "../review/fold.js";
 import { RefStore } from "../review/refStore.js";
 import { withSplitCarries } from "../review/splitCarry.js";
@@ -48,19 +48,47 @@ function coverageOf(
 	return { done: lines.reviewed, total: lineTotal, unit: "lines" };
 }
 
+/**
+ * What a review's two refs said at their tips: its summary (null: not
+ * started, or as-of), and its coverage once read. Kept per review while
+ * both tips stay where they were.
+ */
+interface Memo {
+	metaTip: string;
+	progressTip: string;
+	review: Omit<StartedReview, "coverage"> | null;
+	/** The coverage for these tips, once a caller wanted it. */
+	coverage?: Coverage;
+	/**
+	 * The progress events, kept only while coverage couldn't be read (its
+	 * commits not fetched yet), so the next try needs no git log.
+	 */
+	events?: CrbEvent[];
+}
+
+const PROGRESS_REF =
+	/^refs\/crb\/reviews\/([0-9a-z]{26})\/reviewers\/[^/]+\/progress$/;
+const META_REF = /^refs\/crb\/reviews\/([0-9a-z]{26})\/meta$/;
+
 export class StartedReviews {
 	readonly #build: typeof buildSnapshot;
 	readonly #stores = new Map<string, RefStore>();
 	readonly #snapshots = new Map<string, Promise<Snapshot>>();
+	/**
+	 * By clone, then review id. Holds only reviews whose refs the clone's
+	 * last scan listed, so it is bounded by the started reviews that exist.
+	 */
+	readonly #memos = new Map<string, Map<string, Memo>>();
 
 	constructor(options: { build?: typeof buildSnapshot } = {}) {
 		this.#build = options.build ?? buildSnapshot;
 	}
 
-	/** Forgets its ref stores and snapshots (the test hook's reset). */
+	/** Forgets its ref stores, snapshots and summaries (the test hook's reset). */
 	reset(): void {
 		this.#stores.clear();
 		this.#snapshots.clear();
+		this.#memos.clear();
 	}
 
 	#store(repo: string): RefStore {
@@ -93,6 +121,12 @@ export class StartedReviews {
 	 * Coverage only for repos `withCoverage` names (`owner/repo`, lowercased;
 	 * all when not given): Home shows no other. `only` (`owner/repo`): that
 	 * repo's clone alone, no other is scanned.
+	 *
+	 * Git processes per clone, however many reviews it holds (CAR-307): one
+	 * for-each-ref of the meta and progress refs' tips, plus, only when a tip
+	 * moved since the last scan (or coverage is newly wanted), one git log of
+	 * the moved tips. A review written by another tab, the crb CLI or a fetch
+	 * moves its tip, so the next scan sees it with no invalidation.
 	 */
 	async list(
 		slug: string,
@@ -134,88 +168,166 @@ export class StartedReviews {
 		slug: string,
 		withCoverage: ReadonlySet<string> | undefined,
 	): Promise<StartedReview[]> {
-		// Only the viewer's progress refs: one listing, no review's meta read
-		// unless the viewer acted in it.
-		const out = await runGit(
-			repo,
-			[
-				"for-each-ref",
-				"--format=%(refname)",
-				`refs/crb/reviews/*/reviewers/${slug}/progress`,
-			],
-			{ allowFailure: true },
-		);
-		const ids = out
-			.split("\n")
-			.map(
-				(line) =>
-					/^refs\/crb\/reviews\/([0-9a-z]{26})\/reviewers\//.exec(line)?.[1],
-			)
-			.filter((id): id is string => id !== undefined);
-		const reviews = await Promise.all(
-			ids.map((id) =>
-				this.#review(repo, id, slug, withCoverage).catch((error) => {
-					console.error(
-						`crb: skipped review ${id} in ${repo}: ${String(error)}`,
-					);
-					return null;
-				}),
-			),
-		);
-		return reviews.filter((r): r is StartedReview => r !== null);
-	}
-
-	async #review(
-		repo: string,
-		id: string,
-		slug: string,
-		withCoverage: ReadonlySet<string> | undefined,
-	): Promise<StartedReview | null> {
 		const store = this.#store(repo);
-		const [meta, events] = await Promise.all([
-			store.readEvents(`refs/crb/reviews/${id}/meta`),
-			store.readEvents(`refs/crb/reviews/${id}/reviewers/${slug}/progress`),
+		// The viewer's progress refs and every meta ref, tips only: one git.
+		const tips = await store.tips([
+			`refs/crb/reviews/*/reviewers/${slug}/progress`,
+			"refs/crb/reviews/*/meta",
 		]);
-		const created = meta.find((e) => e.type === "review-created");
-		if (created?.type !== "review-created") return null;
-		const details = created.details ?? {};
-		const asOf = typeof details.asOf === "string" ? details.asOf : null;
-		// Dev mode views of the past never count as started.
-		if (asOf !== null) return null;
-		const progress = foldProgress(events);
-		if (!progress.patchset) return null;
-		let last = 0;
-		for (const e of events) if (e.ts > last) last = e.ts;
-		const { owner, repo: name, number } = created.pr;
-		const wanted =
-			!withCoverage || withCoverage.has(`${owner}/${name}`.toLowerCase());
-		let coverage: Coverage | null = null;
-		if (wanted) {
+		const metas = new Map<string, string>();
+		const progresses = new Map<string, string>();
+		for (const [ref, tip] of tips) {
+			const meta = META_REF.exec(ref)?.[1];
+			if (meta) metas.set(meta, tip);
+			const progress = PROGRESS_REF.exec(ref)?.[1];
+			if (progress) progresses.set(progress, tip);
+		}
+		const memoKey = `${repo}\0${slug}`;
+		const before = this.#memos.get(memoKey) ?? new Map<string, Memo>();
+		const memos = new Map<string, Memo>();
+		// Each review whose tips moved, and what it needs read.
+		const stale: { id: string; metaTip: string; progressTip: string }[] = [];
+		const toCover = new Map<string, Memo>();
+		for (const [id, progressTip] of progresses) {
+			const metaTip = metas.get(id);
+			// No meta (yet): not a review to show.
+			if (!metaTip) continue;
+			const memo = before.get(id);
+			if (memo?.metaTip === metaTip && memo.progressTip === progressTip) {
+				memos.set(id, memo);
+				if (
+					memo.review &&
+					memo.coverage === undefined &&
+					this.#wants(memo.review, withCoverage)
+				) {
+					toCover.set(id, memo);
+				}
+			} else stale.push({ id, metaTip, progressTip });
+		}
+		const needed = [
+			...stale.flatMap((s) => [s.metaTip, s.progressTip]),
+			...[...toCover.values()]
+				.filter((m) => !m.events)
+				.map((m) => m.progressTip),
+		];
+		const read =
+			needed.length > 0
+				? await store.eventsOfTips(needed)
+				: new Map<string, CrbEvent[] | Error>();
+		const eventsOf = (tip: string) => {
+			const events = read.get(tip);
+			if (events === undefined) throw new Error(`not read: ${tip}`);
+			if (events instanceof Error) throw events;
+			return events;
+		};
+		for (const { id, metaTip, progressTip } of stale) {
 			try {
-				const { mergeBase, head } = progress.patchset;
-				const snapshot = await this.#snapshot(repo, mergeBase, head);
-				// Home never writes: marks on hunks now cut at whitespace-only
-				// runs count on their pieces as the review's first open writes
-				// them (CAR-156).
-				coverage = coverageOf(
-					snapshot,
-					withSplitCarries(events, snapshot, slug),
-				);
-			} catch {
-				// The patch set's commits aren't readable: no coverage to claim.
-				coverage = { done: 0, total: 0, unit: "clusters" };
+				const meta = eventsOf(metaTip);
+				const events = eventsOf(progressTip);
+				const memo: Memo = {
+					metaTip,
+					progressTip,
+					review: summary(id, meta, events),
+				};
+				memos.set(id, memo);
+				if (memo.review && this.#wants(memo.review, withCoverage)) {
+					memo.events = events;
+					toCover.set(id, memo);
+				}
+			} catch (error) {
+				console.error(`crb: skipped review ${id} in ${repo}: ${String(error)}`);
 			}
 		}
-		return {
-			owner,
-			repo: name,
-			number,
-			id,
-			pinnedHead: typeof details.head === "string" ? details.head : null,
-			head: progress.patchset.head,
-			asOf,
-			coverage,
-			lastActedAt: new Date(last).toISOString(),
-		};
+		await Promise.all(
+			[...toCover.values()].map(async (memo) => {
+				try {
+					memo.events ??= eventsOf(memo.progressTip);
+				} catch (error) {
+					console.error(
+						`crb: no coverage for ${memo.review?.id} in ${repo}: ${String(error)}`,
+					);
+					return;
+				}
+				await this.#coverage(repo, slug, memo);
+			}),
+		);
+		// Reviews gone from the clone leave the memo with it.
+		this.#memos.set(memoKey, memos);
+		const out: StartedReview[] = [];
+		for (const memo of memos.values()) {
+			if (!memo.review) continue;
+			const wanted = this.#wants(memo.review, withCoverage);
+			out.push({
+				...memo.review,
+				coverage: wanted
+					? (memo.coverage ?? { done: 0, total: 0, unit: "clusters" })
+					: null,
+			});
+		}
+		return out;
 	}
+
+	#wants(
+		review: { owner: string; repo: string },
+		withCoverage: ReadonlySet<string> | undefined,
+	): boolean {
+		return (
+			!withCoverage ||
+			withCoverage.has(`${review.owner}/${review.repo}`.toLowerCase())
+		);
+	}
+
+	/** Fills `memo.coverage` from its events, which it then lets go. */
+	async #coverage(repo: string, slug: string, memo: Memo): Promise<void> {
+		const events = memo.events ?? [];
+		const patchset = foldProgress(events).patchset;
+		if (!patchset) return;
+		try {
+			const snapshot = await this.#snapshot(
+				repo,
+				patchset.mergeBase,
+				patchset.head,
+			);
+			// Home never writes: marks on hunks now cut at whitespace-only
+			// runs count on their pieces as the review's first open writes
+			// them (CAR-156).
+			memo.coverage = coverageOf(
+				snapshot,
+				withSplitCarries(events, snapshot, slug),
+			);
+			memo.events = undefined;
+		} catch {
+			// The patch set's commits aren't readable: no coverage to claim
+			// (shown as none), tried again next time from the kept events.
+		}
+	}
+}
+
+/** A review's summary from its meta and progress events; null: not started. */
+function summary(
+	id: string,
+	meta: CrbEvent[],
+	events: CrbEvent[],
+): Omit<StartedReview, "coverage"> | null {
+	const created = meta.find((e) => e.type === "review-created");
+	if (created?.type !== "review-created") return null;
+	const details = created.details ?? {};
+	const asOf = typeof details.asOf === "string" ? details.asOf : null;
+	// Dev mode views of the past never count as started.
+	if (asOf !== null) return null;
+	const progress = foldProgress(events);
+	if (!progress.patchset) return null;
+	let last = 0;
+	for (const e of events) if (e.ts > last) last = e.ts;
+	const { owner, repo: name, number } = created.pr;
+	return {
+		owner,
+		repo: name,
+		number,
+		id,
+		pinnedHead: typeof details.head === "string" ? details.head : null,
+		head: progress.patchset.head,
+		asOf,
+		lastActedAt: new Date(last).toISOString(),
+	};
 }

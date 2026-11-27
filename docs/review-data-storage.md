@@ -1003,6 +1003,16 @@ read forever, would spread the old cut through every reader of states.
    (`RefStore.readEvents`, a bounded map). A commit's history never changes,
    so an unchanged tip skips `git log`; folding the cached events again is
    cheap.
+5. A caller that reads many refs at once (Home's started-reviews scan,
+   `StartedReviews.list`) never starts a git per ref: one `git for-each-ref`
+   lists the tips it needs (`RefStore.tips`), and the tips that moved since
+   its last scan are read together in one `git log --stdin`
+   (`RefStore.eventsOfTips`), split per tip by walking parents (a tip whose
+   history is broken is read alone, failing only itself). The scan keeps each
+   review's summary and coverage keyed by its meta and progress tips, so a
+   load where nothing moved costs one `for-each-ref` per clone, however many
+   reviews were started (CAR-307). It needs no invalidation: a write by
+   another tab, the crb CLI or a fetch moves a tip, and the next scan sees it.
 
 This is the same idea as git's `cat_sort_uniq` notes merge (concatenate, sort,
 drop duplicates), applied to the commit graph: the set of events is the union of
