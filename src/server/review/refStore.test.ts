@@ -68,6 +68,139 @@ describe("RefStore", () => {
 		expect(logs()).toBe(before + 2);
 	});
 
+	it("reads many refs' tips and events in two gits, as readEvents reads each", async () => {
+		const refs = Array.from(
+			{ length: 6 },
+			(_, i) => `refs/crb/reviews/r${i}/reviewers/dan/progress`,
+		);
+		for (const [i, r] of refs.entries()) {
+			for (let j = 0; j <= i; j++)
+				await store.appendEvent(r, "s", evN(j), "dan");
+		}
+		// A merge (two copies of a ref synced), sharing history with refs[2].
+		const side = await store.commit(
+			await store.tip(refs[2] as string),
+			"side",
+			[evN(10)],
+			"dan",
+		);
+		const main = await store.appendEvent(
+			refs[2] as string,
+			"s",
+			evN(11),
+			"dan",
+		);
+		const merge = await runGit(
+			repo,
+			[
+				"commit-tree",
+				await store.emptyTree(),
+				"-p",
+				main,
+				"-p",
+				side,
+				"-F",
+				"-",
+			],
+			{
+				input: "merge\n",
+				env: {
+					GIT_AUTHOR_NAME: "crb",
+					GIT_AUTHOR_EMAIL: "crb@crb",
+					GIT_COMMITTER_NAME: "crb",
+					GIT_COMMITTER_EMAIL: "crb@crb",
+				},
+			},
+		);
+		await store.transaction([
+			{ ref: refs[2] as string, newOid: merge.trim(), oldOid: main },
+		]);
+		vi.mocked(runGit).mockClear();
+		const tips = await store.tips([
+			"refs/crb/reviews/*/reviewers/dan/progress",
+		]);
+		const read = await store.eventsOfTips([...tips.values()]);
+		expect(vi.mocked(runGit).mock.calls).toHaveLength(2);
+		expect([...tips.keys()].sort()).toEqual([...refs].sort());
+		for (const r of refs) {
+			const got = read.get(tips.get(r) as string) as CrbEvent[];
+			const want = await store.readEvents(r);
+			const byId = (a: CrbEvent, b: CrbEvent) => a.id.localeCompare(b.id);
+			expect([...got].sort(byId)).toEqual([...want].sort(byId));
+		}
+		// Linear history: oldest first, exactly as readEvents.
+		expect(read.get(tips.get(refs[3] as string) as string)).toEqual([
+			evN(0),
+			evN(1),
+			evN(2),
+			evN(3),
+		]);
+	});
+
+	it("a broken history costs only its own tip's events", async () => {
+		const good = await store.appendEvent(ref, "s", ev, "dan");
+		const tree = await store.emptyTree();
+		const broken = await runGit(
+			repo,
+			["hash-object", "-w", "-t", "commit", "--stdin"],
+			{
+				input: `tree ${tree}\nparent ${"1".repeat(40)}\nauthor dan <dan@crb> 0 +0000\ncommitter crb <crb@crb> 0 +0000\n\ncrb: x\n`,
+			},
+		);
+		const read = await store.eventsOfTips([good, broken.trim()]);
+		expect(read.get(good)).toEqual([ev]);
+		expect(read.get(broken.trim())).toBeInstanceOf(Error);
+	});
+
+	it("isolates a broken tip among many by halving, not one git log per tip", async () => {
+		const tips: string[] = [];
+		for (let i = 0; i < 16; i++) {
+			tips.push(
+				await store.appendEvent(
+					`refs/crb/reviews/r${i}/reviewers/dan/progress`,
+					"s",
+					evN(i),
+					"dan",
+				),
+			);
+		}
+		const broken = (
+			await runGit(repo, ["hash-object", "-w", "-t", "commit", "--stdin"], {
+				input: `tree ${await store.emptyTree()}\nparent ${"1".repeat(40)}\nauthor dan <dan@crb> 0 +0000\ncommitter crb <crb@crb> 0 +0000\n\ncrb: x\n`,
+			})
+		).trim();
+		vi.mocked(runGit).mockClear();
+		const read = await store.eventsOfTips([...tips, broken]);
+		// 17 tips, one bad: about 2·log2(17) batches, where one git log per
+		// tip would be 18.
+		expect(vi.mocked(runGit).mock.calls.length).toBeLessThanOrEqual(11);
+		for (const [i, tip] of tips.entries())
+			expect(read.get(tip)).toEqual([evN(i)]);
+		expect(read.get(broken)).toBeInstanceOf(Error);
+	});
+
+	it("reads only object IDs, never options or names, from a caller", async () => {
+		await expect(store.eventsOfTips(["-n1"])).rejects.toThrow(/object ID/);
+		await expect(store.eventsOfTips(["HEAD"])).rejects.toThrow(/object ID/);
+	});
+
+	it("a directory that isn't a repo lists no tips, quietly", async () => {
+		const junk = mkdtempSync(join(tmpdir(), "crb-junk-"));
+		try {
+			expect(
+				await new RefStore(junk).tips(["refs/crb/reviews/*/meta"]),
+			).toEqual(new Map());
+		} finally {
+			rmSync(junk, { recursive: true, force: true });
+		}
+	});
+
+	it("lists tips only under refs/crb/", async () => {
+		await expect(store.tips(["refs/heads/*"])).rejects.toThrow(
+			/crb ref pattern/,
+		);
+	});
+
 	it("commits carry only slug and tool identities", async () => {
 		await runGit(repo, ["config", "user.name", "Real Name"]);
 		await runGit(repo, ["config", "user.email", "real@example.com"]);

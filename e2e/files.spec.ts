@@ -1401,7 +1401,7 @@ async function doubleAcrossMoveOn(
 const stuckFixture: PrOptions = {
 	base: {
 		"b/long.ts": text(long),
-		"c/old.md": "# Notes\n",
+		"c/old.txt": "# Notes\n",
 		...Object.fromEntries(
 			Array.from({ length: 14 }, (_, i) => [`d/f${i}.ts`, text(util)]),
 		),
@@ -1409,7 +1409,7 @@ const stuckFixture: PrOptions = {
 	files: [
 		{
 			message: "PR change",
-			rename: { "c/old.md": "c/new.md" },
+			rename: { "c/old.txt": "c/new.txt" },
 			files: {
 				"b/long.ts": text(long.map((l) => `${l} changed`)),
 				...Object.fromEntries(
@@ -1440,7 +1440,9 @@ for (const [where, control] of [
 		await openFiles(page, s.url);
 		// Its header at the top (picked), or stuck deep in a long file.
 		const [path, nextPath] =
-			where === "picked" ? ["a/one.ts", "a/two.ts"] : ["b/long.ts", "c/new.md"];
+			where === "picked"
+				? ["a/one.ts", "a/two.ts"]
+				: ["b/long.ts", "c/new.txt"];
 		let section: Locator;
 		if (where === "picked") {
 			await pickInTree(page, /one\.ts/);
@@ -1910,12 +1912,12 @@ test("scrolling into a folded folder never unfolds it; opening a file from its h
 		"abcdefghijklmn".split("").map((n) => [`src/${n}.ts`, `${n}\n`]),
 	);
 	await pr({
-		base: { "docs/long.md": text(long), ...small },
+		base: { "docs/long.txt": text(long), ...small },
 		files: [
 			{
 				message: "PR change",
 				files: {
-					"docs/long.md": text(long.map((l) => `${l} changed`)),
+					"docs/long.txt": text(long.map((l) => `${l} changed`)),
 					...Object.fromEntries(
 						Object.keys(small).map((p) => [p, `${p} changed\n`]),
 					),
@@ -1935,7 +1937,7 @@ test("scrolling into a folded folder never unfolds it; opening a file from its h
 		);
 	});
 	// Open the long file from its header and scroll down past it.
-	const section = await expand(page, "docs/long.md");
+	const section = await expand(page, "docs/long.txt");
 	await expect(section.getByTestId("diff-line").first()).toBeVisible();
 	await page.evaluate(() =>
 		window.scrollTo(0, document.documentElement.scrollHeight),
@@ -2155,8 +2157,8 @@ for (const c of labelCases) {
 		const dir = c.widest
 			? `packages/${"averyveryverylongfoldername".repeat(4)}`
 			: "packages/server/src/some/much/longer/folder";
-		const from = `${dir}/before-the-move.md`;
-		const path = `${dir}/after-the-move.md`;
+		const from = `${dir}/before-the-move.txt`;
+		const path = `${dir}/after-the-move.txt`;
 		const p = await pr({
 			base: { [from]: text(notes), "keep.txt": "keep\n" },
 			files: [

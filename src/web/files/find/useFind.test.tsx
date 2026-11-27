@@ -350,19 +350,116 @@ describe("useFind", () => {
 		expect(hit).toMatchObject({ index: 1, col: 2 });
 	});
 
-	it("a file opened after typing doesn't move the caret; typing again starts from it", () => {
-		const files = [file(0, [], ["save"]), file(1, [], ["save"])];
+	it("a file opened after typing moves the caret to its start: Next goes to its first hit, Previous to its last; typing again starts from it (CAR-298)", () => {
+		const files = [
+			file(0, [], ["save", "save"]),
+			file(1, [], ["nothing"]),
+			file(2, [], ["save", "x save"]),
+		];
 		const { result, rerender } = renderFind({
 			revision: "r1",
 			files,
-			openIndex: 1,
+			openIndex: 0,
 		});
-		search("sav");
-		expect(result.current.caret?.pos.index).toBe(1);
+		search("save");
+		expect(result.current.count).toEqual({ at: 1, of: 4 });
+		// A reviewer's open: the caret sits at file 2's start, unshown, the
+		// count on the hit Next goes to; nothing is stepped to.
+		rerender({ revision: "r1", files, openIndex: 2 });
+		expect(result.current.caret).toMatchObject({
+			pos: { index: 2, line: 2 },
+			shown: false,
+		});
+		expect(result.current.count).toEqual({ at: 3, of: 4 });
+		let hit: ReturnType<typeof result.current.step> = null;
+		act(() => {
+			hit = result.current.step(-1, () => true);
+		});
+		expect(hit).toMatchObject({ index: 2, line: 3 });
+		expect(result.current.count).toEqual({ at: 4, of: 4 });
+
+		// File 1 has none: Previous goes to the last hit before it…
+		rerender({ revision: "r1", files, openIndex: 1 });
+		act(() => {
+			hit = result.current.step(-1);
+		});
+		expect(hit).toMatchObject({ index: 0, line: 3 });
+		// …and Next, after opening it again, to the first after it.
+		rerender({ revision: "r1", files, openIndex: null });
+		rerender({ revision: "r1", files, openIndex: 1 });
+		act(() => {
+			hit = result.current.step(1, () => false);
+		});
+		expect(hit).toMatchObject({ index: 2, line: 2 });
+
+		// Typing again starts from the open file.
 		rerender({ revision: "r1", files, openIndex: 0 });
-		expect(result.current.caret?.pos.index).toBe(1);
-		act(() => findState.setTerm("save"));
+		act(() => findState.setTerm("sav"));
 		expect(result.current.caret?.pos.index).toBe(0);
+	});
+
+	it("a step that opens its hit's file keeps the caret on that hit (CAR-298)", () => {
+		const files = [file(0, [], ["save"]), file(1, [], ["save", "save"])];
+		const { result, rerender } = renderFind({
+			revision: "r1",
+			files,
+			openIndex: 0,
+		});
+		search("save");
+		act(() => {
+			result.current.step(1, () => true);
+		});
+		expect(result.current.caret).toMatchObject({
+			pos: { index: 1, line: 2 },
+			shown: true,
+		});
+		// The page opens the file the step went into.
+		rerender({ revision: "r1", files, openIndex: 1 });
+		act(() => {
+			result.current.step(1);
+		});
+		expect(result.current.caret?.pos).toMatchObject({ index: 1, line: 3 });
+		expect(result.current.count).toEqual({ at: 3, of: 3 });
+		// Previous and Next again: on from the caret, never the file's start.
+		act(() => {
+			result.current.step(-1);
+		});
+		expect(result.current.count).toEqual({ at: 2, of: 3 });
+	});
+
+	it("an opened file's hits that arrive after the open count from its start (CAR-298)", async () => {
+		const files = [
+			file(0, [], ["save"]),
+			file(1, [], ["x"]),
+			file(2, [], ["save"]),
+		];
+		const { result, rerender } = renderFind({
+			revision: "r1",
+			files,
+			openIndex: 0,
+		});
+		search("save");
+		await waitFor(() => expect(batches).toHaveLength(1));
+		// File 1 opened while its hunks are held: the caret is on file 2's hit.
+		rerender({ revision: "r1", files, openIndex: 1 });
+		expect(result.current.caret?.pos.index).toBe(2);
+		expect(result.current.count).toEqual({ at: 2, of: 2 });
+		await act(async () => {
+			batches[0]?.held.release({
+				files: files.map((f) => ({
+					index: f.index,
+					hunks: hunksOf(f, f.index === 1 ? "save here" : "z"),
+				})),
+			});
+		});
+		// Its context line's hit came: the caret is at it, Next goes to it.
+		await waitFor(() => expect(result.current.count).toEqual({ at: 2, of: 3 }));
+		expect(result.current.caret?.pos).toMatchObject({ index: 1, line: 1 });
+		let hit: ReturnType<typeof result.current.step> = null;
+		act(() => {
+			hit = result.current.step(1);
+		});
+		expect(hit).toMatchObject({ index: 1, line: 1 });
 	});
 
 	it("keeps the caret on the same characters when hits arrive before it", async () => {

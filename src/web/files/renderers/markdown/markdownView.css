@@ -1,0 +1,379 @@
+/*
+ * The Rendered view of a Markdown file (MarkdownView.tsx): a gutter for
+ * the boxes, then the block on its bar. Colors from the design tokens
+ * only (docs/design/README.md): green added, red removed, yellow changed.
+ */
+
+.md-row {
+	display: grid;
+	grid-template-columns: 44px minmax(0, 1fr);
+	align-items: start;
+}
+
+/* Side by side (desktop): each column its own gutter; the boxes on the new one. */
+.md-row.md-split {
+	grid-template-columns: 44px minmax(0, 1fr) 44px minmax(0, 1fr);
+}
+
+/*
+ * Side by side on a phone: two equal columns, no gutter. A row's controls
+ * (boxes, comment, bubbles, chips) sit in a slim row of their own above the
+ * pair, across it, so they never take the columns' width.
+ */
+.md-row.md-split.md-narrow {
+	grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+	column-gap: 2px;
+}
+
+.md-gutter {
+	display: flex;
+	flex-direction: column;
+	align-items: center;
+	gap: 4px;
+	padding-top: 6px;
+}
+
+.md-box {
+	display: flex;
+	flex-direction: column;
+	align-items: center;
+}
+
+/* Side by side on a phone: the row's controls, in a line above the pair. */
+.md-controls {
+	grid-column: 1 / -1;
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: 4px 8px;
+	min-width: 0;
+	min-height: 40px;
+	padding: 0 8px;
+}
+
+/* Over the side the controls are for: a removal's on the old, else the new. */
+.md-controls[data-side="old"] {
+	padding-right: calc(50% + 1px);
+}
+
+.md-controls[data-side="new"] {
+	padding-left: calc(50% + 1px);
+}
+
+.md-controls > .md-box {
+	flex-direction: row;
+	gap: 4px;
+}
+
+.md-body {
+	min-width: 0;
+	padding: 4px 12px 4px 12px;
+	border-left: 3px solid transparent;
+}
+
+.md-body.md-added {
+	border-left-color: var(--color-ok);
+	background-color: color-mix(in srgb, var(--color-add) 70%, transparent);
+}
+
+.md-body.md-removed {
+	border-left-color: var(--color-bad);
+	background-color: color-mix(in srgb, var(--color-del) 70%, transparent);
+}
+
+.md-body.md-changed {
+	border-left-color: var(--color-warn);
+}
+
+/* Removed blocks, and the old side struck above the new. */
+.md-content.md-old > * {
+	text-decoration: line-through;
+	text-decoration-color: var(--color-del-ink);
+}
+
+.md-body.md-changed .md-content.md-old {
+	border-left: 2px solid var(--color-del-gutter);
+	padding-left: 8px;
+	margin-bottom: 4px;
+}
+
+.md-body.md-changed .md-content.md-new {
+	border-left: 2px solid var(--color-add-gutter);
+	padding-left: 8px;
+}
+
+.md-content.markdown-body.markdown-body {
+	font-size: 14px;
+}
+
+.md-content.markdown-body.markdown-body > :first-child {
+	margin-top: 4px;
+}
+
+.md-content.markdown-body.markdown-body > :last-child {
+	margin-bottom: 4px;
+}
+
+/*
+ * Long lines, tables and code scroll inside their block, never the page. A
+ * table is a real table in its own scroll box (renderBlocks), so a row's
+ * table can take its whole table's column widths (tableAlign.ts).
+ */
+.md-content.markdown-body.markdown-body :is(pre, .md-table) {
+	max-width: 100%;
+	overflow-x: auto;
+}
+
+.md-content.markdown-body.markdown-body .md-table > table {
+	display: table;
+	width: auto;
+	max-width: none;
+	overflow: visible;
+	margin: 0;
+}
+
+/* A cell wraps between words only: a wide table scrolls, never breaks a word. */
+.md-content.markdown-body.markdown-body :is(th, td) {
+	overflow-wrap: normal;
+	word-break: normal;
+}
+
+.md-content.markdown-body.markdown-body img {
+	max-width: 100%;
+	height: auto;
+}
+
+/* Content's own <details> never hide a block's body (MarkdownView opens them). */
+.md-content summary {
+	cursor: default;
+}
+
+/*
+ * The content's own strikethrough (~~x~~): plain struck text, softer, on no
+ * tint of its own. Only the diff's removed mark below is red, tinted and
+ * struck in red, so an added ~~x~~ never reads as removed words.
+ */
+.md-content :is(del:not(.md-del), s, strike) {
+	color: var(--color-ink-soft);
+	background-color: transparent;
+	text-decoration-line: line-through;
+	text-decoration-color: currentColor;
+	text-decoration-thickness: 1px;
+}
+
+.md-content del.md-del {
+	background-color: var(--color-del-word);
+	color: var(--color-del-ink);
+	border-radius: 3px;
+	text-decoration: line-through;
+	text-decoration-color: var(--color-del-ink);
+	text-decoration-thickness: 2px;
+	box-decoration-break: clone;
+	-webkit-box-decoration-break: clone;
+}
+
+.md-content ins.md-ins {
+	background-color: var(--color-add-word);
+	color: var(--color-add-ink);
+	border-radius: 3px;
+	text-decoration: none;
+	box-decoration-break: clone;
+	-webkit-box-decoration-break: clone;
+}
+
+.md-content pre.md-source {
+	white-space: pre;
+	color: var(--color-code-ink);
+	background-color: var(--color-code);
+}
+
+.md-content li.md-continuation,
+.md-content li.md-nest {
+	list-style: none;
+}
+
+/* A nested item's outer lists: their indent only, no space around them. */
+.md-content.markdown-body.markdown-body ul.md-nest,
+.md-content.markdown-body.markdown-body li.md-nest {
+	margin-top: 0;
+	margin-bottom: 0;
+}
+
+/* A remote image: its URL, cut to the block's width; a click loads it. */
+.md-content button.md-remote-image {
+	display: inline-block;
+	max-width: 100%;
+	min-height: 40px;
+	padding: 0 10px;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+	vertical-align: middle;
+	border: 1px dashed var(--color-line-strong);
+	border-radius: 6px;
+	color: var(--color-muted);
+	background-color: var(--color-band);
+	font-size: 12px;
+	cursor: pointer;
+}
+
+/* A relative image the review can't load: its icon and path, still. */
+.md-content span.md-local-image {
+	display: inline-flex;
+	max-width: 100%;
+	min-height: 40px;
+	align-items: center;
+	gap: 6px;
+	padding: 0 10px;
+	overflow: hidden;
+	white-space: nowrap;
+	vertical-align: middle;
+	border: 1px dashed var(--color-line-strong);
+	border-radius: 6px;
+	color: var(--color-muted);
+	background-color: var(--color-band);
+	font-size: 12px;
+	cursor: default;
+}
+
+.md-content span.md-local-image svg {
+	flex-shrink: 0;
+}
+
+/* A placeholder's alt text, then its path or URL, softer. */
+.md-content :is(.md-local-image, .md-remote-image) .md-image-alt {
+	color: var(--color-ink);
+	margin-right: 6px;
+}
+
+/*
+ * A strike or a tint doesn't show on a picture: a removed image (a removed
+ * word mark's, or a removed or struck block's) is framed in red, a picture
+ * faded; an added one (an added word mark's, or an added or new
+ * block's) framed in green. Placeholders too, never faded: their alt and
+ * path stay readable.
+ */
+.md-content:where(.md-old) :is(img, .md-local-image, .md-remote-image),
+.md-content :where(del.md-del) :is(img, .md-local-image, .md-remote-image) {
+	outline: 2px solid var(--color-bad);
+	outline-offset: 1px;
+	margin: 3px 4px 3px 3px;
+}
+
+.md-content:where(.md-old) :is(img),
+.md-content :where(del.md-del) :is(img) {
+	opacity: 0.6;
+}
+
+.md-content:where(.md-new) :is(img, .md-local-image, .md-remote-image),
+.md-content :where(ins.md-ins) :is(img, .md-local-image, .md-remote-image) {
+	outline: 2px solid var(--color-ok);
+	outline-offset: 1px;
+	margin: 3px 4px 3px 3px;
+}
+
+.md-content button.md-remote-image:hover {
+	color: var(--color-ink);
+}
+
+.md-fold-row {
+	padding: 4px 12px 4px 44px;
+}
+
+.md-fold {
+	display: flex;
+	width: 100%;
+	min-height: 40px;
+	align-items: center;
+	gap: 8px;
+	padding: 0 12px;
+	border-radius: 6px;
+	background-color: var(--color-hunk);
+	color: var(--color-muted);
+	font-size: 12.5px;
+	text-align: left;
+	overflow: hidden;
+	white-space: nowrap;
+}
+
+.md-fold:hover {
+	color: var(--color-ink);
+}
+
+.md-fold:focus-visible {
+	outline: 2px solid var(--color-accent);
+}
+
+/* A block's threads and comments being written: under it, across the row. */
+.md-threads {
+	grid-column: 1 / -1;
+	min-width: 0;
+	padding: 4px 12px 8px 44px;
+}
+
+/* The find's current hit is in this block. */
+.md-row[data-find-current] > .md-body {
+	outline: 2px solid var(--color-accent);
+	outline-offset: -2px;
+}
+
+/*
+ * On touch the box and the cross-off are 40px targets each, side by side
+ * (ClusterControls): the gutter holds both, never over the block.
+ */
+@media (pointer: coarse) {
+	.md-row {
+		grid-template-columns: 84px minmax(0, 1fr);
+	}
+
+	.md-row.md-split:not(.md-narrow) {
+		grid-template-columns: 84px minmax(0, 1fr) 84px minmax(0, 1fr);
+	}
+
+	/* The targets reach 10px past their glyphs: room for that in the row. */
+	.md-gutter {
+		gap: 20px;
+		padding: 10px 0;
+	}
+
+	/*
+	 * The comment button is its whole 40px target: it abuts the box's
+	 * target above it (and a bubble's below), no slack between them, so a
+	 * short block (a table's header row) grows only to the targets' 80px.
+	 */
+	.md-gutter > [data-testid="md-comment"] {
+		margin-top: -10px;
+		margin-bottom: -10px;
+	}
+
+	/* The block's bar and tint run the row's height: no empty band under it. */
+	.md-row > .md-body {
+		align-self: stretch;
+	}
+
+	.md-fold-row {
+		padding-left: 84px;
+	}
+
+	/* At phone width the cards take the row's width, not the gutter's. */
+	.md-threads {
+		padding-left: 12px;
+	}
+}
+
+/* Side by side on a phone: the columns' bodies and the threads take the width. */
+.md-row.md-narrow > .md-body {
+	padding: 4px 6px;
+	align-self: stretch;
+}
+
+.md-row.md-narrow > .md-threads {
+	padding-left: 12px;
+}
+
+/* No gutter to clear: the fold runs the document's width, across both columns. */
+.md-fold-row.md-narrow {
+	grid-column: 1 / -1;
+	padding-left: 6px;
+	padding-right: 6px;
+}

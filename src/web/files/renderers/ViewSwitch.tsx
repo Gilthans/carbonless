@@ -1,11 +1,14 @@
 import {
+	AlertFillIcon,
 	FileBinaryIcon,
 	FileCodeIcon,
+	FileIcon,
 	FileMediaIcon,
 	type Icon,
 	MirrorIcon,
 	StackIcon,
 } from "@primer/octicons-react";
+import { useId } from "react";
 import type { FileSummary } from "../../../shared/types";
 import { Tooltip } from "../../Tooltip";
 import type { CompareMode } from "./image/ImageCompare";
@@ -44,6 +47,12 @@ const IMAGE: ViewOption = {
 	label: "Image",
 	icon: FileMediaIcon,
 };
+const RENDERED: ViewOption = {
+	id: "markdown",
+	renderer: "markdown",
+	label: "Rendered",
+	icon: FileIcon,
+};
 const OTHERS: Record<"text" | "binary", ViewOption> = {
 	text: { id: "text", renderer: "text", label: "Text", icon: FileCodeIcon },
 	binary: {
@@ -57,7 +66,8 @@ const OTHERS: Record<"text" | "binary", ViewOption> = {
 /**
  * The view switch's buttons for `file`: Image first (as Slider and Fade
  * when `modes`: two versions in the unified view; else one Image button),
- * then Text, then Binary, each only where `rendererChoices` offers it.
+ * or Rendered (a Markdown file), then Text, then Binary, each only where
+ * `rendererChoices` offers it.
  * None for a file with one renderer: it gets no switch at all.
  */
 export function viewOptions(file: RendererFile, modes: boolean): ViewOption[] {
@@ -65,6 +75,7 @@ export function viewOptions(file: RendererFile, modes: boolean): ViewOption[] {
 	if (choices.length < 2) return [];
 	const out: ViewOption[] = [];
 	if (choices.includes("image")) out.push(...(modes ? IMAGE_MODES : [IMAGE]));
+	if (choices.includes("markdown")) out.push(RENDERED);
 	for (const id of ["text", "binary"] as const)
 		if (choices.includes(id)) out.push(OTHERS[id]);
 	return out;
@@ -109,7 +120,13 @@ export function ViewSwitch(props: {
 	options: readonly ViewOption[];
 	pressed: ViewId;
 	onPick: (option: ViewOption) => void;
+	/**
+	 * Why a view isn't shown though it was the file's (Rendered fell back
+	 * to Text by itself): a warning mark on its button, said in its tooltip.
+	 */
+	warn?: Partial<Record<ViewId, string>>;
 }) {
+	const warnId = useId();
 	if (props.options.length === 0) return null;
 	return (
 		// biome-ignore lint/a11y/useSemanticElements: a named group of toggle buttons; a fieldset is for form fields.
@@ -121,13 +138,21 @@ export function ViewSwitch(props: {
 		>
 			{props.options.map((option) => {
 				const ViewIcon = option.icon;
+				const warning = props.warn?.[option.id];
 				return (
-					<Tooltip key={option.id} content={option.label} describe={false}>
+					<Tooltip
+						key={option.id}
+						content={warning ? `${option.label}: ${warning}` : option.label}
+						describe={false}
+					>
 						{(trigger) => (
 							<button
 								type="button"
 								{...trigger}
 								aria-label={option.label}
+								aria-describedby={
+									warning ? `${warnId}-${option.id}` : undefined
+								}
 								aria-pressed={props.pressed === option.id}
 								// The shown one again does nothing (no pick is kept).
 								onClick={() => {
@@ -135,7 +160,19 @@ export function ViewSwitch(props: {
 								}}
 								className={`${ICON_BUTTON} not-first:border-line-strong not-first:border-l`}
 							>
-								<ViewIcon aria-hidden size={20} />
+								<span className="relative flex">
+									<ViewIcon aria-hidden size={20} />
+									{warning && (
+										<span
+											id={`${warnId}-${option.id}`}
+											data-testid="view-warn"
+											className="absolute -top-1.5 -right-2 flex rounded-full bg-band text-warn"
+										>
+											<AlertFillIcon aria-hidden size={12} />
+											<span className="sr-only">{warning}</span>
+										</span>
+									)}
+								</span>
 							</button>
 						)}
 					</Tooltip>

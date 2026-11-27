@@ -1987,6 +1987,7 @@ export function FilesPage() {
 																file={file}
 																revision={data.revision}
 																unit={unit}
+																files={data.files}
 																expanded={open === keyOf(file.index)}
 																onExpandedChange={(expanded, auto) =>
 																	toggleFile(file.index, expanded, auto)

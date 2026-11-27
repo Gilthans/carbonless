@@ -29,12 +29,18 @@ import {
 	spanOfRange,
 } from "./codeSpan";
 import { contextRanges } from "./contextRanges";
-import { DiffBody, type DiffThreads } from "./DiffBody";
+import { agentCommentOn, DiffBody, type DiffThreads } from "./DiffBody";
 import { GoneFile } from "./FileDiff";
 import { FileTree } from "./FileTree";
 import { getPicks, setPicks } from "./linePicks";
 import { ProgressBar } from "./ProgressBar";
 import type { KindEntry } from "./since";
+import {
+	lineKey,
+	onSinceRows,
+	sinceEarlier,
+	sinceLeft,
+} from "./threadPlacement";
 
 vi.mock("./highlight", () => ({
 	languageFor: () => null,
@@ -576,6 +582,61 @@ describe("the since view's removed rows: GitHub's line in every layout (CAR-217)
 		expect(spanOfRange(whole(leftCell(4), leftCell(4)), "h")?.noLine).toBe(
 			"unknown",
 		);
+	});
+});
+
+describe("Ask agent's Comment on lines only the compared patch set had (CAR-233)", () => {
+	it("is in GitHub's diff on that patch set's commit: the since view's removed rows, not the head's lines", () => {
+		const PS1 = "e".repeat(40);
+		const hunks: FileHunks = {
+			...sinceHunks,
+			hunks: sinceHunks.hunks.map((h) => ({
+				...h,
+				lines: h.lines.map((l) =>
+					l.kind !== "del"
+						? l
+						: l.oldNo === 2
+							? { ...l, baseNo: 7 }
+							: { ...l, baseNo: null, psNo: 14 },
+				),
+			})),
+		};
+		const clusters = [cluster("k1", "unreviewed")];
+		const left = sinceLeft(clusters, hunks.hunks);
+		const early = sinceEarlier(PS1, hunks.hunks);
+		const keys = new Set<string>();
+		for (const h of hunks.hunks) {
+			for (const l of h.lines) {
+				for (const side of ["LEFT", "RIGHT"] as const) {
+					const k = lineKey(side, l);
+					if (k) keys.add(k);
+				}
+			}
+		}
+		// As DiffBody asks it in the since view.
+		const context = agentCommentOn(
+			{
+				path: "src/a.ts",
+				commit: PS1,
+				subject: "line",
+				earlier: true,
+				startSide: "RIGHT",
+				startLine: 14,
+				side: "RIGHT",
+				line: 14,
+			},
+			{
+				rowsOf: (range) => onSinceRows(range, left, early),
+				hunkKeys: keys,
+				offKeys: new Set(),
+				head: "h".repeat(40),
+				file: { binary: false, submodule: false },
+				headUnsure: false,
+				readOnly: false,
+			},
+		);
+		// PS1's line 14 is the removed row old 4 here: in the diff.
+		expect(context.inDiff).toBe(true);
 	});
 });
 

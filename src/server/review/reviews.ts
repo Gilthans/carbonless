@@ -845,10 +845,26 @@ export interface StoredReview {
 
 const META = /^refs\/crb\/reviews\/([0-9a-hjkmnp-tv-z]{26})\/meta$/;
 
+/**
+ * The meta ref's review-created event: the earliest by (ts, id) when a merge
+ * of two copies holds more than one, so every reader picks the same one
+ * whatever order it read the commits in.
+ */
+export function reviewCreated(
+	events: readonly CrbEvent[],
+): ReviewCreatedEvent | undefined {
+	let first: ReviewCreatedEvent | undefined;
+	for (const e of events) {
+		if (e.type !== "review-created") continue;
+		if (!first || e.ts < first.ts || (e.ts === first.ts && e.id < first.id)) {
+			first = e;
+		}
+	}
+	return first;
+}
+
 function storedReview(id: string, events: CrbEvent[]): StoredReview | null {
-	const created = events.find(
-		(e): e is ReviewCreatedEvent => e.type === "review-created",
-	);
+	const created = reviewCreated(events);
 	if (!created) return null;
 	const { asOf, head } = created.details ?? {};
 	return {

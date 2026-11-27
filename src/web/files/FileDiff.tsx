@@ -75,8 +75,18 @@ import {
 	WhitespaceLeftOut,
 	whitespaceLeftOutLabel,
 } from "./ProgressBar";
-import { rendererChoices, rendererPicks, resolveRenderer } from "./renderers";
+import {
+	rendererChoices,
+	rendererFileIn,
+	rendererPicks,
+	resolveRenderer,
+} from "./renderers";
 import { ImageView } from "./renderers/image/ImageView";
+import type { ImageFile } from "./renderers/markdown/images";
+import {
+	documentContextQuery,
+	MarkdownView,
+} from "./renderers/markdown/MarkdownView";
 import {
 	imageModesOf,
 	pressedView,
@@ -671,6 +681,8 @@ export function FileDiff(props: {
 	 * later restart the wait (UNDO_ARM_MS from then).
 	 */
 	ignoreMarksUntil?: number;
+	/** The review's files: a Markdown file's relative images load from them. */
+	files?: readonly ImageFile[];
 }) {
 	const { file, revision, readOnly } = props;
 	const [ownExpanded, setOwnExpanded] = useState(false);
@@ -690,16 +702,40 @@ export function FileDiff(props: {
 	// How the body shows the file (renderers/): the reviewer's pick for
 	// its path, else the renderer that claims it. Only the view: never a
 	// review state.
-	const resolved = resolveRenderer(file, rendererPicks.use(file.path));
+	// In the since view, Rendered goes by the since answer's flag.
+	const viewed = rendererFileIn(
+		file,
+		props.since === undefined ? undefined : props.sinceInfo,
+	);
+	const resolved = resolveRenderer(viewed, rendererPicks.use(file.path));
+	// A line target (a find's step, a thread link) shows the file as Text
+	// for the view: Image has no lines. The Rendered view takes a find's
+	// step on its block itself, and asks for Text (`onShowText`) only for a
+	// hit its rendered text doesn't show (a link's URL); a thread link
+	// still lands on its exact line in Text, as does a document Rendered
+	// can't show whole.
 	const asText = useLineTargetText(
-		resolved === "image" && rendererChoices(file).includes("text"),
-		props.find,
+		(resolved === "image" || resolved === "markdown") &&
+			rendererChoices(viewed).includes("text"),
+		resolved === "markdown" ? undefined : props.find,
 		props.landing,
 	);
 	const renderer = asText.on ? "text" : resolved;
+	// The Rendered view's find steps: the one this file was mounted with
+	// (a new snapshot's remount) and the one it sent to Text are spent, so
+	// Rendered picked again after that switch never bounces back; a fresh
+	// step (into a file it opens, too) is not.
+	const findStep = props.find?.current ? props.find.stepSeq : 0;
+	// Rendered fell back to Text by itself (it can't show this document
+	// whole): its button says so until another pick.
+	const [renderFailed, setRenderFailed] = useState(false);
+	const [spentFindStep, setSpentFindStep] = useState(findStep);
 	// The image renderer reads no lines: its review rows and threads are
-	// DiffBody's, with the lines hidden.
-	const linesHidden = renderer === "image";
+	// DiffBody's, with the lines hidden. The Markdown one shows the lines'
+	// clusters on its blocks, and leaves the file's rows and threads to
+	// DiffBody the same way.
+	const markdown = renderer === "markdown";
+	const linesHidden = renderer === "image" || markdown;
 	// The image view's layout follows Settings' "Side by side", as code does.
 	const sideBySideOn = sideBySide.use();
 	// The view switch (renderers/ViewSwitch): in the image toolbar, or a
@@ -708,6 +744,7 @@ export function FileDiff(props: {
 	const mode = imageMode.use();
 	const pickView = (option: ViewOption) => {
 		asText.clear();
+		setRenderFailed(false);
 		// Kept per path only when it differs from what the file shows
 		// without a line target's Text: Image again after one writes nothing.
 		if (option.renderer !== resolved)
@@ -716,21 +753,37 @@ export function FileDiff(props: {
 	};
 	const viewSwitch = (modes: boolean) => (
 		<ViewSwitch
-			options={viewOptions(file, modes)}
+			options={viewOptions(viewed, modes)}
 			pressed={pressedView(renderer, mode, modes)}
 			onPick={pickView}
+			warn={
+				renderFailed && renderer === "text"
+					? { markdown: "Couldn't render this file" }
+					: undefined
+			}
 		/>
 	);
 	// Whether Image compares two versions on one stage (Slider and Fade
 	// apply): decided once from the file's facts, so the switch keeps its
 	// shape in every view and state (principle 8: nothing moves).
 	const imageModes = imageModesOf(file, sideBySideOn);
-	const switchRow = !linesHidden && viewOptions(file, imageModes).length > 0;
+	const switchRow = !linesHidden && viewOptions(viewed, imageModes).length > 0;
 	const hunks = useQuery({
 		...hunksQuery(revision, file.index, props.since),
-		enabled: expanded && !linesHidden,
+		enabled: expanded && renderer !== "image",
 	});
-	const hunksPending = !linesHidden && hunks.isPending;
+	// The Rendered view reads the same hunks, then the file's unchanged
+	// lines (its document): its boxes arriving restart the wait for marks as
+	// lines do.
+	const documentLength = hunks.data?.newLineCount ?? 0;
+	const documentLines = useQuery({
+		...documentContextQuery(revision, file.index, documentLength, props.since),
+		enabled: expanded && markdown && hunks.isSuccess && documentLength > 0,
+	});
+	const hunksPending =
+		renderer !== "image" &&
+		(hunks.isPending ||
+			(markdown && documentLength > 0 && documentLines.isPending));
 	const hunkData = linesHidden ? null : (hunks.data ?? null);
 	// Opened by a move-on, its lines (or what shows instead) arrive under the
 	// pointer once read: just as unseen, so they restart the wait for marks.
@@ -931,25 +984,44 @@ export function FileDiff(props: {
 		props.since === undefined
 			? undefined
 			: sinceSession?.patchsets.find((p) => p.number === props.since)?.head;
+	// The Rendered view shows every line (its document: the hunks and the
+	// file's unchanged lines), so its line threads are placed on them, each
+	// shown under the block holding its line (MarkdownView); only what no
+	// line of either side is stays in the header. Until the document is in,
+	// none is placed (the view shows its skeleton).
+	const documentIn =
+		markdown && hunks.data && (documentLength === 0 || documentLines.data)
+			? hunks.data
+			: null;
+	const placedHunks = markdown ? documentIn : hunkData;
+	// Its document can't be read (the view shows the error): its line
+	// threads go to the header, never dropped while it says so.
+	const documentFailed = markdown && (hunks.isError || documentLines.isError);
+	const placedContext =
+		markdown && documentIn ? (documentLines.data ?? []) : [];
+	const placedNoLines =
+		file.binary ||
+		file.submodule ||
+		(linesHidden && (!markdown || documentFailed));
 	const filePlacement = props.threads
 		? placeThreads({
 				threads: props.threads.threads,
 				path: file.path,
 				snapshotHead: props.threads.snapshotHead,
-				hunks: hunkData,
-				loadedContext: [],
-				noLines: file.binary || file.submodule || linesHidden,
+				hunks: placedHunks,
+				loadedContext: placedContext,
+				noLines: placedNoLines,
 				placements: props.threads.placements,
 				// The since view: as its DiffBody places them (LEFT through
 				// the full diff), so the header holds what no row can.
 				...(props.since === undefined
 					? {}
 					: {
-							sinceLeft: sinceLeft(file.clusters, hunkData?.hunks),
+							sinceLeft: sinceLeft(file.clusters, placedHunks?.hunks),
 							...(earlierHead === undefined
 								? {}
 								: {
-										sinceEarlier: sinceEarlier(earlierHead, hunkData?.hunks),
+										sinceEarlier: sinceEarlier(earlierHead, placedHunks?.hunks),
 										earlierPending: props.threads.earlierPending,
 									}),
 						}),
@@ -1066,18 +1138,19 @@ export function FileDiff(props: {
 				threads: agentPlaceables,
 				path: file.path,
 				snapshotHead,
-				hunks: hunkData,
-				loadedContext: [],
-				noLines: file.binary || file.submodule || linesHidden,
+				// As the review threads: a Rendered file's on its document.
+				hunks: placedHunks,
+				loadedContext: placedContext,
+				noLines: placedNoLines,
 				placements: agentPlacements,
 				...(props.since === undefined
 					? {}
 					: {
-							sinceLeft: sinceLeft(file.clusters, hunkData?.hunks),
+							sinceLeft: sinceLeft(file.clusters, placedHunks?.hunks),
 							...(earlierHead === undefined
 								? {}
 								: {
-										sinceEarlier: sinceEarlier(earlierHead, hunkData?.hunks),
+										sinceEarlier: sinceEarlier(earlierHead, placedHunks?.hunks),
 									}),
 						}),
 			})
@@ -1136,6 +1209,7 @@ export function FileDiff(props: {
 	// for a find step or a thread link.
 	const onHiddenLine = (id: string) =>
 		linesHidden &&
+		!markdown &&
 		asText.textable &&
 		(header.some((h) => h.reason === "unplaced" && h.thread.id === id) ||
 			agentHeader.some(
@@ -1318,7 +1392,8 @@ export function FileDiff(props: {
 		),
 	};
 
-	// Today's body (text, binary), or with its lines hidden (an image).
+	// Today's body (text, binary), or with its lines hidden (an image, a
+	// rendered Markdown file).
 	const body = (linesHidden?: true) => (
 		<DiffBody
 			lead={lead}
@@ -1336,6 +1411,7 @@ export function FileDiff(props: {
 			sinceMarks={props.sinceMarks}
 			readOnly={readOnly}
 			linesHidden={linesHidden}
+			linesElsewhere={linesHidden && markdown}
 		/>
 	);
 
@@ -1518,7 +1594,39 @@ export function FileDiff(props: {
 				</div>
 			)}
 			{expanded &&
-				(linesHidden ? (
+				(markdown ? (
+					<MarkdownView
+						file={file}
+						revision={revision}
+						sideBySide={sideBySideOn}
+						readOnly={readOnly}
+						onToggle={toggle}
+						onCrossOff={crossOff}
+						threads={props.threads}
+						placement={filePlacement}
+						headSure={props.headSure}
+						find={props.find}
+						landing={props.landing}
+						view={viewSwitch(false)}
+						head={body(true)}
+						onShowText={() => {
+							// Rendered can't show it whole: Text, and Rendered says why.
+							setRenderFailed(true);
+							asText.show();
+						}}
+						agentPlacement={agentPlaced}
+						findSpent={findStep === spentFindStep}
+						onFindText={() => {
+							setSpentFindStep(findStep);
+							asText.show();
+						}}
+						from={props.since}
+						kinds={props.sinceInfo?.kinds}
+						onSinceMark={sinceMark}
+						sinceMarks={props.sinceMarks}
+						files={props.files}
+					/>
+				) : linesHidden ? (
 					<>
 						<ImageView
 							file={file}

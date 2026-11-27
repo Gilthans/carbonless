@@ -25,6 +25,10 @@ import type {
 	SinceMark,
 } from "../../shared/types";
 import { agentThreadsQuery } from "../agent/api";
+import {
+	openAgentComposer,
+	resetAgentComposers,
+} from "../agent/askAgentAction";
 import { AgentPlacingProvider } from "../agent/placeable";
 import { reviewQuery, sessionQuery } from "../api";
 import {
@@ -32,6 +36,7 @@ import {
 	resetShowInvisibles,
 	setShowInvisibles,
 } from "../code/Invisibles";
+import { openComposer, resetComposers } from "../threads/newThreads";
 import { ignoreWhitespace, sideBySide } from "../viewSettings";
 import { contextRanges } from "./contextRanges";
 import type { DiffFind, DiffThreads } from "./DiffBody";
@@ -1843,6 +1848,42 @@ describe("FileDiff", () => {
 		await waitFor(() => expect(posts()).toHaveLength(1));
 	});
 
+	it("a Rendered Markdown file: marks wait a moment after its document arrives late", async () => {
+		const md = file([cluster("k1")], {
+			path: "README.md",
+			markdownBlocks: true,
+		});
+		const unchanged = Array.from({ length: 50 }, (_, i) => i + 1)
+			.filter((n) => n !== 5)
+			.map((n) => ctx(n, n));
+		const doc = heldJson();
+		const { posts, user } = setup(
+			md,
+			(url) =>
+				url.pathname === "/api/files/0/context"
+					? doc.response
+					: { status: 200, body: view(md) },
+			hunks,
+			"clusters",
+			{ ignoreMarksUntil: 1000 + UNDO_ARM_MS },
+		);
+		await user.click(screen.getByRole("button", { name: "Expand file" }));
+		expect(shown()).toBe("markdown");
+		// The page's wait is over before the document is in.
+		tick(2 * UNDO_ARM_MS);
+		doc.release(unchanged);
+		const box = await screen.findByRole("checkbox", {
+			name: "Mark cluster reviewed",
+		});
+		// It showed up under the pointer just now: not marked.
+		await user.click(box);
+		expect(posts()).toHaveLength(0);
+		expect(box).not.toBeChecked();
+		tick();
+		await user.click(box);
+		await waitFor(() => expect(posts()).toHaveLength(1));
+	});
+
 	it("can't reset a file that isn't finished: it marks the rest", () => {
 		setup(file([cluster("k1", { state: "reviewed" }), cluster("k2")]));
 		expect(
@@ -3030,6 +3071,61 @@ describe("FileDiff: the renderer seam", () => {
 		expect(hunkReads(paths)).toEqual([]);
 	});
 
+	it("a Rendered Markdown file: a line thread shows under its block, one on no line stays in the file bubble, never dropped", async () => {
+		const head = "h".repeat(40);
+		const md = file([cluster("k1")], {
+			path: "README.md",
+			markdownBlocks: true,
+		});
+		const on = (id: string, side: "LEFT" | "RIGHT", line: number) => {
+			const t = svgLineThread(head, id);
+			return {
+				...t,
+				path: "README.md",
+				line,
+				anchor: {
+					...(t.anchor as NonNullable<typeof t.anchor>),
+					path: "README.md",
+					side,
+					line,
+					startSide: side,
+					startLine: line,
+				},
+			} as typeof t;
+		};
+		const unchanged = Array.from({ length: 50 }, (_, i) => i + 1)
+			.filter((n) => n !== 5)
+			.map((n) => ctx(n, n));
+		const { user } = setup(
+			md,
+			(url) =>
+				url.pathname === "/api/files/0/context"
+					? { status: 200, body: unchanged }
+					: { status: 200, body: view(md) },
+			hunks,
+			"clusters",
+			{
+				threads: {
+					readId: "r",
+					snapshotHead: head,
+					threads: [on("T1", "RIGHT", 5), on("T2", "LEFT", 999)],
+				},
+			},
+		);
+		await user.click(screen.getByRole("button", { name: "Expand file" }));
+		const doc = await screen.findByTestId("md-doc");
+		expect(
+			within(doc).getByRole("button", { name: "1 comment on this block" }),
+		).toBeInTheDocument();
+		// The line no row is: in the file's bubble, flagged.
+		expect(
+			screen.getByRole("button", {
+				name: /^1 comment on this file.*line not in this diff/,
+			}),
+		).toBeInTheDocument();
+		expect(within(doc).getAllByTestId("thread-bubble")).toHaveLength(1);
+	});
+
 	it("since view, lines hidden: an SVG with nothing left to read says so, never an empty table", async () => {
 		const svg = file(
 			[
@@ -3338,6 +3434,268 @@ describe("FileDiff: review in the image view", () => {
 		// A later step switches again.
 		update({ find: stepped(5, 2) });
 		expect(shown()).toBe("text");
+	});
+
+	it("a Rendered Markdown file: a step into it (opened by the step) onto a link's URL shows Text once; Rendered picked again stays; a later step switches again", async () => {
+		const LINK = "see [docs](https://example.com/guide)";
+		const linked: FileHunks = {
+			...hunks,
+			hunks: hunks.hunks.map((h) => ({
+				...h,
+				lines: h.lines.map((l) =>
+					l.kind === "add" ? { ...l, text: LINK } : l,
+				),
+			})),
+		};
+		const unchanged = Array.from({ length: 50 }, (_, i) => i + 1)
+			.filter((n) => n !== 5)
+			.map((n) => ctx(n, n));
+		const md = file([cluster("k1")], {
+			path: "README.md",
+			markdownBlocks: true,
+		});
+		const onUrl = (stepSeq: number): DiffFind => {
+			const from = LINK.indexOf("example");
+			return {
+				marksOf: (side, n) =>
+					side === "RIGHT" && n === 5
+						? [{ from, to: from + 7, current: true }]
+						: [],
+				current: { old: false, line: 5 },
+				shown: true,
+				stepSeq,
+			};
+		};
+		Element.prototype.scrollIntoView = vi.fn();
+		const { user, update } = setup(
+			md,
+			(url) =>
+				url.pathname === "/api/files/0/context"
+					? { status: 200, body: unchanged }
+					: { status: 200, body: view(md) },
+			linked,
+		);
+		// The page steps into the closed file and opens it at once.
+		update({ find: onUrl(1) });
+		await user.click(screen.getByRole("button", { name: "Expand file" }));
+		await waitFor(() => expect(shown()).toBe("text"));
+		expect(rendererPicks.get("README.md")).toBeUndefined();
+		// Rendered again: that step is spent, it stays.
+		await pick(user, "Rendered");
+		expect(await screen.findByTestId("md-doc")).toBeInTheDocument();
+		await act(async () => {
+			await new Promise((r) => setTimeout(r, 0));
+		});
+		expect(shown()).toBe("markdown");
+		// A later step onto the URL: Text again.
+		update({ find: onUrl(2) });
+		await waitFor(() => expect(shown()).toBe("text"));
+	});
+
+	it("a Rendered Markdown file: an agent thread on a line shows under its block only, never also in the header", async () => {
+		const head = "h".repeat(40);
+		const md = file([cluster("k1")], {
+			path: "README.md",
+			markdownBlocks: true,
+		});
+		const unchanged = Array.from({ length: 50 }, (_, i) => i + 1)
+			.filter((n) => n !== 5)
+			.map((n) => ctx(n, n));
+		const { user, queryClient } = setup(
+			md,
+			(url) =>
+				url.pathname === "/api/files/0/context"
+					? { status: 200, body: unchanged }
+					: { status: 200, body: view(md) },
+			hunks,
+			"clusters",
+			{ threads: { readId: "r", snapshotHead: head, threads: [] } },
+		);
+		await act(async () => {
+			queryClient.setQueryData(sessionQuery.queryKey, {
+				snapshotHead: head,
+			} as SessionInfo);
+			queryClient.setQueryData(agentThreadsQuery.queryKey, {
+				threads: [
+					{
+						id: "A5",
+						anchor: {
+							subject: "line",
+							path: "README.md",
+							commit: head,
+							side: "RIGHT",
+							line: 5,
+							startSide: "RIGHT",
+							startLine: 5,
+						},
+						openedBy: "human",
+						at: "2026-11-07T10:00:00Z",
+						messages: [
+							{
+								id: "m1",
+								by: "human",
+								at: "2026-11-07T10:00:00Z",
+								text: "Why?",
+							},
+						],
+						resolved: false,
+						waiting: false,
+						unread: false,
+					},
+				],
+			});
+			await new Promise((r) => setTimeout(r, 0));
+		});
+		await user.click(screen.getByRole("button", { name: "Expand file" }));
+		const doc = await screen.findByTestId("md-doc");
+		await within(doc).findByTestId("agent-bubble");
+		expect(screen.getAllByTestId("agent-bubble")).toHaveLength(1);
+	});
+
+	it("Rendered falling back to Text by itself marks its button, said in its description", async () => {
+		const md = file([cluster("k1")], {
+			path: "README.md",
+			markdownBlocks: true,
+		});
+		// A document with a line missing: Rendered can't show it whole.
+		const holey = Array.from({ length: 50 }, (_, i) => i + 1)
+			.filter((n) => n !== 5 && n !== 30)
+			.map((n) => ctx(n, n));
+		const { user } = setup(
+			md,
+			(url) =>
+				url.pathname === "/api/files/0/context"
+					? { status: 200, body: holey }
+					: { status: 200, body: view(md) },
+			hunks,
+		);
+		await user.click(screen.getByRole("button", { name: "Expand file" }));
+		await waitFor(() => expect(shown()).toBe("text"));
+		const rendered = () =>
+			within(viewSwitch() as HTMLElement).getByRole("button", {
+				name: "Rendered",
+			});
+		expect(rendered()).toHaveAccessibleDescription("Couldn't render this file");
+		expect(screen.getByTestId("view-warn")).toBeInTheDocument();
+		// Rendered again: it tries, and says so again.
+		await pick(user, "Rendered");
+		await waitFor(() => expect(shown()).toBe("text"));
+		expect(screen.getByTestId("view-warn")).toBeInTheDocument();
+	});
+
+	it("Text picked by hand on a Markdown file shows no fallback mark", async () => {
+		const md = file([cluster("k1")], {
+			path: "README.md",
+			markdownBlocks: true,
+		});
+		const unchanged = Array.from({ length: 50 }, (_, i) => i + 1)
+			.filter((n) => n !== 5)
+			.map((n) => ctx(n, n));
+		const { user } = setup(
+			md,
+			(url) =>
+				url.pathname === "/api/files/0/context"
+					? { status: 200, body: unchanged }
+					: { status: 200, body: view(md) },
+			hunks,
+		);
+		await user.click(screen.getByRole("button", { name: "Expand file" }));
+		await screen.findByTestId("md-doc");
+		await pick(user, "Text");
+		expect(shown()).toBe("text");
+		expect(screen.queryByTestId("view-warn")).toBeNull();
+	});
+
+	describe("a Rendered Markdown file's line comments and questions being written", () => {
+		const head = "h".repeat(40);
+		const span = {
+			path: "README.md",
+			commit: head,
+			subject: "line" as const,
+			startSide: "RIGHT" as const,
+			startLine: 5,
+			side: "RIGHT" as const,
+			line: 5,
+		};
+		const md = file([cluster("k1")], {
+			path: "README.md",
+			markdownBlocks: true,
+		});
+		const unchanged = Array.from({ length: 50 }, (_, i) => i + 1)
+			.filter((n) => n !== 5)
+			.map((n) => ctx(n, n));
+		afterEach(() => {
+			resetComposers();
+			resetAgentComposers();
+		});
+		const open = (context: Result) => {
+			openComposer(span);
+			openAgentComposer(span);
+			return setup(
+				md,
+				(url) =>
+					url.pathname === "/api/files/0/context"
+						? context
+						: { status: 200, body: view(md) },
+				hunks,
+				"clusters",
+				{ threads: { readId: "r", snapshotHead: head, threads: [] } },
+			);
+		};
+
+		it("show once each, under their block", async () => {
+			const { user } = open({ status: 200, body: unchanged });
+			await user.click(screen.getByRole("button", { name: "Expand file" }));
+			const doc = await screen.findByTestId("md-doc");
+			expect(screen.getAllByTestId("new-thread")).toHaveLength(1);
+			expect(screen.getAllByTestId("agent-composer")).toHaveLength(1);
+			expect(within(doc).getByTestId("new-thread")).toBeInTheDocument();
+			expect(within(doc).getByTestId("agent-composer")).toBeInTheDocument();
+		});
+
+		it("the document can't be read: they show beside its error, once each, never nowhere", async () => {
+			const { user } = open({ status: 500, body: { error: "boom" } });
+			await user.click(screen.getByRole("button", { name: "Expand file" }));
+			await screen.findByRole("alert", undefined, { timeout: 5000 });
+			expect(screen.queryByTestId("md-doc")).toBeNull();
+			expect(screen.getAllByTestId("new-thread")).toHaveLength(1);
+			expect(screen.getAllByTestId("agent-composer")).toHaveLength(1);
+		});
+	});
+
+	it("a Rendered Markdown file whose document can't be read: its line threads stay in the file bubble", async () => {
+		const head = "h".repeat(40);
+		const md = file([cluster("k1")], {
+			path: "README.md",
+			markdownBlocks: true,
+		});
+		const t = svgLineThread(head);
+		const thread = {
+			...t,
+			path: "README.md",
+			anchor: {
+				...(t.anchor as NonNullable<typeof t.anchor>),
+				path: "README.md",
+			},
+		} as typeof t;
+		const { user } = setup(
+			md,
+			(url) =>
+				url.pathname === "/api/files/0/context"
+					? { status: 500, body: { error: "boom" } }
+					: { status: 200, body: view(md) },
+			hunks,
+			"clusters",
+			{ threads: { readId: "r", snapshotHead: head, threads: [thread] } },
+		);
+		await user.click(screen.getByRole("button", { name: "Expand file" }));
+		expect(
+			await screen.findByRole(
+				"button",
+				{ name: /^1 comment on this file.*line not in this diff/ },
+				{ timeout: 5000 },
+			),
+		).toBeInTheDocument();
 	});
 
 	it("a thread link to an SVG line in Image view shows it as Text for the view, not stored", async () => {

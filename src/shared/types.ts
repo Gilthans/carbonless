@@ -74,7 +74,8 @@ export interface Cluster {
 	 */
 	whitespaceOnly?: true;
 	/**
-	 * A piece of a git hunk cut at its whitespace-only runs (CAR-156): the
+	 * A piece of a git hunk cut at its whitespace-only runs (CAR-156), and
+	 * for a Markdown file at its blocks (CAR-167): the
 	 * key the whole hunk had as one cluster before, and where this piece's
 	 * lines sit in it (its first removed and added line's index there, and
 	 * the whole hunk's removed count), so a mark on the whole hunk carries
@@ -83,12 +84,29 @@ export interface Cluster {
 	split?: ClusterSplit;
 }
 
+/** A line cluster before it is keyed and labelled. */
+export type LineCluster = Omit<Cluster, "key" | "kind" | "label">;
+
+/** One piece of a split hunk, and where its lines sit in the hunk. */
+export interface HunkPart<C> {
+	cluster: C;
+	removedAt: number;
+	addedAt: number;
+}
+
 /** Where a piece of a split hunk sits in it (Cluster.split). */
 export interface ClusterSplit {
 	key: string;
 	removedAt: number;
 	addedAt: number;
 	removed: number;
+	/**
+	 * The key of the CAR-156 piece (the hunk cut at its whitespace-only runs
+	 * alone) this piece was cut from, when the Markdown block cut (CAR-167)
+	 * split that piece again: a state on it is the reviewer's later word on
+	 * these lines, so the hunk's older mark doesn't carry (splitCarry.ts).
+	 */
+	piece?: string;
 }
 
 export interface FileSummary {
@@ -121,6 +139,8 @@ export interface FileSummary {
 	 * image shows once, with nothing to compare.
 	 */
 	sameBlob?: true;
+	/** The clusters are cut at Markdown blocks (CAR-167): the Rendered view is offered. */
+	markdownBlocks?: true;
 	clusters: Cluster[];
 }
 
@@ -147,6 +167,13 @@ export interface DiffLine {
 	 * no line for it). CAR-217.
 	 */
 	baseNo?: number | null;
+	/**
+	 * The since view's Markdown cut only (CAR-167, pieces.ts
+	 * cutRunsAtBlocks): the line's piece among those its run of one
+	 * cluster's lines was cut into at the file's blocks, so pieces of one
+	 * cluster side by side stay runs of their own (lineRuns).
+	 */
+	blockPiece?: number;
 	/**
 	 * The since view's removed lines with `baseNo` null only: the line's
 	 * number on the compared (earlier) patch set's head, an added line of
@@ -199,6 +226,12 @@ export interface FileHunks {
 	newLineCount: number;
 	/** The since view's only: its pieces, each markable (pieces.ts). */
 	pieces?: SincePiece[];
+	/**
+	 * The since view's only: the file qualifies for the Markdown block cut
+	 * (CAR-167: a Markdown path, both sides text under the cap; so eligible
+	 * for the Rendered view), whether or not any run was actually cut.
+	 */
+	markdownBlocks?: true;
 	/**
 	 * The since view's only: the interdiff doesn't change the file's
 	 * lines, so all `newLineCount` of them are one gap (gaps.ts).
@@ -1206,6 +1239,13 @@ export interface RereviewAnswer {
 		 * view marks and counts (sinceUnits); absent without an interdiff.
 		 */
 		pieces?: SincePiece[];
+		/**
+		 * The file qualifies for the since view's Markdown block cut
+		 * (CAR-167: a Markdown path, both sides text under the cap, as the
+		 * full diff's FileSummary.markdownBlocks; so eligible for the
+		 * Rendered view), whether or not any of its runs was actually cut.
+		 */
+		markdownBlocks?: true;
 	}[];
 	/** Files with a reworked or new cluster (or a conflict), and those clusters. */
 	toRead: {

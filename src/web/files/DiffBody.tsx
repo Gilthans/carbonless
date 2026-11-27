@@ -28,24 +28,11 @@ import {
 } from "react";
 import type { SpanAgentThread } from "../../shared/agent";
 import { inGitOrder } from "../../shared/diffHunk";
+import { has, type LineRanges, size } from "../../shared/lineRanges";
 import {
-	contains,
-	covers,
-	has,
-	type LineRanges,
-	size,
-	union,
-} from "../../shared/lineRanges";
-import {
-	crossedCount,
 	lineIndex,
 	marksOf as lineMarksOf,
-	partlyMarked,
-	pieceState,
-	reviewedCount,
 	type SincePiece,
-	sinceMarkKey,
-	sinceOnlyState,
 } from "../../shared/pieces";
 import type {
 	ClusterView,
@@ -98,12 +85,7 @@ import {
 } from "../code/Invisibles";
 import { DEFAULT_TAB_WIDTH } from "../code/invisibleChars";
 import { Spinner, SpinnerIcon } from "../Spinner";
-import {
-	clickPointer,
-	isTap,
-	Tooltip,
-	type TooltipTriggerProps,
-} from "../Tooltip";
+import { clickPointer, isTap, Tooltip } from "../Tooltip";
 import { canMove, spanTexts } from "../threads/draftMove";
 import { type LineTexts, useDrafts } from "../threads/drafts";
 import { NewThread, quoteOf } from "../threads/NewThread";
@@ -119,6 +101,11 @@ import { useThreadWriter } from "../threads/threadWrites";
 import { ErrorMessage } from "../ui";
 import { NOT_PHONE, useMedia } from "../useMedia";
 import { ignoreWhitespace, showInvisibles, sideBySide } from "../viewSettings";
+import {
+	ClusterControls,
+	READ_ONLY_TIP,
+	UNTICK_TO_CROSS,
+} from "./ClusterControls";
 import { type CellLine, CODE_CELL, cellLine } from "./codeSpan";
 import { contextRanges, rangesKeyOf } from "./contextRanges";
 import { FullDiffLink, type FullDiffTarget } from "./FullDiffLink";
@@ -138,17 +125,14 @@ import {
 	usePicks,
 } from "./linePicks";
 import { isOrphanLeft, leftNo, orphanBase, rowSelector } from "./orphanLeft";
+import { type Marker, pieceMark } from "./pieceMark";
 import { type ResolveCollapse, useResolveCollapse } from "./resolveCollapse";
 import { stickyBottom } from "./scrollAnchor";
 import { type CodeSpan, describeSpan } from "./selectionActions";
 import { layoutRows, type SideRow } from "./sideBySide";
 import type { KindEntry } from "./since";
-import {
-	CONTROLS,
-	SLOT,
-	StackControls,
-	useStickyControls,
-} from "./stickyControls";
+import { SinceNotes } from "./sinceNotes";
+import { StackControls, useStickyControls } from "./stickyControls";
 import { BubbleSlot, ThreadBubble } from "./ThreadBubble";
 import { notHereText } from "./ThreadFate";
 import {
@@ -649,35 +633,6 @@ const RAIL: Record<ClusterView["state"], string> = {
 };
 
 /** What a piece's controls do (the since view): its own mark, not its cluster's. */
-interface Marker {
-	toggle: () => void;
-	crossOff: () => void;
-}
-
-/**
- * A piece shown as a cluster of its own: reviewed or crossed off when every
- * line it owns is; whitespace only as the piece is (`whitespaceOnly`, judged
- * on the interdiff, CAR-218), never as its cluster is against the base.
- */
-function pieceView(
-	whole: ClusterView,
-	piece: LineRanges,
-	whitespaceOnly: boolean,
-): ClusterView {
-	const {
-		reviewedLines: _,
-		crossedLines: __,
-		reason: ___,
-		whitespaceOnly: ____,
-		...rest
-	} = whole;
-	return {
-		...rest,
-		state: pieceState(whole, piece),
-		...(whitespaceOnly ? { whitespaceOnly: true } : {}),
-	};
-}
-
 /** A line of a cluster marked one piece at a time: its own mark. */
 function lineReviewedState(
 	cluster: ClusterView,
@@ -1991,149 +1946,6 @@ function BubbleRow(props: {
 }
 
 /**
- * A cluster's controls. The checkbox is checked when reviewed; a crossed-off
- * cluster shows a mixed box named "Undo cross-off" and described by its note,
- * and clicking it makes the cluster unreviewed again, never reviewed. Next to
- * it, a toggle crosses the cluster off or undoes that (to unreviewed); a
- * reviewed cluster must be unchecked first.
- */
-function ClusterControls(props: {
-	cluster: ClusterView;
-	noteId?: string;
-	onToggle: (cluster: ClusterView) => void;
-	onCrossOff: (cluster: ClusterView) => void;
-	/** An earlier patch set, as reviewed: the marks are locked. */
-	readOnly?: boolean;
-}) {
-	const crossedOff = props.cluster.state === "crossed-off";
-	// Marked one piece at a time, not all of it: a dash; a click reviews
-	// the whole cluster.
-	const partly = partlyMarked(props.cluster);
-	const reviewed = props.cluster.state === "reviewed";
-	const readOnly = props.readOnly === true;
-	// On touch each control gets its own 40×40 target, out of the row's
-	// height (it reaches into the rows around it, above them at z 6), so a
-	// mis-tap can't reach the other one: stacked in a 40px column where the
-	// cluster's own rows have room for it (StackControls), else side by side.
-	// With a mouse they stay compact.
-	const stack = useContext(StackControls);
-	const target =
-		"flex items-center justify-center pointer-coarse:h-10 pointer-coarse:w-10";
-	const reach = stack ? "" : "pointer-coarse:-my-2.5";
-	const box = (trigger: Partial<TooltipTriggerProps> = {}) => (
-		<label
-			{...trigger}
-			data-testid="cluster-box-target"
-			className={`${target} ${stack ? "pointer-coarse:-mt-2.5" : reach} ${readOnly ? "cursor-not-allowed" : "cursor-pointer"}`}
-		>
-			<input
-				type="checkbox"
-				aria-label={crossedOff ? "Undo cross-off" : "Mark cluster reviewed"}
-				aria-describedby={crossedOff ? props.noteId : undefined}
-				aria-checked={partly ? "mixed" : undefined}
-				data-partly={partly || undefined}
-				ref={(el) => {
-					if (el) el.indeterminate = crossedOff || partly;
-				}}
-				checked={props.cluster.state === "reviewed"}
-				disabled={readOnly}
-				onChange={() => props.onToggle(props.cluster)}
-				className={`h-3.5 w-3.5 cursor-pointer disabled:cursor-not-allowed ${
-					crossedOff ? "accent-crossed" : "accent-ok-fill"
-				}`}
-			/>
-		</label>
-	);
-	return (
-		// The slot keeps its size while the controls float (stickyControls.ts).
-		<span
-			{...{ [SLOT]: "" }}
-			data-stacked={stack || undefined}
-			className={`block ${stack ? "pointer-coarse:relative pointer-coarse:h-5 pointer-coarse:w-10" : ""}`}
-		>
-			<span
-				{...{ [CONTROLS]: "" }}
-				className={`relative z-[5] flex w-fit items-center gap-1 rounded-md data-[stuck=end]:z-[6] data-[stuck=fixed]:z-[6] pointer-coarse:z-[6] pointer-coarse:gap-0 ${stack ? "pointer-coarse:absolute pointer-coarse:top-0 pointer-coarse:left-0 pointer-coarse:flex-col" : ""} data-[stuck]:bg-raised data-[stuck]:shadow-control data-[stuck]:ring-1 data-[stuck]:ring-line-strong`}
-			>
-				{readOnly ? (
-					<Tooltip content={READ_ONLY_TIP} describe={false} lazy>
-						{(trigger) => box(trigger)}
-					</Tooltip>
-				) : partly ? (
-					<Tooltip content={partlyTip(props.cluster)} lazy>
-						{(trigger) => box(trigger)}
-					</Tooltip>
-				) : (
-					box()
-				)}
-				<Tooltip
-					content={
-						readOnly
-							? READ_ONLY_TIP
-							: crossedOff
-								? "Undo cross-off"
-								: reviewed
-									? UNTICK_TO_CROSS
-									: "Cross off cluster"
-					}
-					// Disabled, its reason is its description (its name says what it does).
-					describe={readOnly || reviewed}
-				>
-					{({ ref, onMouseEnter, onMouseLeave, ...trigger }) => (
-						// The wrapper takes the hover, so a disabled button still
-						// explains itself; focus (and so tap) goes to the button.
-						// biome-ignore lint/a11y/noStaticElementInteractions: hover only; the button inside is the control.
-						<span
-							ref={ref}
-							onMouseEnter={onMouseEnter}
-							onMouseLeave={onMouseLeave}
-							className="flex [&>button:disabled]:pointer-events-none"
-						>
-							<button
-								type="button"
-								{...trigger}
-								aria-label="Cross off cluster"
-								aria-pressed={crossedOff}
-								disabled={readOnly || reviewed}
-								onClick={() => props.onCrossOff(props.cluster)}
-								// Stacked under the box on touch, its glyph at the top of its
-								// target: on the cluster's second row, not two rows down.
-								className={`${target} ${stack ? "pointer-coarse:items-start" : reach} group/x rounded focus-visible:outline-2 focus-visible:outline-accent disabled:cursor-not-allowed disabled:opacity-30`}
-							>
-								<span
-									aria-hidden
-									className={`flex h-4 w-4 items-center justify-center rounded font-sans text-xs leading-none ${
-										crossedOff
-											? "bg-crossed-strong text-ink"
-											: "text-done group-hover/x:bg-crossed/25"
-									}`}
-								>
-									⊘
-								</span>
-							</button>
-						</span>
-					)}
-				</Tooltip>
-			</span>
-		</span>
-	);
-}
-
-/** "Partly reviewed: 3 of 10 lines" (and how many are crossed off). */
-function partlyTip(cluster: ClusterView): string {
-	const crossed = crossedCount(cluster);
-	return `Partly reviewed: ${reviewedCount(cluster)} of ${cluster.lines} lines${
-		crossed > 0 ? `, ${crossed} crossed off` : ""
-	}`;
-}
-
-/** Why a reviewed cluster's cross-off is off (R21: untick it first). */
-export const UNTICK_TO_CROSS = "Reviewed: untick to cross off";
-
-/** Why a mark can't change on an earlier patch set. */
-export const READ_ONLY_TIP = "Read-only: an earlier patch set, as reviewed";
-
-/**
  * A row above a cluster's lines saying what happened to it since the
  * compared patch set (KindChip): reworked, new, gone, or carried.
  */
@@ -2395,6 +2207,57 @@ type HunksRead = Pick<
 	"data" | "isSuccess" | "isPending" | "isError" | "error"
 >;
 
+/**
+ * What Comment on an Ask-agent composer can do with its span here: its
+ * head's facts, and whether GitHub's diff has both ends of the rows it is
+ * on (`rowsOf`: in the since view, a removed line by its own row,
+ * CAR-217; `hunkKeys`: the hunks' lines by side, null until they are in),
+ * and whether either end is a since-view line GitHub's diff hasn't
+ * (`offKeys`, CAR-293: it reads as the base there). The line view's and
+ * the Rendered view's composers both ask it.
+ */
+export function agentCommentOn(
+	span: CodeSpan,
+	at: {
+		rowsOf: (range: SpanRange & { earlier?: boolean }) => SpanRange | null;
+		hunkKeys: ReadonlySet<string> | null;
+		offKeys: ReadonlySet<string>;
+		head: string | undefined;
+		file: Pick<FileView, "binary" | "submodule">;
+		headUnsure: boolean;
+		readOnly: boolean;
+	},
+): AgentCommentContext {
+	const rows =
+		span.subject === "line" && span.side && span.line !== undefined
+			? at.rowsOf({
+					// Lines only the compared patch set had (CAR-233): its RIGHT
+					// lines there, on the removed rows that show them.
+					earlier: span.earlier,
+					startSide: span.startSide ?? span.side,
+					startLine: span.startLine ?? span.line,
+					side: span.side,
+					line: span.line,
+				})
+			: null;
+	return {
+		// Its comment would open on that head: an orphan draft at once.
+		...headFacts(span, at.head),
+		file: { binary: at.file.binary, submodule: at.file.submodule },
+		inDiff:
+			at.hunkKeys && rows
+				? at.hunkKeys.has(`${rows.startSide}:${rows.startLine}`) &&
+					at.hunkKeys.has(`${rows.side}:${rows.line}`)
+				: undefined,
+		sameAsBase:
+			!!rows &&
+			(at.offKeys.has(`${rows.startSide}:${rows.startLine}`) ||
+				at.offKeys.has(`${rows.side}:${rows.line}`)),
+		headUnsure: at.headUnsure,
+		readOnly: at.readOnly,
+	};
+}
+
 /** `linesHidden`: no lines, settled at once (never a spinner or "nothing"). */
 const HIDDEN_HUNKS: HunksRead = {
 	data: { hunks: [], newLineCount: 0 },
@@ -2449,6 +2312,12 @@ export function DiffBody(props: {
 	 * its line threads listed under the header as a binary file's are.
 	 */
 	linesHidden?: boolean;
+	/**
+	 * With `linesHidden`: another renderer shows the lines (Markdown's
+	 * Rendered view), and says itself what the since view has to read; it
+	 * shows the line comments being written too.
+	 */
+	linesElsewhere?: boolean;
 }) {
 	const { file, revision, find, linesHidden } = props;
 	const read = useQuery({
@@ -2456,44 +2325,6 @@ export function DiffBody(props: {
 		enabled: !linesHidden,
 	});
 	const hunks: HunksRead = linesHidden ? HIDDEN_HUNKS : read;
-	// The since view: unreviewed clusters the engine lists as reworked or
-	// new whose lines these hunks don't show (gap 5: unreviewed on the
-	// compared patch set, unchanged since), and the carried count.
-	const unshownToRead = useMemo(() => {
-		if (props.from === undefined || !props.kinds || !hunks.data) return 0;
-		// A cluster's lines the pieces here can mark (they own them).
-		const owned = new Map<string, LineRanges>();
-		const shownKeys = new Set<string>();
-		for (const hunk of hunks.data.hunks) {
-			for (const line of hunk.lines) {
-				if (line.clusterKey !== undefined) shownKeys.add(line.clusterKey);
-			}
-		}
-		for (const p of hunks.data.pieces ?? []) {
-			if (p.key && p.owns) {
-				owned.set(p.key, [...(owned.get(p.key) ?? []), ...p.owns]);
-			}
-		}
-		return file.clusters.filter((c) => {
-			// As the counts do (sinceUnits): a reworked or new cluster, or one
-			// whose carried mark the reviewer replaced.
-			const kind = props.kinds?.get(c.key)?.kind;
-			if (kind !== "reworked" && kind !== "new" && c.carried) return false;
-			if (c.state !== "unreviewed") return false;
-			if (!shownKeys.has(c.key)) return true;
-			// Its pieces all marked, it still has lines no piece owns (not
-			// unchanged since a reviewed line): those are the full diff's.
-			const pieces = hunks.data?.pieces;
-			if (!pieces) return false;
-			const own = owned.get(c.key) ?? [];
-			const { reviewed, crossed } = lineMarksOf(c);
-			return (
-				contains(union(reviewed, crossed), own) &&
-				!covers(union(own, []), c.lines)
-			);
-		}).length;
-	}, [props.from, props.kinds, hunks.data, file.clusters]);
-	const carriedHere = file.clusters.filter((c) => c.carried).length;
 	const ignoreWs = ignoreWhitespace.use();
 	const view: View = sideBySide.use() ? "side-by-side" : "unified";
 	const wide = useMedia(NOT_PHONE);
@@ -2548,44 +2379,18 @@ export function DiffBody(props: {
 	/** A piece as a cluster of its own, and what its controls do. */
 	const markOf = (
 		piece: SincePiece,
-	): { cluster: ClusterView; marker: Marker } | undefined => {
-		const { owns } = piece;
-		if (owns) {
-			const whole = piece.key ? clusters.get(piece.key) : undefined;
-			if (!whole) return undefined;
-			return {
-				// Whitespace only as the piece is (judged on the interdiff,
-				// CAR-218), not as its cluster is against the base.
-				cluster: pieceView(whole, owns, piece.whitespaceOnly === true),
-				marker: {
-					toggle: () => props.onToggle(whole, owns),
-					crossOff: () => props.onCrossOff(whole, owns),
-				},
-			};
-		}
-		if (props.from === undefined) return undefined;
-		const since = props.from;
-		return {
-			cluster: {
-				key: `${sinceMarkKey(since, file.path)}:${piece.hunk}:${piece.line}`,
-				kind: "lines",
-				oldStart: 0,
-				oldCount: 0,
-				newStart: 0,
-				newCount: 0,
-				removed: [],
-				added: [],
-				// A file-level piece has no lines (its line 0 is the change), as counted.
-				lines: piece.file !== undefined ? 0 : size(piece.old) + size(piece.new),
-				state: sinceOnlyState(props.sinceMarks, since, file.path, piece),
-				...(piece.whitespaceOnly ? { whitespaceOnly: true } : {}),
-			},
-			marker: {
-				toggle: () => props.onSinceMark?.(piece, false),
-				crossOff: () => props.onSinceMark?.(piece, true),
-			},
-		};
-	};
+	): { cluster: ClusterView; marker: Marker } | undefined =>
+		props.from === undefined
+			? undefined
+			: pieceMark(piece, {
+					clusters,
+					since: props.from,
+					path: file.path,
+					sinceMarks: props.sinceMarks,
+					onToggle: props.onToggle,
+					onCrossOff: props.onCrossOff,
+					onSinceMark: props.onSinceMark,
+				});
 	const idBase = useId();
 	const noteIds = new Map(
 		file.clusters.map((c, i) => [c.key, `${idBase}-note-${i}`]),
@@ -2794,9 +2599,12 @@ export function DiffBody(props: {
 			})
 		: null;
 	// Written on a row that isn't shown (a gap): above the diff, never lost.
-	const unshown = hunks.data
-		? lineItems.filter((_, i) => !placement?.spansShown.has(i))
-		: [];
+	// With the lines shown elsewhere (Markdown's Rendered view), that view
+	// shows them, under the block holding their line.
+	const unshown =
+		hunks.data && !props.linesElsewhere
+			? lineItems.filter((_, i) => !placement?.spansShown.has(i))
+			: [];
 	const [openThreads, setOpenThreads] = useState<ReadonlySet<LineKey>>(
 		() => new Set(),
 	);
@@ -3045,33 +2853,16 @@ export function DiffBody(props: {
 		});
 	// GitHub's diff takes a comment on the rows a span is on here (in the
 	// since view, a removed line by its own row: CAR-217).
-	const commentOn = (span: CodeSpan): AgentCommentContext => {
-		const rows =
-			span.subject === "line" && span.side && span.line !== undefined
-				? onRows({
-						startSide: span.startSide ?? span.side,
-						startLine: span.startLine ?? span.line,
-						side: span.side,
-						line: span.line,
-					})
-				: null;
-		return {
-			// Its comment would open on that head: an orphan draft at once.
-			...headFacts(span, snapshotHead ?? sessionHead),
-			file: { binary: file.binary, submodule: file.submodule },
-			inDiff:
-				hunks.data && rows
-					? hunkKeys.has(`${rows.startSide}:${rows.startLine}`) &&
-						hunkKeys.has(`${rows.side}:${rows.line}`)
-					: undefined,
-			sameAsBase:
-				!!rows &&
-				(offKeys.has(`${rows.startSide}:${rows.startLine}`) ||
-					offKeys.has(`${rows.side}:${rows.line}`)),
+	const commentOn = (span: CodeSpan): AgentCommentContext =>
+		agentCommentOn(span, {
+			rowsOf: onRows,
+			hunkKeys: hunks.data ? hunkKeys : null,
+			offKeys,
+			head: snapshotHead ?? sessionHead,
+			file,
 			headUnsure: props.headSure === false,
 			readOnly: props.readOnly === true,
-		};
-	};
+		});
 	const agentRows: AgentRows | undefined = agentPlacement
 		? {
 				placement: agentPlacement,
@@ -3091,8 +2882,10 @@ export function DiffBody(props: {
 		: undefined;
 	// Asked on a row that isn't shown (a gap), or on an earlier head: above
 	// the diff, never lost.
+	// With the lines shown elsewhere (Markdown's Rendered view), that view
+	// shows those on lines, under the block holding their line.
 	const agentUnshown = [
-		...(hunks.data
+		...(hunks.data && !props.linesElsewhere
 			? agentLineItems.filter((_, i) => !agentPlacement?.spansShown.has(i))
 			: []),
 		...agentOrphans,
@@ -3798,38 +3591,18 @@ export function DiffBody(props: {
 						</div>
 					)}
 					{/* Lines hidden (an image): the view says nothing of lines; the
-			    header's counts and action still hold every unit. */}
-					{props.from !== undefined &&
-						!linesHidden &&
-						hunks.data &&
-						unshownToRead > 0 && (
-							// Clusters the engine says are to read (reworked or new) with no
-							// line in these hunks (unreviewed on the compared patch set and
-							// unchanged since): never "nothing to read"; the full diff has them.
-							<p
-								data-testid="since-unshown"
-								className="flex min-h-10 items-center gap-2 px-3 text-xs text-warn"
-							>
-								{unshownToRead} to read · only in the full diff ·{" "}
-								<span className="text-muted">{carriedHere} carried</span>
-							</p>
-						)}
-					{/* Lines hidden too: with no file-level row, nothing else shows. */}
-					{props.from !== undefined &&
-						hunks.data &&
-						hunks.data.hunks.length === 0 &&
-						fileClusters.length === 0 &&
-						filePieces.length === 0 &&
-						unshownToRead === 0 && (
-							// The since view of a file the author left alone: say so (never
-							// an empty table that reads as "nothing changed" by mistake).
-							<p
-								data-testid="since-empty"
-								className="flex min-h-10 items-center gap-2 px-3 text-xs text-muted"
-							>
-								Nothing to read since PS{props.from} · {carriedHere} carried
-							</p>
-						)}
+					    header's counts and action still hold every unit. Lines
+					    shown elsewhere (Markdown's Rendered view): it says both. */}
+					{props.from !== undefined && hunks.data && !props.linesElsewhere && (
+						<SinceNotes
+							from={props.from}
+							clusters={file.clusters}
+							kinds={props.kinds}
+							hunks={hunks.data}
+							unshown={!linesHidden}
+							fileLevel={filePieces.length}
+						/>
+					)}
 					{hunks.isPending && (
 						// A screen tall while loading, so a file picked in the tree can
 						// scroll its header to the top before its lines arrive.
@@ -4890,6 +4663,9 @@ function WhitespaceCluster(props: {
 		</tbody>
 	);
 }
+
+/** Kept here for the tests and views that read them with DiffBody. */
+export { READ_ONLY_TIP, UNTICK_TO_CROSS };
 
 /** The arrow keys: a step through the number buttons, or a side to go to. */
 const ARROWS: Record<

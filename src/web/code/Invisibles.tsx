@@ -547,9 +547,12 @@ export function CodeLine(props: {
 	marks?: readonly Mark[];
 	finds?: readonly FindMark[];
 	words?: Words;
+	/** Draw hidden characters whatever the setting says (a change may be one). */
+	showInvisibles?: boolean;
 }) {
 	const { text, lang, newline = true } = props;
-	const show = useShowInvisibles();
+	const setting = useShowInvisibles();
+	const show = props.showInvisibles ?? setting;
 	useEffect(() => {
 		if (copyFixInstalled) return;
 		copyFixInstalled = true;

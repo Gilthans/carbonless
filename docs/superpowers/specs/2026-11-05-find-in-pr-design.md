@@ -309,6 +309,22 @@ file, off screen or under the stack is gone to first, as before. Next and previo
 do. Deleting the term and typing it again starts over by the same rule. With
 no file open, the caret is the first hit in the PR, unshown until a step.
 
+**Opening a file moves the caret to its start (owner, 2026-11-24, CAR-298).**
+
+> "when searching, if I open a file, the search caret should move into that
+> file. So if I next/prev, it should start from the file I opened (if I
+> next should be from file start, if I prev should be from file end)"
+
+Opening a file by any route (the tree, its header, j/k, a link or landing,
+a Threads row, a move-on) puts the caret at that file's start, between
+hits, without scrolling or stepping: unshown on the hit Next goes to (the
+file's first, else the next file's, wrapping), which the count shows and
+`find-current` paints, as after typing. Next goes to that hit, Previous to
+the last hit at or before the file's end (the last before the file when it
+has none, wrapping). The in-view rule above holds here too: a hit Next or
+Previous would go to that the reviewer already sees is passed over. A step
+that opens the file it went into isn't an open: the caret stays on its hit.
+
 ## Stepping to a hit
 
 Moving the current hit (Enter, ↓, ↑, Mod+g, Shift+Mod+g):
@@ -361,7 +377,8 @@ folded folder shows the sum of its files'. Files without hits are left
 exactly as they are (no dimming, no hiding). A file whose hunks are still
 loading shows the count it has so far (path and changed-line hits), with the
 bar's spinner standing for the rest (no per-file spinner). Picking a file in
-the tree still opens it as today; it doesn't move the current hit.
+the tree opens it as today, and moves the caret to its start (CAR-298,
+§the caret above).
 
 ## Loading the hunks
 
@@ -414,7 +431,8 @@ debounce unless measured to need one.
   a current row under a `thread-mark` or `line-picked` row shows both washes
   (they are all accent tints; the characters are what differ).
 - **Landings from thread links** still work while the bar is open; a landing
-  doesn't move the current hit.
+  that opens another file moves the caret to that file's start, as any open
+  does (CAR-298).
 - **Writing a comment**: `Mod+f` in a textarea stays the browser's; the bar
   and its highlights stay as they are.
 - **The files sheet on a phone**: a step that opens a file closes the sheet

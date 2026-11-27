@@ -13,6 +13,7 @@ import { hunkView } from "../whitespace";
 import { tokenize } from "../wordDiff";
 import {
 	type Caret,
+	caretAfterOpen,
 	caretAfterTyping,
 	countsByFile,
 	emitHunk,
@@ -396,6 +397,82 @@ describe("caret", () => {
 			pos: at0(middle),
 			shown: true,
 		});
+	});
+});
+
+describe("caret after opening a file (CAR-298)", () => {
+	const hit = (index: number, line = 1): Hit => ({
+		index,
+		side: "RIGHT",
+		line,
+		col: 0,
+		len: 1,
+	});
+	const at = (h: Hit): HitPos => ({
+		index: h.index,
+		side: h.side,
+		line: h.line,
+		col: h.col,
+	});
+	const shown = (h: Hit): Caret => ({ pos: at(h), shown: true });
+	const order = [0, 1, 2, 3];
+	// File 0: two hits, file 1: none, file 2: three, file 3: one.
+	const hits = [
+		hit(0, 1),
+		hit(0, 9),
+		hit(2, 2),
+		hit(2, 5),
+		hit(2, 7),
+		hit(3, 4),
+	];
+	const h = (i: number) => hits[i] as Hit;
+
+	it("sits at the opened file's start: unshown on the next hit, Next goes to its first hit, Previous to its last", () => {
+		const c = caretAfterOpen(hits, order, 2);
+		expect(c).toEqual({ pos: at(h(2)), shown: false, opened: 2 });
+		expect(stepCaret(hits, c, 1)).toEqual(shown(h(2)));
+		expect(stepCaret(hits, c, -1)).toEqual(shown(h(4)));
+	});
+
+	it("a file without hits: Next goes to the next file's first, Previous to the last before it", () => {
+		const c = caretAfterOpen(hits, order, 1);
+		expect(c?.pos).toEqual(at(h(2)));
+		expect(stepCaret(hits, c, 1)).toEqual(shown(h(2)));
+		expect(stepCaret(hits, c, -1)).toEqual(shown(h(1)));
+	});
+
+	it("wraps at both ends", () => {
+		// Only file 2 has hits: from file 3, Next wraps to file 2's first.
+		const few = [hit(2, 2), hit(2, 5)];
+		const c = caretAfterOpen(few, order, 3);
+		expect(stepCaret(few, c, 1)).toEqual(shown(few[0] as Hit));
+		expect(stepCaret(few, c, -1)).toEqual(shown(few[1] as Hit));
+		// From file 0 (none, before every hit): Previous wraps to the last.
+		const d = caretAfterOpen(few, order, 0);
+		expect(stepCaret(few, d, 1)).toEqual(shown(few[0] as Hit));
+		expect(stepCaret(few, d, -1)).toEqual(shown(few[1] as Hit));
+		// The first file opened: Previous wraps to the PR's last hit.
+		expect(stepCaret(hits, caretAfterOpen(hits, order, 0), -1)).toEqual(
+			shown(h(1)),
+		);
+	});
+
+	it("passes over the hit Next goes to when the reviewer already sees it, as after typing (owner, 2026-11-07)", () => {
+		const c = caretAfterOpen(hits, order, 2);
+		// Next: the file's first hit is seen, on to its second.
+		expect(stepCaret(hits, c, 1, true)).toEqual(shown(h(3)));
+		// Previous: the file's last hit isn't the one seen.
+		expect(stepCaret(hits, c, -1, true)).toEqual(shown(h(4)));
+		// File 3's one hit is both: seen, Previous goes to the one before.
+		const one = caretAfterOpen(hits, order, 3);
+		expect(stepCaret(hits, one, -1, true)).toEqual(shown(h(4)));
+		expect(stepCaret(hits, one, -1, false)).toEqual(shown(h(5)));
+		// Seen and wrapping: from the PR's last hit Next goes round to the first.
+		expect(stepCaret(hits, one, 1, true)).toEqual(shown(h(0)));
+	});
+
+	it("is null without hits", () => {
+		expect(caretAfterOpen([], order, 1)).toBeNull();
 	});
 });
 

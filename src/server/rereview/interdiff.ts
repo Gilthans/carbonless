@@ -1,7 +1,7 @@
 import type { Cluster, FileStatus } from "../../shared/types.js";
 import { buildAllClusters } from "../diff/clusters.js";
 import { type ChangedFile, listChangedFiles } from "../diff/files.js";
-import { fileText, readBlobs } from "../diff/snapshot.js";
+import { cutsMarkdown, fileText, readBlobs } from "../diff/snapshot.js";
 import { checkOid, type Endpoints, type Shape } from "./shape.js";
 
 /**
@@ -23,6 +23,11 @@ export interface InterdiffFile {
 	newLines: string[];
 	/** The new side's last line has no newline at the end. */
 	noNewlineAtEnd: boolean;
+	/**
+	 * A Markdown file whose since-view pieces are cut at its blocks (both
+	 * sides text under the cap, as the full diff's: snapshot.ts cutsMarkdown).
+	 */
+	markdown?: true;
 }
 
 export type Interdiff =
@@ -75,6 +80,9 @@ async function diffFiles(
 			oldLines: text?.oldLines ?? [],
 			newLines: text?.newLines ?? [],
 			noNewlineAtEnd: text?.noNewlineAtEnd ?? false,
+			...(text && cutsMarkdown(f, bytesOf(f.oldOid), bytesOf(f.newOid))
+				? { markdown: true as const }
+				: {}),
 		};
 	});
 }
