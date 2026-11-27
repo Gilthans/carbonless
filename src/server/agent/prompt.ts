@@ -160,6 +160,16 @@ export interface AnchorPatchset {
 export interface AnchorOpened {
 	patchset?: number;
 	at?: string;
+	/**
+	 * The merge base the opening view numbered the anchor's old side in
+	 * (its `base`), when that view was on the anchor's own head: what the
+	 * page diffed when the question was asked (CAR-315). Never re-read
+	 * from the base branch as it stands later, which may have absorbed
+	 * the head (a stacked parent's landing, a landing by merge commit).
+	 * Only for an anchor on `head` (a code window moved to another head
+	 * shares the conversation's AnchorOpened, not its base).
+	 */
+	base?: { head: string; mergeBase: string };
 }
 
 /**
@@ -175,12 +185,33 @@ export function anchorOpened(thread: {
 	at: string;
 	messages: readonly AgentMessage[];
 }): AnchorOpened {
-	const target = thread.messages[0]?.view?.target;
+	const view = thread.messages[0]?.view;
+	const target = view?.target;
+	const a = thread.anchor;
+	// A view on the anchor's own head recorded its merge base (CAR-276 on):
+	// that base, as the page diffed it. A view stored before CAR-315 on a
+	// head no patch set has recorded the review's merge base instead; that
+	// window (an unmarked head after a rebase, asked before this shipped)
+	// is narrow and old, and is left as stored.
+	const base =
+		a.subject !== "thread" &&
+		a.subject !== "review" &&
+		target &&
+		"head" in target &&
+		target.head === a.commit &&
+		view?.base !== undefined &&
+		OID.test(view.base) &&
+		// A base that is the head itself (viewed once the base branch held
+		// it) numbers no old side: never `{commit: head, side: LEFT}`.
+		view.base !== a.commit
+			? { base: { head: a.commit, mergeBase: view.base } }
+			: {};
 	return {
 		at: thread.at,
-		...(thread.anchor.subject !== "thread" && target && "patchset" in target
+		...(a.subject !== "thread" && target && "patchset" in target
 			? { patchset: target.patchset }
 			: {}),
+		...base,
 	};
 }
 
@@ -216,8 +247,13 @@ function patchsetOf(
  * from that head); an agent reading `{commit: head, side: LEFT, line: n}`
  * would read line n of the head, another line (CAR-222). So a LEFT
  * anchor names the merge base of the patch set it was opened on
- * (patchsetOf), else the review's merge base. A since-view LEFT line is
- * stored in that base's numbers (CAR-217), so the same holds for it.
+ * (patchsetOf); on a head no patch set has (a viewed head nobody marked
+ * yet), that head's own merge base from `heads` (headBases: the base the
+ * page diffed it against, CAR-315), "" when it couldn't be read (never
+ * the review's: its numbers are another diff's); else (the review's own
+ * head, or a commit that is no OID) the review's merge base. A since-view
+ * LEFT line is stored in that base's numbers (CAR-217), so the same holds
+ * for it.
  * RIGHT and file anchors as they are; the review conversation's anchor
  * has no commit. The one place this rule lives: never apply it to an
  * anchor it already gave (its commit is no head then).
@@ -227,27 +263,128 @@ export function anchorFor(
 	review: Pick<PromptReview, "mergeBase">,
 	patchsets?: readonly AnchorPatchset[],
 	opened?: AnchorOpened,
+	heads?: HeadBases,
 ): AgentSpanAnchor;
 export function anchorFor(
 	anchor: AgentAnchor,
 	review: Pick<PromptReview, "mergeBase">,
 	patchsets?: readonly AnchorPatchset[],
 	opened?: AnchorOpened,
+	heads?: HeadBases,
 ): AgentAnchor;
 export function anchorFor(
 	anchor: AgentAnchor,
 	review: Pick<PromptReview, "mergeBase">,
 	patchsets: readonly AnchorPatchset[] = [],
 	opened: AnchorOpened = {},
+	heads: HeadBases = new Map(),
 ): AgentAnchor {
 	if (anchor.subject === "review") return { subject: "review" };
 	if (anchor.subject === "file" || anchor.side !== "LEFT") {
 		return { ...anchor };
 	}
-	const commit =
-		patchsetOpened(anchor, patchsets, opened)?.mergeBase ?? review.mergeBase;
-	return { ...anchor, commit };
+	const ps = patchsetOpened(anchor, patchsets, opened);
+	if (ps) return { ...anchor, commit: ps.mergeBase };
+	const recorded = recordedBase(anchor, opened);
+	if (recorded) return { ...anchor, commit: recorded };
+	const own = heads.get(anchor.commit);
+	if (own !== undefined) return { ...anchor, commit: own ?? "" };
+	return { ...anchor, commit: review.mergeBase };
 }
+
+/**
+ * The merge base the conversation's opening view recorded for `anchor`'s
+ * head (AnchorOpened.base); undefined for an anchor on another head.
+ */
+export function recordedBase(
+	anchor: { commit: string },
+	opened: AnchorOpened,
+): string | undefined {
+	return opened.base?.head === anchor.commit
+		? opened.base.mergeBase
+		: undefined;
+}
+
+/**
+ * The merge base of each head no patch set has (CAR-315): a viewed head
+ * nobody marked yet is diffed against its own merge base with the base
+ * branch, which after a rebase or a merge of the base is not the
+ * review's. A string: that merge base (a checked OID); null: it couldn't
+ * be read (`headBaseErrors` says why). Built by headBases, per call path.
+ */
+export type HeadBases = ReadonlyMap<string, string | null>;
+
+/**
+ * The heads of `anchors` whose LEFT side anchorFor needs a merge base
+ * for: a LEFT line or thread anchor on an OID that is no patch set's
+ * head (patchsetOpened) and not the review's own head (whose merge base
+ * is the review's); each read once through `base` (git, a checked OID).
+ * A failed read is null, its error in `errors`.
+ */
+export async function headBases(
+	anchors: readonly { anchor: AgentAnchor; opened?: AnchorOpened }[],
+	review: Pick<PromptReview, "mergeBase" | "head">,
+	patchsets: readonly AnchorPatchset[],
+	base: (head: string) => Promise<string>,
+): Promise<{ heads: HeadBases; errors: ReadonlyMap<string, string> }> {
+	const wanted = new Set<string>();
+	for (const { anchor, opened } of anchors) {
+		if (anchor.subject === "review" || anchor.subject === "file") continue;
+		if (anchor.side !== "LEFT") continue;
+		if (!OID.test(anchor.commit)) continue;
+		if (anchor.commit === review.head.commit) continue;
+		if (patchsetOpened(anchor, patchsets, opened)) continue;
+		// Its opening view recorded the base it was asked in: no read.
+		if (opened && recordedBase(anchor, opened)) continue;
+		wanted.add(anchor.commit);
+	}
+	const heads = new Map<string, string | null>();
+	const errors = new Map<string, string>();
+	await Promise.all(
+		[...wanted].map(async (head) => {
+			try {
+				const mb = (await base(head)).trim();
+				if (!OID.test(mb)) throw new Error("its merge base isn't a commit id");
+				// The base branch holds the head itself (a landing by merge
+				// commit): its "merge base" is the head, and a LEFT line there
+				// would name the head's own line (CAR-222). No base then.
+				if (mb === head) {
+					throw new Error("the base branch now contains this head");
+				}
+				heads.set(head, mb);
+			} catch (error) {
+				heads.set(head, null);
+				errors.set(
+					head,
+					(error instanceof Error ? error.message : String(error))
+						.split("\n")[0]
+						?.trim() ?? "",
+				);
+			}
+		}),
+	);
+	return { heads, errors };
+}
+
+/**
+ * The notice for anchors whose head's merge base couldn't be read
+ * (headBases' errors): their removed line's commit is "", never another
+ * comparison's merge base. Undefined when every one was read.
+ */
+export function headBaseNotice(
+	errors: ReadonlyMap<string, string>,
+): string | undefined {
+	if (errors.size === 0) return undefined;
+	return [...errors]
+		.map(
+			([head, why]) =>
+				`The merge base of ${head} can't be read now${why ? ` (${why})` : ""}: the removed (LEFT) lines anchored on it name no commit; don't take the review's merge base for it.`,
+		)
+		.join("\n");
+}
+
+/** A full commit id (SHA-1 or SHA-256), lowercase. */
+export const OID = /^[0-9a-f]{40}([0-9a-f]{24})?$/;
 
 /**
  * The patch set a conversation was opened on (patchsetOf, by the head its
@@ -273,6 +410,8 @@ export function patchsetOpened(
 export function threadEnvelope(input: {
 	review: PromptReview;
 	thread: { id: string; anchor: AgentAnchor; opened?: AnchorOpened };
+	/** headBases' merge bases of heads no patch set has (CAR-315). */
+	heads?: HeadBases;
 	github: GithubThreadFacts | null;
 	view: AgentView;
 	current: string;
@@ -325,7 +464,13 @@ export function threadEnvelope(input: {
 		review,
 		thread: {
 			id: thread.id,
-			anchor: anchorFor(thread.anchor, review, patchsets, thread.opened),
+			anchor: anchorFor(
+				thread.anchor,
+				review,
+				patchsets,
+				thread.opened,
+				input.heads,
+			),
 		},
 		...(github ? { github } : {}),
 		view: {

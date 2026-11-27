@@ -250,7 +250,25 @@ describe("resolveView", () => {
 			right: head,
 			base: MB,
 		});
+		// A head no patch set holds, its own merge base read (CAR-315): that one.
+		const own = "5".repeat(40);
+		expect(
+			resolveView(
+				{ target: { head }, from: { branch: true } },
+				patchsets,
+				MB,
+				own,
+			),
+		).toMatchObject({ left: own, base: own, right: head });
 		// A head that is a patch set's: that patch set's merge base.
+		expect(
+			resolveView(
+				{ target: { head: H2 }, from: { branch: true } },
+				patchsets,
+				MB,
+				own,
+			)?.left,
+		).toBe(H3);
 		expect(
 			resolveView(
 				{ target: { head: H2 }, from: { branch: true } },

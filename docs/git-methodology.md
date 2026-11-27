@@ -197,6 +197,14 @@ Every permutation proves:
     head's merge base moved since the comment), and one on the updated head
     next to the base's own change shows that change as context on both
     sides;
+  - agent conversations on an unmarked head (CAR-315): at the updated
+    stage, before any mark on the updated head, a conversation opened on
+    a removed line of `a.txt` names the head's own merge base (GitHub's
+    three-dot one, which the page diffed) and that base's line, in `next`
+    (envelope, anchored file, hunk) and `threads`; after the landing and
+    a refresh it still does, from the merge base the opening view recorded
+    (never re-read from the base branch, which by then may hold the head:
+    a merge commit, a landed stacked parent), never the head itself;
   - thread moves (CAR-139): a review thread and an agent thread made on the
     opened stage, moved to `a.txt` line 2 on PS1, are followed from that
     line onto line 2 of the updated stage (for `base-absorbs`, the base's

@@ -769,6 +769,91 @@ function matrix(m: (typeof METHODOLOGIES)[number]) {
 		}).toEqual(SINCE_REMOVED[m.update] ?? { based: 0, earlier: 0 });
 	});
 
+	it("an agent conversation on a removed line of the updated head, before any mark there, names that head's own merge base and its line, through the landing (CAR-315)", async () => {
+		const s = await open();
+		const ps1 = s.snapshot();
+		const key = ps1.files[0]?.clusters[0]?.key ?? "";
+		await s.setStates(ps1.revision, [{ key, state: "reviewed" }]);
+		stage("updated");
+		await s.refresh();
+		const inRepo = (...args: string[]) =>
+			execFileSync("git", args, {
+				cwd: repo.path,
+				env: testGitEnv(),
+				encoding: "utf8",
+			});
+		const head = repo.heads.updated;
+		// What the page diffs the updated head against: PS1's merge base
+		// when the head didn't move (none, base-absorbs: PS1 is that head),
+		// else GitHub's three-dot one.
+		const mergeBase =
+			s.info().patchsets.find((p) => p.head === head)?.mergeBase ??
+			inRepo("merge-base", "main", head).trim();
+		await s.viewHead(head);
+		// a.txt's first removed line in that diff, by its base line number.
+		const hunk = inRepo("diff", "-U0", mergeBase, head, "--", "a.txt")
+			.split("\n")
+			.map((l) => /^@@ -(\d+)(?:,(\d+))? /.exec(l))
+			.find((h) => h && h[2] !== "0");
+		const line = Number(hunk?.[1]);
+		expect(line).toBeGreaterThan(0);
+		const text = inRepo("show", `${mergeBase}:a.txt`).split("\n")[line - 1];
+		const agent = s.agent;
+		if (!agent) throw new Error("no agent");
+		const asked = await agent.open({
+			clientId: "q1",
+			text: "Why removed?",
+			span: {
+				subject: "line",
+				path: "a.txt",
+				commit: head,
+				side: "LEFT",
+				line,
+				startSide: "LEFT",
+				startLine: line,
+			},
+			view: { target: { head }, from: { branch: true } },
+		});
+		const { request } = agent.join.request({
+			name: "matrix",
+			machine: "box",
+			harness: "test",
+		});
+		await agent.join.answer(request, true);
+		const { token } = (await agent.join.outcome(request, 0)) as {
+			token: string;
+		};
+		/** next and threads: the merge base, its line n, never the head. */
+		const expectTold = async () => {
+			const q = await agent.sessionNext(token);
+			expect(q?.thread).toBe(asked.id);
+			expect(q?.envelope).toMatchObject({
+				thread: { anchor: { commit: mergeBase, side: "LEFT", line } },
+			});
+			expect(q?.anchoredFile?.commit).toBe(mergeBase);
+			expect(q?.anchoredFile?.text.split("\n")[line - 1]).toBe(text);
+			expect(q?.hunk?.split("\n")).toContain(`-${text}`);
+			const listed = (await agent.sessionThreads(token)).find(
+				(t) => t.id === asked.id,
+			);
+			expect(listed?.anchor).toMatchObject({ commit: mergeBase, line });
+			return q;
+		};
+		const q1 = await expectTold();
+		await agent.sessionReply(token, {
+			thread: asked.id,
+			replyTo: q1?.replyTo as string,
+			text: "Because.",
+		});
+		// The PR lands (a merge commit puts the head itself on main; a
+		// stacked parent has landed already): the follow-up still names
+		// the base it was asked in, never `{commit: head, side: LEFT}`.
+		stage("landed");
+		await s.refresh();
+		await agent.message(asked.id, { clientId: "q2", text: "And now?" });
+		await expectTold();
+	});
+
 	it("the since view: ticking every box finishes the review, whatever the methodology (CAR-216)", async () => {
 		const s = await open();
 		const ps1 = s.snapshot();

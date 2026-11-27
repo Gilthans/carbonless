@@ -463,7 +463,7 @@ export function createMcpServer(
 		"threads",
 		{
 			description:
-				"Every agent thread on the review, with its messages (yours included), to reread one. An anchor's commit is the commit its side is on: for LEFT, the base side's (the merge base of the patch set it was opened on), as in next.",
+				"Every agent thread on the review, with its messages (yours included), to reread one. An anchor's commit is the commit its side is on: for LEFT, the base side's (the merge base of the comparison it was opened on), as in next; \"\" when that merge base can't be read now, the thread's notice saying why.",
 			inputSchema: TOKEN,
 		},
 		({ token }) =>

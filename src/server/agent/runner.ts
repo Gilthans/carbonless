@@ -55,6 +55,13 @@ export interface RunnerFacts {
 	 * read: never another comparison's code in its place (CAR-53).
 	 */
 	hunk(anchor: AgentAnchor, mergeBase: string | null): Promise<string | null>;
+	/**
+	 * `head`'s own merge base with the base branch (a checked OID): what a
+	 * viewed head no patch set has is diffed against, so what a LEFT
+	 * anchor there names (anchorFor's `heads`, CAR-315). The review's own
+	 * head: the review's merge base. Throws when it can't be read.
+	 */
+	headBase(head: string): Promise<string>;
 	authorOf(login: string): Promise<CommentRole>;
 	/**
 	 * The folds joined with GitHub's threads (githubJoin.ts): a live

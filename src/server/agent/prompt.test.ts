@@ -12,7 +12,10 @@ import {
 } from "../../shared/agent.js";
 import {
 	anchorFor,
+	anchorOpened,
 	type GithubThreadFacts,
+	headBaseNotice,
+	headBases,
 	isSafePath,
 	type PromptCodeEnvelope,
 	type PromptEnvelope,
@@ -149,6 +152,187 @@ describe("the preamble and anchors", () => {
 		expect(
 			anchorFor({ ...right, commit: "e".repeat(40) }, review, patchsets),
 		).toMatchObject({ commit: "e".repeat(40) });
+	});
+
+	it("a LEFT anchor on a head no patch set has names that head's own merge base, \"\" when it can't be read, never the review's (CAR-315)", () => {
+		const H2 = "e".repeat(40);
+		const M2 = "f".repeat(40);
+		const left = {
+			...right,
+			commit: H2,
+			side: "LEFT" as const,
+			startSide: "LEFT" as const,
+		};
+		expect(anchorFor(left, review, [], {}, new Map([[H2, M2]]))).toEqual({
+			...left,
+			commit: M2,
+		});
+		expect(anchorFor(left, review, [], {}, new Map([[H2, null]])).commit).toBe(
+			"",
+		);
+		// A patch set on that head wins (its merge base is the page's).
+		const ps = [
+			{ number: 1, head: H2, mergeBase: "1".repeat(40), startedAt: 0 },
+		];
+		expect(anchorFor(left, review, ps, {}, new Map([[H2, M2]])).commit).toBe(
+			"1".repeat(40),
+		);
+		// RIGHT keeps its head.
+		expect(
+			anchorFor({ ...right, commit: H2 }, review, [], {}, new Map([[H2, M2]]))
+				.commit,
+		).toBe(H2);
+	});
+
+	it("the opening view's recorded merge base wins over a read made now, for its own head only, and never names the head itself (CAR-315 review)", async () => {
+		const H2 = "e".repeat(40);
+		const M2 = "f".repeat(40);
+		const later = "3".repeat(40);
+		const left = (commit: string) =>
+			({
+				...right,
+				commit,
+				side: "LEFT" as const,
+				startSide: "LEFT" as const,
+			}) as AgentSpanAnchor;
+		const thread = (anchor: AgentSpanAnchor, base: string, head = H2) => ({
+			anchor,
+			at: "2026-11-27T00:00:00Z",
+			messages: [
+				{
+					id: "m1",
+					by: "human" as const,
+					text: "Why?",
+					at: "2026-11-27T00:00:00Z",
+					view: {
+						target: { head },
+						from: { branch: true as const },
+						left: base,
+						right: head,
+						base,
+					},
+				},
+			],
+		});
+		const opened = anchorOpened(thread(left(H2), M2));
+		expect(opened.base).toEqual({ head: H2, mergeBase: M2 });
+		// The base branch absorbed the head since (a stacked parent landed,
+		// or a merge commit landed it): a read now would say otherwise.
+		expect(
+			anchorFor(left(H2), review, [], opened, new Map([[H2, later]])).commit,
+		).toBe(M2);
+		expect(
+			anchorFor(left(H2), review, [], opened, new Map([[H2, H2]])).commit,
+		).toBe(M2);
+		// A code window moved to another head: not this base.
+		expect(
+			anchorFor(
+				left(later),
+				review,
+				[],
+				opened,
+				new Map([[later, "4".repeat(40)]]),
+			).commit,
+		).toBe("4".repeat(40));
+		// No read for it.
+		const asked: string[] = [];
+		await headBases([{ anchor: left(H2), opened }], review, [], async (h) => {
+			asked.push(h);
+			return later;
+		});
+		expect(asked).toEqual([]);
+		// A view whose base is the head itself (seen once landed), or on
+		// another head, or a GitHub thread conversation: nothing recorded.
+		expect(anchorOpened(thread(left(H2), H2)).base).toBeUndefined();
+		expect(
+			anchorOpened(thread(left(H2), M2, "1".repeat(40))).base,
+		).toBeUndefined();
+		expect(
+			anchorOpened(
+				thread({ ...left(H2), subject: "thread", thread: "T" } as never, M2),
+			).base,
+		).toBeUndefined();
+	});
+
+	it("headBases never gives a head as its own merge base (the base branch holds it: a landing by merge commit)", async () => {
+		const H2 = "e".repeat(40);
+		const { heads, errors } = await headBases(
+			[
+				{
+					anchor: {
+						...right,
+						commit: H2,
+						side: "LEFT",
+						startSide: "LEFT",
+					},
+				},
+			],
+			review,
+			[],
+			async () => H2,
+		);
+		expect(heads.get(H2)).toBeNull();
+		expect(errors.get(H2)).toBe("the base branch now contains this head");
+	});
+
+	it("headBases reads each LEFT head no patch set has once, skips the review's head, a patch set's and a non-OID, and keeps a failure's reason (CAR-315)", async () => {
+		const H2 = "e".repeat(40);
+		const gone = "7".repeat(40);
+		const M2 = "f".repeat(40);
+		const left = (commit: string) =>
+			({
+				...right,
+				commit,
+				side: "LEFT" as const,
+				startSide: "LEFT" as const,
+			}) as AgentAnchor;
+		const asked: string[] = [];
+		const { heads, errors } = await headBases(
+			[
+				{ anchor: left(H2) },
+				{ anchor: left(H2) },
+				{ anchor: { ...right, commit: "9".repeat(40) } },
+				{ anchor: left(review.head.commit) },
+				{ anchor: left("1".repeat(40)) },
+				{ anchor: left("") },
+				{ anchor: left(gone) },
+			],
+			review,
+			[
+				{
+					number: 1,
+					head: "1".repeat(40),
+					mergeBase: "2".repeat(40),
+					startedAt: 0,
+				},
+			],
+			async (head) => {
+				asked.push(head);
+				if (head === gone) throw new Error("commit gone\nmore");
+				return `${M2}\n`;
+			},
+		);
+		expect(asked.sort()).toEqual([gone, H2].sort());
+		expect([...heads]).toEqual(
+			expect.arrayContaining([
+				[H2, M2],
+				[gone, null],
+			]),
+		);
+		expect(heads.size).toBe(2);
+		expect(errors.get(gone)).toBe("commit gone");
+		expect(headBaseNotice(errors)).toContain(
+			`The merge base of ${gone} can't be read now (commit gone)`,
+		);
+		expect(headBaseNotice(new Map())).toBeUndefined();
+		// A merge base that isn't a commit id is a failure too.
+		const bad = await headBases(
+			[{ anchor: left(H2) }],
+			review,
+			[],
+			async () => "--upload-pack=evil",
+		);
+		expect(bad.heads.get(H2)).toBeNull();
 	});
 
 	/**

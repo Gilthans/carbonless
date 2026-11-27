@@ -70,13 +70,18 @@ import {
 	anchorOpened,
 	type CommentRole,
 	type GithubThreadFacts,
+	type HeadBases,
+	headBaseNotice,
+	headBases,
 	isSafePath,
+	OID,
 	type PromptCodeEnvelope,
 	type PromptEnvelope,
 	type PromptMessage,
 	type PromptReview,
 	type PromptReviewEnvelope,
 	patchsetOpened,
+	recordedBase,
 	sanitizeEnvelope,
 	sanitizeThirdParty,
 	takeSuggestion,
@@ -481,6 +486,12 @@ export type AgentGithub = Pick<
 > & {
 	/** The snapshot's merge base (a viewed head's, unless it is a patch set's). */
 	base(): string;
+	/**
+	 * A viewed head's own merge base with the base branch (RunnerFacts
+	 * headBase): a view on a head no patch set has is numbered in it
+	 * (CAR-315). Absent: base().
+	 */
+	headBase?(head: string): Promise<string>;
 	/** Every thread of a read placed on the review's head, by id (Session.agentPlacedAtHead). */
 	placedAtHead?(
 		readId: string,
@@ -762,7 +773,6 @@ export class AgentHost {
 		if (known !== undefined) {
 			return this.#view(await this.#joinedOne(await this.store.find(known)));
 		}
-		const view = req.view ? this.#resolveView(req.view) : undefined;
 		const given = [req.span, req.thread, req.review].filter(
 			(x) => x !== undefined,
 		).length;
@@ -771,6 +781,8 @@ export class AgentHost {
 				"A span, a thread or the review, one of them",
 			);
 		}
+		// After the cheap checks: a view on a head may read git (CAR-315).
+		const view = req.view ? await this.#resolveView(req.view) : undefined;
 		let anchor: AgentAnchor;
 		if (req.span) anchor = req.span;
 		else if (req.thread !== undefined) {
@@ -807,7 +819,7 @@ export class AgentHost {
 		if (await this.store.messagedWith(thread, req.clientId)) {
 			return this.#view(await this.#joinedOne(await this.store.find(thread)));
 		}
-		const view = req.view ? this.#resolveView(req.view) : undefined;
+		const view = req.view ? await this.#resolveView(req.view) : undefined;
 		const current = await this.store.find(thread);
 		if (current.anchor.subject === "thread") {
 			// Fails closed: an unread GitHub never lets a question through.
@@ -1875,6 +1887,29 @@ export class AgentHost {
 			]),
 		]);
 		if (!known.has(commit)) {
+			// The merge base a LEFT anchor on a head no patch set has names
+			// (anchorFor's heads, CAR-315): a commit the agent was told. The
+			// unjoined folds' anchors keep the commits `threads` gives
+			// (joinedAnchor and orphanAnchor keep `commit`): keep them in step.
+			const stored = (await this.store.read()).map((t) => ({
+				anchor: t.anchor,
+				opened: anchorOpened(t),
+			}));
+			// The opening views' recorded bases (no git), then the rest read.
+			for (const { anchor, opened } of stored) {
+				if (anchor.subject === "review") continue;
+				const recorded = recordedBase(anchor, opened);
+				if (recorded) known.add(recorded);
+			}
+			const { heads } = await headBases(
+				stored,
+				review,
+				sets?.patchsets ?? this.github.patchsets(),
+				(head) => facts.headBase(head),
+			);
+			for (const base of heads.values()) if (base) known.add(base);
+		}
+		if (!known.has(commit)) {
 			throw new BadReadError(
 				"commit must be one review names: its base, merge base or head, prHead, or a patch set's head or merge base",
 			);
@@ -1929,14 +1964,43 @@ export class AgentHost {
 	 * window's) as an agent gets it, a LEFT one on its patch set's merge
 	 * base (anchorFor; the stored anchors keep their head).
 	 */
-	async sessionThreads(secret: string): Promise<AgentThread[]> {
+	async sessionThreads(
+		secret: string,
+	): Promise<(AgentThread & { notice?: string })[]> {
 		await this.#token(secret);
 		const { facts } = this.#facts();
 		const review = facts.review();
 		const { patchsets } = facts.views();
-		return (await this.threads()).map((t) =>
-			threadForAgent(t, review, patchsets),
+		const threads = await this.threads();
+		// Each head no patch set has: its own merge base, read once (CAR-315).
+		const { heads, errors } = await headBases(
+			threads.flatMap((t) => {
+				const opened = anchorOpened(t);
+				const code = t.code?.anchor;
+				return [
+					{ anchor: t.anchor, opened },
+					...(code
+						? [{ anchor: { subject: "line" as const, ...code }, opened }]
+						: []),
+				];
+			}),
+			review,
+			patchsets,
+			(head) => facts.headBase(head),
 		);
+		return threads.map((t) => {
+			const out = threadForAgent(t, review, patchsets, heads);
+			// An anchor that names no commit says why (as next's notice).
+			const unread = new Map(
+				[t.anchor, t.code?.anchor].flatMap((a) =>
+					a && "commit" in a && errors.has(a.commit)
+						? [[a.commit, errors.get(a.commit) ?? ""] as const]
+						: [],
+				),
+			);
+			const notice = headBaseNotice(unread);
+			return notice ? { ...out, notice: sanitizeThirdParty(notice) } : out;
+		});
 	}
 
 	/**
@@ -1963,8 +2027,33 @@ export class AgentHost {
 		} else this.runner.asked();
 	}
 
-	#resolveView(view: Omit<AgentView, "left" | "right">): AgentView {
-		const v = resolveView(view, this.github.patchsets(), this.github.base());
+	/**
+	 * left/right of a view (resolveView). A view on a head no patch set has
+	 * is numbered in that head's own merge base (CAR-315: after a rebase or
+	 * a merge of the base, not the snapshot's); one that can't be read
+	 * refuses the request, never another diff's merge base in its place.
+	 */
+	async #resolveView(
+		view: Omit<AgentView, "left" | "right">,
+	): Promise<AgentView> {
+		const patchsets = this.github.patchsets();
+		let headBase: string | undefined;
+		const target = view.target;
+		if (
+			"head" in target &&
+			OID.test(target.head) &&
+			!patchsets.some((p) => p.head === target.head) &&
+			this.github.headBase
+		) {
+			try {
+				headBase = await this.github.headBase(target.head);
+			} catch (error) {
+				throw new AgentRequestError(
+					`The merge base of the viewed head ${target.head} can't be read now (${oneError(error)})`,
+				);
+			}
+		}
+		const v = resolveView(view, patchsets, this.github.base(), headBase);
 		if (!v) throw new AgentRequestError("view names no patch set or commit");
 		return v;
 	}
@@ -2043,9 +2132,10 @@ function threadForAgent(
 	t: AgentThread,
 	review: Pick<PromptReview, "mergeBase">,
 	patchsets: readonly AnchorPatchset[],
+	heads: HeadBases,
 ): AgentThread {
 	const opened = anchorOpened(t);
-	const anchor = anchorFor(t.anchor, review, patchsets, opened);
+	const anchor = anchorFor(t.anchor, review, patchsets, opened, heads);
 	if (!t.code) return { ...t, anchor };
 	const a = t.code.anchor;
 	const { commit } = anchorFor(
@@ -2061,6 +2151,7 @@ function threadForAgent(
 		review,
 		patchsets,
 		opened,
+		heads,
 	);
 	return { ...t, anchor, code: { ...t.code, anchor: { ...a, commit } } };
 }
@@ -2140,19 +2231,26 @@ async function sessionSpanTurn(
 ): Promise<SessionTurn> {
 	const review = facts.review();
 	const a = thread.anchor as AgentSpanAnchor;
-	// As the agent is told: a LEFT side on its patch set's merge base.
-	const told = anchorFor(
-		a,
+	const { patchsets } = facts.views();
+	const opened = anchorOpened(thread);
+	// A head no patch set has: its own merge base (CAR-315).
+	const { heads, errors } = await headBases(
+		[{ anchor: a, opened }],
 		review,
-		facts.views().patchsets,
-		anchorOpened(thread),
+		patchsets,
+		(head) => facts.headBase(head),
 	);
+	// As the agent is told: a LEFT side on its patch set's merge base, or
+	// that head's own.
+	const told = anchorFor(a, review, patchsets, opened, heads);
 	// The hunk of the comparison it was opened on (its head, its patch
 	// set's merge base; a head no patch set has: that head's own merge
 	// base, as the page showed it), whatever was pushed since (CAR-53).
 	const base =
-		patchsetOpened(a, facts.views().patchsets, anchorOpened(thread))
-			?.mergeBase ?? null;
+		patchsetOpened(a, patchsets, opened)?.mergeBase ??
+		recordedBase(a, opened) ??
+		heads.get(a.commit) ??
+		null;
 	const [anchored, hunk] = await Promise.all([
 		facts.anchored(told).catch(() => null),
 		facts.hunk(a, base).then(
@@ -2167,6 +2265,7 @@ async function sessionSpanTurn(
 		"error" in hunk && a.subject === "line"
 			? `The diff this conversation was opened on (${a.path}, ${base ?? "its merge base"}..${a.commit || "an unknown commit"}) can't be read now (${hunk.error}): \`hunk\` is missing; don't take the PR's current code for it.`
 			: undefined,
+		headBaseNotice(errors),
 		moved,
 	]);
 	const envelope = sanitizeEnvelope({
@@ -2205,6 +2304,14 @@ async function sessionThreadTurn(
 	const review = facts.review();
 	const { patchsets, current } = facts.views();
 	const view = viewOf(thread, patchsets, review);
+	const opened = anchorOpened(thread);
+	// A head no patch set has: its own merge base (CAR-315).
+	const { heads, errors } = await headBases(
+		[{ anchor, opened }],
+		review,
+		patchsets,
+		(head) => facts.headBase(head),
+	);
 	let github: GithubThreadFacts | null = null;
 	let unread: string | undefined;
 	let gone = false;
@@ -2227,12 +2334,14 @@ async function sessionThreadTurn(
 		checked
 			? `carbonless couldn't check GitHub for the PR's newest head (${checked}): \`current\` is the head as last read.`
 			: undefined,
+		headBaseNotice(errors),
 		moved,
 	]);
 	const env = sanitizeEnvelope(
 		threadEnvelope({
 			review,
-			thread: { id: thread.id, anchor, opened: anchorOpened(thread) },
+			thread: { id: thread.id, anchor, opened },
+			heads,
 			github,
 			view,
 			current,
@@ -2244,7 +2353,7 @@ async function sessionThreadTurn(
 	);
 	const envelope: PromptCodeEnvelope = env;
 	// The file at the commit the envelope names (anchorFor, as there).
-	const told = anchorFor(anchor, review, patchsets, anchorOpened(thread));
+	const told = anchorFor(anchor, review, patchsets, opened, heads);
 	const anchored = await facts.anchored(told).catch(() => null);
 	return { envelope, anchored, hunk: github?.code ?? null };
 }
@@ -2395,8 +2504,6 @@ export function buildAgentHost(o: {
 	});
 }
 
-const OID = /^[0-9a-f]{40}([0-9a-f]{24})?$/;
-
 /**
  * The hunks of `anchor.path` in `mergeBase`..`anchor.commit` (anchorHunk),
  * as the page builds them (loadFileHunks): from the current snapshot when
@@ -2477,6 +2584,12 @@ export interface ReviewAgentSource {
 		head: string,
 		path: string,
 	): Promise<Snapshot>;
+	/**
+	 * `head`'s own merge base with the base branch, as a viewed head's
+	 * snapshot takes it (CAR-315); fetches a commit the clone lacks. A
+	 * checked OID; throws when it can't be read.
+	 */
+	headMergeBase?(head: string): Promise<string>;
 	prFacts(): Promise<{ title: string; body: string }>;
 	code(anchor: CodeAnchor): Promise<CodeWindow | null>;
 	/** The PR's review threads as read from GitHub (their summaries), at most `maxAgeMs` old (default: any). */
@@ -2716,6 +2829,14 @@ export function reviewAgentHost(src: ReviewAgentSource): AgentHost {
 		}),
 		anchored: (anchor) => anchoredFile(src, anchor),
 		hunk: (anchor, mergeBase) => anchorHunk(src, anchor, mergeBase),
+		headBase: async (head) => {
+			const s = src.snapshot();
+			if (head === s.head) return s.base;
+			if (!src.headMergeBase) {
+				throw new Error("only the review's own head's merge base can be read");
+			}
+			return src.headMergeBase(head);
+		},
 		authorOf: async (login) =>
 			authorOf(login, { viewer: src.viewer, prAuthor: await prAuthor() }),
 		join: (folds) => joinRead(folds, () => src.threads()),
@@ -2766,6 +2887,7 @@ export function reviewAgentHost(src: ReviewAgentSource): AgentHost {
 			...(src.placedAtHead ? { placedAtHead: src.placedAtHead.bind(src) } : {}),
 			patchsets: () => src.patchsets(),
 			base: () => src.snapshot().base,
+			headBase: (head) => facts.headBase(head),
 			...(src.comments ? { comments: src.comments } : {}),
 		},
 		session: {
