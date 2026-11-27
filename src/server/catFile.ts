@@ -103,16 +103,20 @@ class CatFile {
 					reject(new GitError("git was stopped"));
 					return;
 				}
-				signal.addEventListener(
-					"abort",
-					() => {
-						if (pending.dropped) return;
-						pending.dropped = true;
-						pending.end();
-						reject(new GitError("git was stopped"));
-					},
-					{ once: true },
-				);
+				const onAbort = () => {
+					if (pending.dropped) return;
+					pending.dropped = true;
+					pending.end();
+					reject(new GitError("git was stopped"));
+				};
+				signal.addEventListener("abort", onAbort, { once: true });
+				// Answered or failed: the signal (a session's, long-lived)
+				// keeps no listener per read.
+				const end = pending.end;
+				pending.end = () => {
+					signal.removeEventListener("abort", onAbort);
+					end();
+				};
 			}
 			this.#queue.push(pending);
 			clearTimeout(this.#idle);

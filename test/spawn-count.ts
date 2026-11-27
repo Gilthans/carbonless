@@ -26,7 +26,7 @@ import { createPrFixture, type PrFixture } from "./pr-fixture";
  */
 
 /** A spawn's shape: its tool and subcommand, plus what tells calls apart (`--batch`, `--stdin`). */
-export function shapeOf(note: SpawnNote): string {
+function shapeOf(note: SpawnNote): string {
 	const { args } = note;
 	if (note.tool === "gh") return note.name;
 	const flags = args.filter((a) =>
@@ -51,17 +51,14 @@ export function countSpawns(): {
 }
 
 /** Shapes counted: `{ "git rev-parse": 3, ... }`. */
-export function tally(shapes: readonly string[]): Record<string, number> {
+function tally(shapes: readonly string[]): Record<string, number> {
 	const out: Record<string, number> = {};
 	for (const s of shapes) out[s] = (out[s] ?? 0) + 1;
 	return out;
 }
 
 /** Waits until no git or gh this process started is running (background work after a request). */
-export async function settleSpawns(
-	quietMs = 60,
-	maxMs = 20_000,
-): Promise<void> {
+async function settleSpawns(quietMs = 60, maxMs = 20_000): Promise<void> {
 	let quietSince = Date.now();
 	const end = Date.now() + maxMs;
 	while (Date.now() < end) {
@@ -90,7 +87,7 @@ const fileText = (i: number, changes: Record<number, string>) =>
 
 const fileName = (i: number) => `src/mod${i}/file${i}.ts`;
 
-export interface ScalePr {
+interface ScalePr {
 	pr: PrFixture;
 	/** Heads of patch sets 1, 2 and 3 (1 force-pushed away). */
 	heads: [string, string, string];
@@ -104,7 +101,7 @@ export interface ScalePr {
  * threads spread over the files: a third written on the dropped commit, a
  * third on PS2's, a third on the head.
  */
-export function createScalePr(size: ScaleSize): ScalePr {
+function createScalePr(size: ScaleSize): ScalePr {
 	const base: Record<string, string> = {};
 	const ps1: Record<string, string> = {};
 	for (let i = 0; i < size.files; i++) {

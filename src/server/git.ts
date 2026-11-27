@@ -152,9 +152,6 @@ export function spawnLongGit(repoPath: string, args: string[]): ChildProcess {
 const long = new Set<ChildProcess>();
 let killLongOnExit = false;
 
-/** How many long-running gits are alive (tests). */
-export const longGitCount = (): number => long.size;
-
 export async function runGit(
 	repoPath: string,
 	args: string[],
