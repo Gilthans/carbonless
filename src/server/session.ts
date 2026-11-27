@@ -423,6 +423,8 @@ export class Session {
 	readonly #placing = new Map<string, PlacingJob>();
 	/** Placement jobs placeAgain left running (stale): close waits for them. */
 	readonly #retiredPlacing = new Set<PlacingJob>();
+	/** Compacting the review's refs once its PR is over (#compact): close waits for it. */
+	#compaction: Promise<void> = Promise.resolve();
 
 	private constructor(
 		private readonly repo: string,
@@ -618,6 +620,7 @@ export class Session {
 				...[...this.#placing.values()].map((j) => j.settled),
 				...[...this.#retiredPlacing].map((j) => j.settled),
 				this.#queue,
+				this.#compaction,
 				// Its process, checkout and claim.
 				this.#agent?.close(),
 			]);
@@ -794,11 +797,32 @@ export class Session {
 			headInfo,
 		);
 		if (options.reuseOpenHead && !asOf) session.#openHeadAt = metaAt;
+		// Merged or closed on GitHub (never as of a cutoff): its refs are
+		// compacted in the background, after the open's own writes.
+		if (over) session.#compact();
 		// The open's carry counts as the snapshot's (#carrySplits): done, or
 		// one try spent and one left for the next read.
 		if (carried === true) session.#splitsCarried.add(snapshot.revision);
 		else if (carried === false) session.#splitsTried.set(snapshot.revision, 1);
 		return session;
+	}
+
+	/**
+	 * Compacts the review's refs (docs/review-data-storage.md, "Compaction"),
+	 * never waited for by the open: the page reads the refs as they are
+	 * either way, and a failure only leaves them as they were.
+	 */
+	#compact(): void {
+		this.#compaction = this.reviews.compact(this.reviewId, this.viewer).then(
+			(r) => {
+				for (const s of r.skipped) {
+					console.warn(`crb: not compacted: ${s.ref}: ${s.reason}`);
+				}
+			},
+			(error: unknown) => {
+				console.warn(`crb: compaction failed: ${(error as Error).message}`);
+			},
+		);
 	}
 
 	/** The review's id (its `/r/<id>` URL). */

@@ -138,6 +138,18 @@ export async function registerTestHooks(
 			const { closed, pending } = await options.registry.reset(settleMs);
 			// Home's reads started before this drop their answers (its generation).
 			options.home?.reset();
+			// A compaction it began (CAR-13) ends before the clones go; queued
+			// ones were dropped by the reset. Within the same deadline.
+			if (options.home) {
+				let timer: NodeJS.Timeout | undefined;
+				await Promise.race([
+					options.home.compactionsIdle(),
+					new Promise((resolve) => {
+						timer = setTimeout(resolve, Math.max(0, deadline - Date.now()));
+					}),
+				]);
+				clearTimeout(timer);
+			}
 			// Per snapshot, not content alone: a fresh process has none.
 			clearSnapshotCaches();
 			resetLimits();

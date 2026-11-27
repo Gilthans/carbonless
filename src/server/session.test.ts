@@ -277,6 +277,45 @@ describe("Session", () => {
 		expect((await again.review()).progress.clusters.reviewed).toBe(1);
 	});
 
+	it("compacts a started review's refs once GitHub says the PR is over, keeping every mark (CAR-13)", async () => {
+		const s = await Session.open(pr.arg, process.cwd());
+		await s.setStates(s.snapshot().revision, [
+			{ key: firstKey(s), state: "reviewed" },
+		]);
+		await s.setStates(s.snapshot().revision, [
+			{ key: firstKey(s), state: "crossed-off" },
+		]);
+		await s.setStates(s.snapshot().revision, [
+			{ key: firstKey(s), state: "reviewed" },
+		]);
+		const progress = `refs/crb/reviews/${s.id}/reviewers/octo-cat/progress`;
+		const git = (...args: string[]) =>
+			execFileSync("git", ["-C", clonePath("acme", "widget"), ...args], {
+				encoding: "utf8",
+				env: testGitEnv(),
+			}).trim();
+		const commits = () => Number(git("rev-list", "--count", progress));
+		expect(commits()).toBeGreaterThan(1);
+		// Still open: nothing is compacted.
+		await (await Session.open(pr.arg, process.cwd())).close();
+		expect(commits()).toBeGreaterThan(1);
+		land("CLOSED");
+		const again = await Session.open(pr.arg, process.cwd());
+		// The open doesn't wait for it; close does.
+		await again.close();
+		expect(commits()).toBe(1);
+		const after = await Session.open(pr.arg, process.cwd());
+		expect((await after.review()).progress.clusters.reviewed).toBe(1);
+		// A mark after the merge lands on top; the next open leaves it there
+		// (not worth another full copy: RECOMPACT_AFTER).
+		await after.setStates(after.snapshot().revision, [
+			{ key: firstKey(after), state: "crossed-off" },
+		]);
+		await after.close();
+		await (await Session.open(pr.arg, process.cwd())).close();
+		expect(commits()).toBe(2);
+	});
+
 	it("keeps an unstarted review's snapshot when the PR is merged at a new head", async () => {
 		const s = await Session.open(pr.arg, process.cwd());
 		const before = s.snapshot();

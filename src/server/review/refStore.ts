@@ -284,8 +284,26 @@ export class RefStore {
 		events: CrbEvent[],
 		author: string,
 	): Promise<string> {
-		if (!isSlug(author)) throw new Error(`Invalid author slug: ${author}`);
 		for (const e of events) validateForWrite(e);
+		return this.commitMessage(
+			parent,
+			serializeCommitMessage(summary, events),
+			author,
+		);
+	}
+
+	/**
+	 * Writes a crb commit with this exact message (not moving any ref):
+	 * compaction's, which carries event lines over verbatim, some perhaps of
+	 * types this version can't read (so it can't check them, and must keep
+	 * them). Everything else writes through commit().
+	 */
+	async commitMessage(
+		parent: string | null,
+		message: string,
+		author: string,
+	): Promise<string> {
+		if (!isSlug(author)) throw new Error(`Invalid author slug: ${author}`);
 		const tree = await this.emptyTree();
 		const out = await runGit(
 			this.repo,
@@ -300,7 +318,7 @@ export class RefStore {
 				"-",
 			],
 			{
-				input: serializeCommitMessage(summary, events),
+				input: message,
 				// Identity from the environment only, never from git config.
 				env: {
 					GIT_AUTHOR_NAME: author,

@@ -5,11 +5,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { testGitEnv } from "../../../test/git-fixture";
 import { createPrFixture, type PrFixture } from "../../../test/pr-fixture";
 import type { Snapshot } from "../../shared/types.js";
-import { ensureClone, ensureRepoInit, fetchPr } from "../clone.js";
+import { clonePath, ensureClone, ensureRepoInit, fetchPr } from "../clone.js";
 import { buildSnapshot } from "../diff/snapshot.js";
 import { runGit } from "../git.js";
+import { listJoinable } from "../mcp/reviews.js";
+import { compactReview } from "../review/compact.js";
 import { RefStore } from "../review/refStore.js";
 import { ReviewService } from "../review/reviews.js";
+import type { StartedReview } from "./facts.js";
 import { StartedReviews } from "./started.js";
 
 // Each fake gh call is a node process, and the scaling test starts 32
@@ -94,6 +97,49 @@ describe("StartedReviews", () => {
 		expect(Date.parse(started?.lastActedAt ?? "")).toBeGreaterThanOrEqual(
 			before - 5,
 		);
+	});
+
+	it("reads the same after compaction: summary, last action, coverage, and MCP's listing (CAR-13)", async () => {
+		const id = await reviews.findOrCreateReview(PR, "octo");
+		const [first, second] = keys();
+		for (const key of [first, second, first]) {
+			await reviews.recordStates(id, "octo", snap, [
+				{ key: key as string, state: "reviewed" },
+			]);
+		}
+		const mcp = (list: StartedReview[]) =>
+			listJoinable(
+				{
+					open: () => [],
+					viewer: async () => "octo",
+					started: async () => list,
+					cached: () => undefined,
+					acpConfigured: async () => false,
+					spawned: () => false,
+					joinedOnDisk: () => false,
+				},
+				"http://crb.test",
+			);
+		const before = await scanner().list("octo");
+		const mcpBefore = await mcp(before);
+		expect(before).toHaveLength(1);
+		// Compacted a week later: the marker is dated then, which is not
+		// the reviewer acting.
+		vi.useFakeTimers({ toFake: ["Date"] });
+		vi.setSystemTime(Date.now() + 7 * 24 * 3_600_000);
+		try {
+			const done = await compactReview(
+				new RefStore(clonePath("acme", "widget")),
+				id,
+				"octo",
+			);
+			expect(done.compacted.length).toBeGreaterThan(0);
+		} finally {
+			vi.useRealTimers();
+		}
+		const after = await scanner().list("octo");
+		expect(after).toEqual(before);
+		expect(await mcp(after)).toEqual(mcpBefore);
 	});
 
 	it("asked for one repo, scans only that repo's clone", async () => {

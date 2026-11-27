@@ -12,6 +12,7 @@ import type {
 } from "../../shared/types.js";
 import { readBlob } from "../catFile.js";
 import { runGit } from "../git.js";
+import { type CompactResult, compactReview } from "./compact.js";
 import {
 	type CarriedEvent,
 	type ClusterStateEvent,
@@ -254,6 +255,14 @@ export class ReviewService {
 			if (winner) return winner;
 			throw error;
 		}
+	}
+
+	/**
+	 * Compacts the review's event refs (its PR is merged or closed): see
+	 * compact.ts and docs/review-data-storage.md, "Compaction".
+	 */
+	compact(reviewId: string, actor: string): Promise<CompactResult> {
+		return compactReview(this.store, reviewId, actor);
 	}
 
 	async getProgress(reviewId: string, slug: string): Promise<ProgressState> {

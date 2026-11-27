@@ -260,6 +260,19 @@ interface ReviewClosedEvent extends EventBase {
 }
 
 /**
+ * The ref holding it was rewritten to one commit holding every event of its
+ * history (docs/review-data-storage.md, "Compaction"): the old tip `from`,
+ * of `commits` commits. Written by crb (`by: "auto"`), in every compacted
+ * ref, last in that commit. A reader folds nothing from it; a client syncing
+ * the ref replaces its copy with the compacted one instead of merging.
+ */
+interface CompactedEvent extends EventBase {
+	type: "compacted";
+	from: string;
+	commits: number;
+}
+
+/**
  * Inbox events (`refs/crb/inbox/<reviewer>`, one ref per reviewer per repo):
  * the reviewer's own annotations of a PR on Home. Only a human writes them.
  * See docs/review-data-storage.md ("Inbox ref").
@@ -413,6 +426,7 @@ export type CrbEvent =
 	| ThreadMovedEvent
 	| ThreadMoveUndoneEvent
 	| ReviewClosedEvent
+	| CompactedEvent
 	| InboxEvent
 	| AgentEvent;
 
@@ -543,6 +557,9 @@ export function validateForWrite(e: CrbEvent): void {
 	) {
 		throw new Error(`${e.type} events must be written by a human`);
 	}
+	if (e.type === "compacted" && e.by !== "auto") {
+		throw new Error("compacted events must be written by auto (crb)");
+	}
 	if (e.type === "agent-thread-resolved" && e.by !== "human") {
 		throw new Error("agent-thread-resolved events must be written by a human");
 	}
@@ -567,6 +584,16 @@ export function serializeCommitMessage(
 ): string {
 	const line = summary.replace(/\s*[\r\n]+\s*/g, " ").trim() || "crb";
 	return `${line}\n\n${events.map((e) => `${JSON.stringify(e)}\n`).join("")}`;
+}
+
+/**
+ * Whether an event is something someone did (a mark, a start, a message):
+ * false for crb's own bookkeeping (compaction's `compacted` marker), whose
+ * `ts` is when crb wrote it. Every "last acted" or "latest activity" reads
+ * only these.
+ */
+export function isActivity(e: CrbEvent): boolean {
+	return e.type !== "compacted";
 }
 
 /**
@@ -917,6 +944,18 @@ function parseEvent(raw: unknown): CrbEvent | null {
 				outcome,
 				...(mergeCommit !== undefined ? { mergeCommit } : {}),
 			};
+		}
+		case "compacted": {
+			const { from, commits } = raw;
+			if (base.by !== "auto") return null;
+			if (
+				typeof from !== "string" ||
+				!/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/.test(from)
+			) {
+				return null;
+			}
+			if (!isPosInt(commits)) return null;
+			return { ...base, type: "compacted", from, commits };
 		}
 		case "pr-snoozed":
 		case "pr-waiting-on":
