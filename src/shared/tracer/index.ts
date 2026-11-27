@@ -6,4 +6,4 @@ export {
 	type LineMapper,
 	type MapHunk,
 } from "./lineMapper.js";
-export { TRACER_VERSION, tracePosition } from "./trace.js";
+export { type Position, TRACER_VERSION, tracePosition } from "./trace.js";

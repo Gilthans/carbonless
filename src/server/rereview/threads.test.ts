@@ -330,6 +330,13 @@ describe("ThreadPlacer", () => {
 			base(),
 		);
 		expect(again?.diffs?.bd).toBe(one?.diffs?.bd);
+		// So are its texts' readers: the tracer checks its memos against a
+		// reader once per file, not once per thread (CAR-95).
+		expect(one?.diffs?.oldLineText).toBeDefined();
+		expect(two?.diffs?.oldLineText).toBe(one?.diffs?.oldLineText);
+		expect(two?.newLineText).toBe(one?.newLineText);
+		expect(again?.newLineText).toBe(one?.newLineText);
+		expect(other?.newLineText).not.toBe(one?.newLineText);
 	});
 
 	it("an old-side thread dated before the base branch's history still traces from its merge base", async () => {

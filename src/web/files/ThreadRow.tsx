@@ -443,7 +443,7 @@ function AgentChanged(props: {
 			className="min-w-0 space-y-1.5"
 		>
 			<p className="flex min-h-10 items-center">
-				<ChangedChip thread={thread} />
+				<ChangedChip thread={thread} inFileMove={props.placement.inFileMove} />
 			</p>
 			<ChangedSince
 				thread={thread}

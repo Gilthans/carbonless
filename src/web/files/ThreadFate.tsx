@@ -10,6 +10,7 @@ import {
 	GitCompareIcon,
 	HistoryIcon,
 	type Icon,
+	MoveToBottomIcon,
 	QuestionIcon,
 	StopIcon,
 	UnverifiedIcon,
@@ -287,7 +288,7 @@ function FateChip({ thread }: { thread: ReviewThread }) {
 	if (placement.kind === "changed") {
 		return (
 			<>
-				<ChangedChip thread={thread} />
+				<ChangedChip thread={thread} inFileMove={placement.inFileMove} />
 				{placement.unchecked && <UncheckedChip quiet={quiet} />}
 			</>
 		);
@@ -330,22 +331,28 @@ function UncheckedChip({ quiet }: { quiet: boolean }) {
 	);
 }
 
-/** "changed since": a thread's line was rewritten since it was made (muted once resolved). */
+/**
+ * "changed since": a thread's line was rewritten since it was made;
+ * "moved since": it went elsewhere in its file with its block (the
+ * placement's `inFileMove`). Muted once resolved.
+ */
 export function ChangedChip({
 	thread,
+	inFileMove,
 }: {
 	thread: Pick<ReviewThread, "createdAt" | "resolved">;
+	inFileMove?: boolean;
 }) {
 	const info = usePlacementInfo();
 	const ps = psLabel(info.openedOn(thread));
 	return (
 		<Chip
 			tone={thread.resolved ? "gray" : "yellow"}
-			icon={GitCompareIcon}
-			tip={`The line changed since ${ps || "the thread was made"}`}
+			icon={inFileMove ? MoveToBottomIcon : GitCompareIcon}
+			tip={`The ${inFileMove ? "code moved" : "line changed"} since ${ps || "the thread was made"}`}
 			testId="placement-changed"
 		>
-			changed since
+			{inFileMove ? "moved since" : "changed since"}
 		</Chip>
 	);
 }
@@ -383,7 +390,10 @@ export function ChangedSince({
 				data-testid="placement-fate-line"
 				className="flex min-h-10 flex-wrap items-center gap-x-2 text-xs text-muted"
 			>
-				<span>Line rewritten{ps === null ? "" : ` since PS${ps}`}</span>
+				<span>
+					Line {placement.inFileMove ? "moved" : "rewritten"}
+					{ps === null ? "" : ` since PS${ps}`}
+				</span>
 				{ps !== null && (
 					<Link
 						to="/r/$id/files"

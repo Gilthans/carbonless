@@ -1744,6 +1744,87 @@ test("a resolved thread keeps carrying: on a later head it shows on its traced l
 	await expect(page.getByTestId("not-in-comparison")).toHaveCount(0);
 });
 
+test("a thread on a block moved elsewhere in its file follows it, moved since, in both views (CAR-95)", async ({
+	page,
+	pr,
+	startCrb,
+}) => {
+	// A review, a push and the placements in two views: each waits on git.
+	test.setTimeout(120_000);
+	const block = [
+		"const totalWeight = sumAll(items, weights)",
+		'report.write(totalWeight, "weighted sum")',
+	];
+	const withBlock = (after: number) => [
+		...core.slice(0, after),
+		...block,
+		...core.slice(after),
+	];
+	const threads: ReturnType<typeof reviewThread>[] = [];
+	const p = await pr({
+		...fixture,
+		threads,
+		files: [
+			{
+				message: "PR change",
+				files: {
+					"src/core.ts": text(withBlock(2)),
+					"src/util.ts": edit(util, { 3: "util 3 changed" }),
+				},
+			},
+		],
+	});
+	// On the block's second line (3, 4 in PS1).
+	threads.push(threadOn(p.head(), "src/core.ts", 4, "Weighted by what?"));
+	p.editScenario((sc) => {
+		const graph = sc.prs[p.number]?.graphql;
+		if (graph) graph.reviewThreads = threads;
+	});
+	const s = await startCrb();
+	await openFiles(page, s.url);
+	await reviewAll(page);
+	// Push 2: the block moves to the end of the file, as it was.
+	p.moveHead({
+		message: "move the block",
+		files: { "src/core.ts": text(withBlock(38)) },
+	});
+	await page.reload();
+	await expect(tail(page)).toHaveAttribute("data-state", "head", GIT_WAIT);
+	await toast(page).getByRole("button", { name: "View" }).click();
+	const coreS = fileSection(page, "src/core.ts");
+	await coreS.getByRole("button", { name: "Expand file" }).click();
+	const check = async () => {
+		// On the head's line 40, once placed (until then it sits on PS1's
+		// line, which the since view shows removed).
+		const bubble = coreS
+			.getByTestId("diff-line")
+			.filter({ hasText: "weighted sum" })
+			.getByRole("button", { name: "1 comment on line 40" });
+		await expect(bubble).toBeVisible(GIT_WAIT);
+		// Its state settled first: open once, then the card stays.
+		await expect(bubble).toHaveAttribute("aria-expanded", /^(true|false)$/);
+		if ((await bubble.getAttribute("aria-expanded")) === "false") {
+			await bubble.click();
+		}
+		await expect(bubble).toHaveAttribute("aria-expanded", "true");
+		const card = coreS
+			.getByTestId("files-thread")
+			.filter({ hasText: "Weighted by what?" });
+		await expect(card).toBeVisible();
+		await expect(card.getByTestId("placement-changed")).toHaveText(
+			"moved since",
+		);
+		await expect(card.getByTestId("placement-fate-line")).toContainText(
+			"Line moved since PS1",
+		);
+		await expect(unplacedRows(coreS)).toHaveCount(0);
+	};
+	// The since view (PS1 → the head), then the full diff.
+	await check();
+	await baseOn(page, "branch", "[");
+	await check();
+});
+
 async function threadsPushed(
 	page: Page,
 	pr: (o: PrOptions) => Promise<Pr>,

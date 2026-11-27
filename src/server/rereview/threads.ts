@@ -29,6 +29,7 @@ import {
 	createLineMapper,
 	IDENTITY,
 	type LineMapper,
+	type Position,
 } from "../../shared/tracer/index.js";
 import type {
 	CodeAnchor,
@@ -374,6 +375,12 @@ function mapperOf(entry: DiffEntry | undefined, path = ""): LineMapper {
 export class ThreadPlacer {
 	readonly #diffs = new Map<string, Promise<Map<string, DiffEntry>>>();
 	readonly #texts = new Map<string, Promise<string[] | null>>();
+	/**
+	 * One reader per pair of file texts, shared by every thread of the
+	 * file: the tracer checks its memos against a reader once, not once
+	 * per thread (CAR-95).
+	 */
+	readonly #readers = new Map<string, (pos: Position) => string | null>();
 
 	constructor(
 		private readonly repo: string,
@@ -391,6 +398,22 @@ export class ThreadPlacer {
 			made = diffMap(this.repo, old, fresh, paths);
 			this.#diffs.set(key, made);
 			made.catch(() => this.#diffs.delete(key));
+		}
+		return made;
+	}
+
+	/** A reader of two texts (RIGHT, LEFT), the same function for the same key. */
+	#reader(
+		key: unknown[],
+		right: string[] | null,
+		left: string[] | null,
+	): (pos: Position) => string | null {
+		const k = JSON.stringify(key);
+		let made = this.#readers.get(k);
+		if (!made) {
+			made = (pos) =>
+				(pos.side === "RIGHT" ? right : left)?.[pos.line - 1] ?? null;
+			this.#readers.set(k, made);
 		}
 		return made;
 	}
@@ -546,15 +569,20 @@ export class ThreadPlacer {
 					inComparison,
 					...source,
 					own: mapperOf(ownEntry),
-					newLineText: (pos) =>
-						(pos.side === "RIGHT" ? newRight : newLeft)?.[pos.line - 1] ?? null,
+					newLineText: this.#reader(
+						[target.head, newPath, target.base, targetFile?.oldPath ?? newPath],
+						newRight,
+						newLeft,
+					),
 					diffs: {
 						ac: mapperOf(baseEntry?.entry),
 						bd: mapperOf(head?.entry, t.path),
 						cd: targetFile ? linesMapper(targetFile.clusters) : IDENTITY,
-						oldLineText: (pos) =>
-							(pos.side === "RIGHT" ? oldRight : oldLeft)?.[pos.line - 1] ??
-							null,
+						oldLineText: this.#reader(
+							[ends.head, t.path, ends.base, basePath],
+							oldRight,
+							oldLeft,
+						),
 						newLineCount: {
 							LEFT: newLeft?.length ?? 0,
 							RIGHT: newRight?.length ?? 0,

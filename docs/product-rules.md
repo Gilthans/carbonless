@@ -224,7 +224,12 @@ pairing (`src/shared/linePairing.ts`, whitespace not counted, so a
 re-indented line is the same line) of the hunk's removed and added lines,
 then of the hunk with its neighbours across a few lines that git cut it
 at (a `}`, a blank line, one other line, never a line opening a block such
-as a function header). A line the pairing leaves alone still goes to the
+as a function header, nor a lone closer at the left margin such as a
+function's closing `}`: the next function is other code; Markdown, YAML or
+top-level Python at the margin still joins). A line that finds nothing
+alike, cut off by such a boundary from code added beside it, is
+`rewritten` when its text says something on its own (it may have gone
+there), else `deleted`. A line the pairing leaves alone still goes to the
 replacing line it most resembles between its neighbours' partners, when
 that is close (two lines merged into one). It shows as "changed since the
 review". Nothing replacing it resembles it: it is listed under its file as
@@ -233,9 +238,66 @@ its place. When it can't be told, it is `rewritten`, also under its file:
 a pairing too large, a text that can't be read, a line with no word (a
 `}`, a blank line: its likeness says nothing), or two lines past its own
 hunk as like it as each other. A range maps to the span its surviving
-lines landed on. Owner, 2026-11-18 (CAR-95): reuse the side-by-side
-similarity; measured on a real review's threads with `pnpm score-carry`
-(`docs/thread-carry-corpus.md`).
+lines landed on; one whose every line with a word is gone is gone too,
+never kept alive by a `}` or a blank line that stayed. Owner, 2026-11-18
+(CAR-95): reuse the side-by-side similarity; measured on a real review's
+threads with `pnpm score-carry` (`docs/thread-carry-corpus.md`).
+
+A line edited in place keeps its thread there: when every line with a
+word within three lines of it stayed or was paired in place beside it, or
+when it sits between the lines git kept nearest above and below it (one
+of them of unique text), nothing elsewhere contests its partner, however
+alike (a version bumped with the old value copied into a new section, an
+assertion changed with the old one in a new test, a function copied and
+the original edited, even with a neighbour deleted).
+
+A block moved elsewhere in its file takes its threads with it
+(`src/shared/tracer/moved.ts`): the commented line found again among the
+file's added lines, equal ignoring whitespace, inside a run of the removed
+lines around it found again line for line (equal, or alike beside an equal
+one), of two lines with a word or more and at least 20 letters and digits
+on its equal lines (git's `--color-moved` minimum). A deleted line (no
+partner nearby) follows it only when the run carries all of its hunk's
+removed lines with a word, two at least, those with their own edited
+version at home aside (they stayed): an extracted method, a block moved
+whole. Boilerplate dropped from a function that is still there (two or
+three of its lines, `t.Parallel()` and a `ctx :=` line) and found in new
+code did not move (owner's call, 2026-11-23: wrong is worse than
+unplaced). A line with a partner nearby only lets a move contest it when
+the run carries more than half of its hunk. A block header that differs (`func a() {` against
+`func b() {`) ends a run. The thread shows "moved since" on its new line.
+A line opening a block (`const (`) that didn't move itself, but whose
+whole body (two lines or more, with the opener all of its hunk) did, goes
+to the body's first line, and counts as carried for its body's lines, only
+when the body now sits directly under an opener like it (`const (` under
+`const (`). A block dropped from an `if strict {` or a `with
+mock.patch(...):` and found under another opener left its opener behind:
+it did not move. An identical block that appears twice, or two runs within a
+clear margin of each other, is ambiguous: `rewritten`. With no move
+decided, a line whose text is still among the added lines, and says
+something on its own (20 letters and digits, or once in the old file), is
+`rewritten`, never `deleted` (that would be a false claim); a generic one
+(`t.Parallel()`, `return err` used all over) stays `deleted`. A partner nearby that isn't
+held like that competes with the move, if any, and with the file's
+look-alikes (about as alike, within 0.15, or more): the one whose
+surroundings (three lines each way) also resemble the old ones wins, by a
+clear margin, and a line elsewhere only when its surroundings, not its
+likeness alone, lead. A neighbour git kept at home with unique text never
+counts for a line elsewhere (it stayed: a look-alike of it there is a
+copy). A line in new code (inserted, or with nothing kept around it) never
+wins against a partner nearby: a copy of the old code and the statement
+rewritten into new code read the same, so it is `rewritten`. A partner
+found equal only across kept lines while another removed line has the
+same text, or one where another line's block moved to, is not taken.
+Past 64 look-alikes (a generated table), the partner nearby keeps it. A
+range split by a move follows its part with more lines. The tuning holds
+at its neighbouring settings (a property test: functions sharing
+boilerplate, edits, deleted lines and functions, a moved block, and
+decoys: copied lines, a copied function edited differently, boilerplate in
+new code, a second copy of the block, near-copies). On the same corpus
+(CAR-95 step 3) this ended every wrong-line placement; one entry right by
+a far look-alike in new code (a test function renamed and rewritten)
+became `rewritten`.
 
 ## A thread with nothing to trace from sits on GitHub's line
 

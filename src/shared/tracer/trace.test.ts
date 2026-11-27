@@ -57,9 +57,9 @@ const rows = (from: number, lines: string[], side: DiffSide = "RIGHT") =>
 	Object.fromEntries(lines.map((t, i) => [`${side}:${from + i}`, t]));
 
 describe("tracePosition", () => {
-	it("exports TRACER_VERSION 2 from the index", () => {
-		expect(TRACER_VERSION).toBe(2);
-		expect(tracer.TRACER_VERSION).toBe(2);
+	it("exports TRACER_VERSION 3 from the index", () => {
+		expect(TRACER_VERSION).toBe(3);
+		expect(tracer.TRACER_VERSION).toBe(3);
 		expect(tracer.createLineMapper).toBe(createLineMapper);
 		expect(tracer.tracePosition).toBe(tracePosition);
 	});

@@ -395,6 +395,29 @@ describe("PlacementChip", () => {
 		expect(screen.getByTestId("placement-changed").textContent).toContain(
 			"changed since",
 		);
+		// Moved with its block elsewhere in the file (CAR-95 step 3).
+		rerender(
+			wrap(
+				info({
+					placements: new Map([
+						[
+							t.id,
+							{
+								kind: "changed",
+								anchor,
+								old: { side: "RIGHT", startLine: 3, line: 3, text: ["x"] },
+								now: ["x"],
+								inFileMove: true,
+							},
+						],
+					]),
+				}),
+				<PlacementChip thread={t} />,
+			),
+		);
+		expect(screen.getByTestId("placement-changed").textContent).toContain(
+			"moved since",
+		);
 		rerender(
 			wrap(
 				info({
@@ -526,6 +549,24 @@ describe("ChangedSince", () => {
 			"Line rewritten since PS1",
 		);
 		expect(document.querySelector("img[src='x']")).toBeNull();
+	});
+
+	it("a thread moved with its block says moved, not rewritten", async () => {
+		render(
+			wrap(
+				info(),
+				inRouter(() => (
+					<ChangedSince
+						thread={thread()}
+						placement={{ ...changed, inFileMove: true }}
+					/>
+				)),
+			),
+		);
+		await screen.findByTestId("original-code");
+		expect(screen.getByTestId("placement-fate-line").textContent).toContain(
+			"Line moved since PS1",
+		);
 	});
 
 	it("while its code is on its way: the code's frame, never the lines it sits on now", async () => {
