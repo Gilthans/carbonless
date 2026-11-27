@@ -889,7 +889,15 @@ one (and is no cluster of the snapshot):
   piece's (its removed lines at `removedAt` among the hunk's removed ones,
   its added lines at `addedAt` among the hunk's added ones), as the piece's
   whole mark when they cover it in one state, else as the piece's line
-  marks in each state, `from` naming the hunk's lines they come from.
+  marks in each state, `from` naming the hunk's lines they come from;
+- lines the engine line-carried into the hunk (`linesCarried`, CAR-195) go
+  in entries of their own, always with the piece's `lines`, and the fold
+  keeps them carried on the piece (`linesCarried`, CAR-308): they show the
+  carried badge and, like any line carry, carry nothing further. An entry
+  whose `from` touches any carried line is read as carried whole; one with
+  no `lines` (written before CAR-308) can't say which piece lines are the
+  carry's, so the fold skips it and the piece reads unreviewed until the
+  next read writes the carry again, by lines. No new field.
 
 Written once: once a piece holds anything (the carry, or the reviewer's own
 mark), it is left alone, so every later read writes nothing. **The fold**

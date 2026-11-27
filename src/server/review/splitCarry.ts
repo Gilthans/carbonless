@@ -54,6 +54,8 @@ function hunkRanges(c: Cluster): {
  * the hunk had: an unmarked hunk, or lines it didn't mark, give nothing.
  * Nothing either for a piece the Markdown block cut made of a CAR-156
  * piece (`split.piece`) that holds a state: those lines read unreviewed.
+ * Lines the engine line-carried into the hunk (`linesCarried`) get their
+ * own entry, always with the piece's `lines`: the fold keeps them carried.
  */
 export function splitCarries(
 	snapshot: Snapshot,
@@ -77,18 +79,28 @@ export function splitCarries(
 				continue;
 			}
 			const { all, toPiece } = hunkRanges(c);
+			const engine = origin.linesCarried?.lines ?? [];
 			const marks = [
 				["reviewed", intersect(origin.lines ?? [], all)],
 				["crossed-off", intersect(origin.crossed ?? [], all)],
 			] as const;
-			for (const [state, from] of marks) {
-				if (from.length === 0) continue;
-				const lines = toPiece(from);
-				entries.push(
-					size(lines) === c.lines
-						? { key: c.key, fromKey: split.key, state, from }
-						: { key: c.key, fromKey: split.key, state, from, lines },
-				);
+			for (const [state, marked] of marks) {
+				// The reviewer's own lines and the engine's line carry go in
+				// separate entries; the carry's always names the piece's lines, so
+				// the fold keeps them tagged (CAR-308, principle 2).
+				const parts = [
+					[subtract(marked, engine), false],
+					[intersect(marked, engine), true],
+				] as const;
+				for (const [from, carried] of parts) {
+					if (from.length === 0) continue;
+					const lines = toPiece(from);
+					entries.push(
+						!carried && size(lines) === c.lines
+							? { key: c.key, fromKey: split.key, state, from }
+							: { key: c.key, fromKey: split.key, state, from, lines },
+					);
+				}
 			}
 		}
 	}
