@@ -801,6 +801,131 @@ describe("foldProgress", () => {
 			expect(statesOf(evs, REV)[K2]).toBeUndefined();
 		});
 
+		describe("of a hunk's line carry (CAR-308): the piece stays carried and carries nothing further", () => {
+			/** PS1 marks K1's lines [0,2); PS2 line-carries them onto K2. */
+			const lineCarried = () => [
+				started(REV, 1),
+				state(K1, "unreviewed"),
+				linesReviewed(K1, [[0, 2]]),
+				started(OTHER_REV, 2, 1),
+				at(
+					newEvent(
+						"lines-carried",
+						"dan",
+						{
+							from: 1,
+							to: 2,
+							states: [
+								{
+									key: K2,
+									fromKey: K1,
+									state: "reviewed" as const,
+									lines: [[0, 2] as [number, number]],
+									fromLines: [[0, 2] as [number, number]],
+								},
+							],
+						},
+						"auto",
+					),
+				),
+			];
+			/** PS3 follows PS2 and tries both carries from K3 onto K4. */
+			const nextPush = () => [
+				started(THIRD_REV, 3, 2),
+				carried([entry(K4, K3, "reviewed")], { from: 2, to: 3 }),
+				at(
+					newEvent(
+						"lines-carried",
+						"dan",
+						{
+							from: 2,
+							to: 3,
+							states: [
+								{
+									key: K4,
+									fromKey: K3,
+									state: "reviewed" as const,
+									lines: [[0, 1] as [number, number]],
+									fromLines: [[0, 1] as [number, number]],
+								},
+							],
+						},
+						"auto",
+					),
+				),
+			];
+
+			it("a piece the line carry covers keeps the tag, and PS3 carries nothing from it", () => {
+				const evs = [
+					...lineCarried(),
+					splitCarried(
+						[
+							{
+								key: K3,
+								fromKey: K2,
+								state: "reviewed",
+								from: [[0, 2]],
+								lines: [[0, 2]],
+							},
+						],
+						{ patchset: OTHER_REV },
+					),
+					...nextPush(),
+				];
+				expect(statesOf(evs, OTHER_REV)[K3]).toEqual({
+					state: "unreviewed",
+					lines: [[0, 2]],
+					linesCarried: { from: 1, lines: [[0, 2]] },
+				});
+				expect(statesOf(evs, THIRD_REV)[K4]).toBeUndefined();
+			});
+
+			it("an entry naming no piece lines (as written before CAR-308) leaves the piece unmarked, never the reviewer's own", () => {
+				const evs = [
+					...lineCarried(),
+					splitCarried(
+						[{ key: K3, fromKey: K2, state: "reviewed", from: [[0, 2]] }],
+						{
+							patchset: OTHER_REV,
+						},
+					),
+					...nextPush(),
+				];
+				expect(statesOf(evs, OTHER_REV)[K3]).toBeUndefined();
+				expect(statesOf(evs, THIRD_REV)[K4]).toBeUndefined();
+			});
+
+			it("two entries filling one piece from the line carry add up, still carried", () => {
+				const mixed = [
+					...lineCarried(),
+					splitCarried(
+						[
+							{
+								key: K3,
+								fromKey: K2,
+								state: "reviewed",
+								from: [[1, 2]],
+								lines: [[0, 1]],
+							},
+							{
+								key: K3,
+								fromKey: K2,
+								state: "reviewed",
+								from: [[0, 1]],
+								lines: [[1, 2]],
+							},
+						],
+						{ patchset: OTHER_REV },
+					),
+				];
+				expect(statesOf(mixed, OTHER_REV)[K3]).toEqual({
+					state: "unreviewed",
+					lines: [[0, 2]],
+					linesCarried: { from: 1, lines: [[0, 2]] },
+				});
+			});
+		});
+
 		it("a split-carried piece is a source for the next patch set's carry", () => {
 			const evs = [
 				started(),

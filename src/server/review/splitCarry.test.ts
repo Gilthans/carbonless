@@ -4,7 +4,7 @@ import type { Cluster, Snapshot } from "../../shared/types.js";
 import { parseU0Patch } from "../diff/clusters.js";
 import { clusterKeys } from "../diff/identity.js";
 import { cutClusters } from "../diff/snapshot.js";
-import { buildReviewView } from "./coverage.js";
+import { buildReviewView, humanMarksOf } from "./coverage.js";
 import { type CrbEvent, newEvent } from "./events.js";
 import { foldProgress } from "./fold.js";
 import { splitCarries, withSplitCarries } from "./splitCarry.js";
@@ -134,6 +134,7 @@ const states = (view: ReturnType<typeof carry>["view"]) =>
 		...(c.reviewedLines ? { reviewedLines: c.reviewedLines } : {}),
 		...(c.crossedLines ? { crossedLines: c.crossedLines } : {}),
 		...(c.carried ? { carried: c.carried } : {}),
+		...(c.linesCarried ? { linesCarried: c.linesCarried } : {}),
 	}));
 
 describe("splitCarries", () => {
@@ -298,6 +299,89 @@ describe("splitCarries", () => {
 				carried: { from: 1, rule: "exact" },
 			}),
 		);
+	});
+});
+
+describe("a hunk the engine line-carried (CAR-308)", () => {
+	const K0 = "8".repeat(64);
+	/** PS1 (REV2) reviews K0 whole; PS2 (REV) line-carries 4 of its lines onto H: P1's. */
+	const events = (): CrbEvent[] => [
+		started(REV2, 1),
+		mark(K0, "reviewed", undefined, REV2),
+		started(REV, 2),
+		at(
+			newEvent(
+				"lines-carried",
+				"dan",
+				{
+					from: 1,
+					to: 2,
+					states: [
+						{
+							key: H,
+							fromKey: K0,
+							state: "reviewed",
+							lines: [
+								[0, 2],
+								[6, 8],
+							],
+							fromLines: [[0, 4]],
+						},
+					],
+				},
+				"auto",
+			),
+		),
+	];
+
+	it("carries onto the piece as the engine's, never as the reviewer's own, and only once", () => {
+		const { entries, view, again } = carry(events());
+		expect(entries).toEqual([
+			{
+				key: P1,
+				fromKey: H,
+				state: "reviewed",
+				from: [
+					[0, 2],
+					[6, 8],
+				],
+				lines: [[0, 4]],
+			},
+		]);
+		expect(states(view)).toEqual([
+			{ state: "reviewed", linesCarried: { from: 1, lines: [[0, 4]] } },
+			{ state: "unreviewed" },
+			{ state: "unreviewed" },
+		]);
+		expect(again).toEqual([]);
+		// What the next push's carry reads as the reviewer's: nothing.
+		const progress = foldProgress([
+			...events(),
+			at(
+				newEvent(
+					"split-carried",
+					"dan",
+					{ patchset: REV, states: entries },
+					"auto",
+				),
+			),
+		]);
+		const human = humanMarksOf(
+			snapshot(),
+			progress.statesByRevision.get(REV) ?? new Map(),
+		);
+		expect(human.get(P1)).toMatchObject({ reviewed: [], crossed: [] });
+	});
+
+	it("withSplitCarries, as Home reads it, shows the same carried piece", () => {
+		const view = buildReviewView(
+			snapshot(),
+			withSplitCarries(events(), snapshot(), "dan"),
+		);
+		expect(states(view)?.[0]).toEqual({
+			state: "reviewed",
+			linesCarried: { from: 1, lines: [[0, 4]] },
+		});
 	});
 });
 

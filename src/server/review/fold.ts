@@ -84,7 +84,8 @@ export interface ProgressState {
  * (CAR-195); a `split-carried` entry fills a piece of a split
  * hunk that holds nothing yet with the hunk's mark (whole, or the lines it
  * names), only when the hunk's key holds that mark at that moment, a
- * carried one staying carried; a `thread-placed` replaces the thread's
+ * carried one staying carried (a whole carry as `carried`, lines the
+ * engine line-carried as `linesCarried`: CAR-308); a `thread-placed` replaces the thread's
  * placement in its patch set. Later events win. The result doesn't depend on the order
  * of `events` or on repeats.
  */
@@ -322,7 +323,18 @@ export function foldProgress(events: CrbEvent[]): ProgressState {
 					const marked =
 						entry.state === "reviewed" ? origin.lines : origin.crossed;
 					if (!marked || !contains(marked, entry.from)) continue;
+					// Lines the engine line-carried into the hunk stay the engine's
+					// on the piece (CAR-308): an entry touching any of them is
+					// carried as a whole (fails toward "not the reviewer's own").
+					const engine = origin.linesCarried;
+					const carried =
+						engine !== undefined &&
+						size(subtract(entry.from, engine.lines)) < size(entry.from);
 					if (entry.lines === undefined) {
+						// A whole mark can't say which piece lines are the carry's
+						// (written before CAR-308): the piece stays unmarked, and the
+						// next read's split carry writes it again, by lines.
+						if (carried) continue;
 						states.set(entry.key, { state: entry.state });
 						filled.add(entry.key);
 						continue;
@@ -341,10 +353,17 @@ export function foldProgress(events: CrbEvent[]): ProgressState {
 									lines: subtract(reviewed, entry.lines),
 									crossed: union(crossed, entry.lines),
 								};
+					const tagged = carried
+						? {
+								from: engine.from,
+								lines: union(prior?.linesCarried?.lines ?? [], entry.lines),
+							}
+						: prior?.linesCarried;
 					states.set(entry.key, {
 						state: "unreviewed",
 						...(next.lines.length > 0 ? { lines: next.lines } : {}),
 						...(next.crossed.length > 0 ? { crossed: next.crossed } : {}),
+						...(tagged ? { linesCarried: tagged } : {}),
 					});
 					filled.add(entry.key);
 				}
