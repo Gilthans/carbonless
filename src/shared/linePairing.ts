@@ -439,10 +439,13 @@ type Item = {
  *   one);
  * - the joined run (`joinedLength`) is under `WORD_DIFF_MAX`.
  *
- * A one line whose run goes on past either cap (a next line, in the same
- * view run, that still takes a token: a 21st line, or one that makes the
- * joined text `WORD_DIFF_MAX` long) gets no group at all: in doubt, no
- * group, rather than the first 20 lines of it.
+ * A walk that runs on past either cap (a next line, in the same view run,
+ * that still takes a token: a 21st line, or one that makes the joined text
+ * `WORD_DIFF_MAX` long) while what it has so far scores is a split or join
+ * too long to be a group: no candidate of the one line overlapping its
+ * lines stays (in doubt, no group, rather than the first 20 lines of it).
+ * A walk that runs on without scoring (new code after a wrap that happens
+ * to share tokens with it) vetoes nothing.
  *
  * The choice: today's pairs and the groups are items; the non-crossing set,
  * each line in one at most, with the most total weight wins. A pair weighs
@@ -588,8 +591,8 @@ const index = (c: string, i: number) => c.charCodeAt(i) - 0x100;
 
 /**
  * The groups of one line `o` of `side`: per window, every run length from 2
- * that holds part of it line by line and scores, streamed. None when its
- * run goes on past a cap (see alignGroups).
+ * that holds part of it line by line and scores, streamed. None that
+ * overlaps a scoring walk run past a cap (see alignGroups).
  */
 function groupsOf(
 	side: Side,
@@ -613,7 +616,8 @@ function groupsOf(
 	}
 	const found: GroupAt[] = [];
 	const foundWeights: number[] = [];
-	let over = false;
+	// Walks that ran past a cap while scoring: their lines [s, x].
+	const vetoes: [number, number][] = [];
 	for (const [s] of starts) {
 		walk.stamp++;
 		vAll.fill(0xffffffff);
@@ -621,6 +625,7 @@ function groupsOf(
 		let allLen = 0;
 		let wordLen = 0;
 		let joined = -1;
+		let scores = false;
 		for (let x = s; ; x++) {
 			if (x >= m || side.runOther[x] !== run || !side.shares(o, x)) break;
 			const line = at(side.others, x);
@@ -641,7 +646,7 @@ function groupsOf(
 			const lines = x - s + 1;
 			joined += 1 + (side.otherTexts[x] as string).length;
 			if (lines > GROUP_MAX_LINES || joined >= WORD_DIFF_MAX) {
-				over = true;
+				if (scores) vetoes.push([s, x]);
 				break;
 			}
 			feed(vAll, one.allMasks, line.all);
@@ -650,22 +655,23 @@ function groupsOf(
 				feed(vWords, one.wordMasks as Uint32Array[], line.words);
 				wordLen += line.words.length;
 			}
-			if (lines < 2) continue;
 			const [l, total] =
 				hasWords && wordLen > 0
 					? [zeros(vWords, one.words.length), one.words.length + wordLen]
 					: [zeros(vAll, one.all.length), one.all.length + allLen];
-			if (total > 0 && (2 * l) / total >= PAIR_MIN_SIMILARITY) {
+			scores = total > 0 && (2 * l) / total >= PAIR_MIN_SIMILARITY;
+			if (lines >= 2 && scores) {
 				found.push({ one: side.one, at: o, from: s, to: x + 1 });
 				foundWeights.push((GROUP_WEIGHT * 2 * l) / total);
 			}
 		}
-		if (over) break;
 	}
 	for (let i = 0; i < one.all.length; i++) walk.counts[index(one.all, i)] = 0;
-	if (over) return;
-	out.push(...found);
-	weights.push(...foundWeights);
+	found.forEach((g, k) => {
+		if (vetoes.some(([s, x]) => g.from <= x && g.to > s)) return;
+		out.push(g);
+		weights.push(foundWeights[k] as number);
+	});
 }
 
 /**

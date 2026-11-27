@@ -560,6 +560,28 @@ describe("alignGroups", () => {
 			{ one: "add", at: 0, from: 0, to: 20 },
 		]);
 	});
+	it("a wrap followed by more than GROUP_MAX_LINES token-sharing added lines still groups", () => {
+		// New code after the wrap takes tokens the one line still has (its
+		// field names), running past 20 lines from later starts: that run
+		// doesn't score, so it vetoes nothing, and never the wrap's lines.
+		const fields = Array.from({ length: 24 }, (_, i) => `field${i}: ${i}`);
+		const line = `const config = makeConfig({ ${fields.join(", ")} });`;
+		const wrap = [
+			`const config = makeConfig({ ${fields.slice(0, 8).join(", ")},`,
+			`  ${fields.slice(8, 16).join(", ")},`,
+			`  ${fields.slice(16).join(", ")} });`,
+		];
+		expect(groups([line], wrap).groups).toEqual([
+			{ one: "del", at: 0, from: 0, to: 3 },
+		]);
+		const more = Array.from(
+			{ length: 24 },
+			(_, i) => `validate(config.field${i});`,
+		);
+		expect(groups([line], [...wrap, ...more]).groups).toEqual([
+			{ one: "del", at: 0, from: 0, to: 3 },
+		]);
+	});
 	it("a joined text of WORD_DIFF_MAX characters is no group; one less groups", () => {
 		// The run's lines joined with a line end between each two.
 		expect(joinedLength(["ab", "cde"])).toBe(6);
