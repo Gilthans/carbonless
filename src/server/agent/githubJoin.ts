@@ -1,5 +1,6 @@
 import type { AgentAnchor, AgentView } from "../../shared/agent.js";
 import type { ReviewThread } from "../../shared/types.js";
+import { OID } from "./prompt.js";
 import { type AgentThreadFold, joinedAnchor } from "./store.js";
 
 /**
@@ -9,8 +10,6 @@ import { type AgentThreadFold, joinedAnchor } from "./store.js";
  */
 
 type ThreadAnchor = Extract<AgentAnchor, { subject: "thread" }>;
-
-const OID = /^[0-9a-f]{40}([0-9a-f]{24})?$/;
 
 /** The GitHub threads a conversation can still belong to: listed, with an id, not deleted. */
 export function liveGithubThreads(

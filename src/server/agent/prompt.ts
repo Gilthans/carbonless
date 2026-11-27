@@ -160,6 +160,16 @@ export interface AnchorPatchset {
 export interface AnchorOpened {
 	patchset?: number;
 	at?: string;
+	/**
+	 * The merge base the opening view numbered the anchor's old side in
+	 * (its `base`), when that view was on the anchor's own head: what the
+	 * page diffed when the question was asked (CAR-315). Never re-read
+	 * from the base branch as it stands later, which may have absorbed
+	 * the head (a stacked parent's landing, a landing by merge commit).
+	 * Only for an anchor on `head` (a code window moved to another head
+	 * shares the conversation's AnchorOpened, not its base).
+	 */
+	base?: { head: string; mergeBase: string };
 }
 
 /**
@@ -175,12 +185,33 @@ export function anchorOpened(thread: {
 	at: string;
 	messages: readonly AgentMessage[];
 }): AnchorOpened {
-	const target = thread.messages[0]?.view?.target;
+	const view = thread.messages[0]?.view;
+	const target = view?.target;
+	const a = thread.anchor;
+	// A view on the anchor's own head recorded its merge base (CAR-276 on):
+	// that base, as the page diffed it. A view stored before CAR-315 on a
+	// head no patch set has recorded the review's merge base instead; that
+	// window (an unmarked head after a rebase, asked before this shipped)
+	// is narrow and old, and is left as stored.
+	const base =
+		a.subject !== "thread" &&
+		a.subject !== "review" &&
+		target &&
+		"head" in target &&
+		target.head === a.commit &&
+		view?.base !== undefined &&
+		OID.test(view.base) &&
+		// A base that is the head itself (viewed once the base branch held
+		// it) numbers no old side: never `{commit: head, side: LEFT}`.
+		view.base !== a.commit
+			? { base: { head: a.commit, mergeBase: view.base } }
+			: {};
 	return {
 		at: thread.at,
-		...(thread.anchor.subject !== "thread" && target && "patchset" in target
+		...(a.subject !== "thread" && target && "patchset" in target
 			? { patchset: target.patchset }
 			: {}),
+		...base,
 	};
 }
 
@@ -254,9 +285,24 @@ export function anchorFor(
 	}
 	const ps = patchsetOpened(anchor, patchsets, opened);
 	if (ps) return { ...anchor, commit: ps.mergeBase };
+	const recorded = recordedBase(anchor, opened);
+	if (recorded) return { ...anchor, commit: recorded };
 	const own = heads.get(anchor.commit);
 	if (own !== undefined) return { ...anchor, commit: own ?? "" };
 	return { ...anchor, commit: review.mergeBase };
+}
+
+/**
+ * The merge base the conversation's opening view recorded for `anchor`'s
+ * head (AnchorOpened.base); undefined for an anchor on another head.
+ */
+export function recordedBase(
+	anchor: { commit: string },
+	opened: AnchorOpened,
+): string | undefined {
+	return opened.base?.head === anchor.commit
+		? opened.base.mergeBase
+		: undefined;
 }
 
 /**
@@ -285,9 +331,11 @@ export async function headBases(
 	for (const { anchor, opened } of anchors) {
 		if (anchor.subject === "review" || anchor.subject === "file") continue;
 		if (anchor.side !== "LEFT") continue;
-		if (!HEAD_OID.test(anchor.commit)) continue;
+		if (!OID.test(anchor.commit)) continue;
 		if (anchor.commit === review.head.commit) continue;
 		if (patchsetOpened(anchor, patchsets, opened)) continue;
+		// Its opening view recorded the base it was asked in: no read.
+		if (opened && recordedBase(anchor, opened)) continue;
 		wanted.add(anchor.commit);
 	}
 	const heads = new Map<string, string | null>();
@@ -296,8 +344,13 @@ export async function headBases(
 		[...wanted].map(async (head) => {
 			try {
 				const mb = (await base(head)).trim();
-				if (!HEAD_OID.test(mb))
-					throw new Error("its merge base isn't a commit id");
+				if (!OID.test(mb)) throw new Error("its merge base isn't a commit id");
+				// The base branch holds the head itself (a landing by merge
+				// commit): its "merge base" is the head, and a LEFT line there
+				// would name the head's own line (CAR-222). No base then.
+				if (mb === head) {
+					throw new Error("the base branch now contains this head");
+				}
 				heads.set(head, mb);
 			} catch (error) {
 				heads.set(head, null);
@@ -330,7 +383,8 @@ export function headBaseNotice(
 		.join("\n");
 }
 
-const HEAD_OID = /^[0-9a-f]{40}([0-9a-f]{24})?$/;
+/** A full commit id (SHA-1 or SHA-256), lowercase. */
+export const OID = /^[0-9a-f]{40}([0-9a-f]{24})?$/;
 
 /**
  * The patch set a conversation was opened on (patchsetOf, by the head its

@@ -3647,12 +3647,11 @@ describe("Session", () => {
 					(t) => t.id === x.id,
 				);
 				expect(listed?.anchor).toMatchObject({ commit: m2, side: "LEFT" });
-				// (The page builds no code window here, as for a GitHub comment
-				// whose base moved: threadCode's tip check. host.test covers a
-				// code window's anchor on such a head.)
-				if (listed?.code) {
-					expect(listed.code.anchor).toMatchObject({ commit: m2 });
-				}
+				// The page builds no code window here yet (threadCode's tip
+				// check compares the snapshot's merge base, M1; a follow-up
+				// ticket). When it does, this fails: assert its anchor names M2
+				// (host.test covers that mapping).
+				expect(listed?.code).toBeUndefined();
 				// The agent may read the commit it was told.
 				await expect(
 					host.sessionFile(token, { path: "a.txt", commit: m2 }),

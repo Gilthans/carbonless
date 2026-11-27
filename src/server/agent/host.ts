@@ -74,12 +74,14 @@ import {
 	headBaseNotice,
 	headBases,
 	isSafePath,
+	OID,
 	type PromptCodeEnvelope,
 	type PromptEnvelope,
 	type PromptMessage,
 	type PromptReview,
 	type PromptReviewEnvelope,
 	patchsetOpened,
+	recordedBase,
 	sanitizeEnvelope,
 	sanitizeThirdParty,
 	takeSuggestion,
@@ -771,7 +773,6 @@ export class AgentHost {
 		if (known !== undefined) {
 			return this.#view(await this.#joinedOne(await this.store.find(known)));
 		}
-		const view = req.view ? await this.#resolveView(req.view) : undefined;
 		const given = [req.span, req.thread, req.review].filter(
 			(x) => x !== undefined,
 		).length;
@@ -780,6 +781,8 @@ export class AgentHost {
 				"A span, a thread or the review, one of them",
 			);
 		}
+		// After the cheap checks: a view on a head may read git (CAR-315).
+		const view = req.view ? await this.#resolveView(req.view) : undefined;
 		let anchor: AgentAnchor;
 		if (req.span) anchor = req.span;
 		else if (req.thread !== undefined) {
@@ -1885,12 +1888,21 @@ export class AgentHost {
 		]);
 		if (!known.has(commit)) {
 			// The merge base a LEFT anchor on a head no patch set has names
-			// (anchorFor's heads, CAR-315): a commit the agent was told.
+			// (anchorFor's heads, CAR-315): a commit the agent was told. The
+			// unjoined folds' anchors keep the commits `threads` gives
+			// (joinedAnchor and orphanAnchor keep `commit`): keep them in step.
+			const stored = (await this.store.read()).map((t) => ({
+				anchor: t.anchor,
+				opened: anchorOpened(t),
+			}));
+			// The opening views' recorded bases (no git), then the rest read.
+			for (const { anchor, opened } of stored) {
+				if (anchor.subject === "review") continue;
+				const recorded = recordedBase(anchor, opened);
+				if (recorded) known.add(recorded);
+			}
 			const { heads } = await headBases(
-				(await this.store.read()).map((t) => ({
-					anchor: t.anchor,
-					opened: anchorOpened(t),
-				})),
+				stored,
 				review,
 				sets?.patchsets ?? this.github.patchsets(),
 				(head) => facts.headBase(head),
@@ -1952,14 +1964,16 @@ export class AgentHost {
 	 * window's) as an agent gets it, a LEFT one on its patch set's merge
 	 * base (anchorFor; the stored anchors keep their head).
 	 */
-	async sessionThreads(secret: string): Promise<AgentThread[]> {
+	async sessionThreads(
+		secret: string,
+	): Promise<(AgentThread & { notice?: string })[]> {
 		await this.#token(secret);
 		const { facts } = this.#facts();
 		const review = facts.review();
 		const { patchsets } = facts.views();
 		const threads = await this.threads();
 		// Each head no patch set has: its own merge base, read once (CAR-315).
-		const { heads } = await headBases(
+		const { heads, errors } = await headBases(
 			threads.flatMap((t) => {
 				const opened = anchorOpened(t);
 				const code = t.code?.anchor;
@@ -1974,7 +1988,19 @@ export class AgentHost {
 			patchsets,
 			(head) => facts.headBase(head),
 		);
-		return threads.map((t) => threadForAgent(t, review, patchsets, heads));
+		return threads.map((t) => {
+			const out = threadForAgent(t, review, patchsets, heads);
+			// An anchor that names no commit says why (as next's notice).
+			const unread = new Map(
+				[t.anchor, t.code?.anchor].flatMap((a) =>
+					a && "commit" in a && errors.has(a.commit)
+						? [[a.commit, errors.get(a.commit) ?? ""] as const]
+						: [],
+				),
+			);
+			const notice = headBaseNotice(unread);
+			return notice ? { ...out, notice: sanitizeThirdParty(notice) } : out;
+		});
 	}
 
 	/**
@@ -2222,6 +2248,7 @@ async function sessionSpanTurn(
 	// base, as the page showed it), whatever was pushed since (CAR-53).
 	const base =
 		patchsetOpened(a, patchsets, opened)?.mergeBase ??
+		recordedBase(a, opened) ??
 		heads.get(a.commit) ??
 		null;
 	const [anchored, hunk] = await Promise.all([
@@ -2476,8 +2503,6 @@ export function buildAgentHost(o: {
 		...(o.idleTurnMs !== undefined ? { idleTurnMs: o.idleTurnMs } : {}),
 	});
 }
-
-const OID = /^[0-9a-f]{40}([0-9a-f]{24})?$/;
 
 /**
  * The hunks of `anchor.path` in `mergeBase`..`anchor.commit` (anchorHunk),

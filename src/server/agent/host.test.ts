@@ -35,6 +35,7 @@ import {
 	AgentConflictError,
 	type AgentGithub,
 	type AgentHost,
+	AgentRequestError,
 	anchoredFile,
 	anchorHunk,
 	authorOf,
@@ -605,6 +606,12 @@ describe("AgentHost with a session joined through MCP", () => {
 						startedAt: Date.parse(p.startedAt),
 					})),
 				base: () => "c".repeat(40),
+				// A viewed head's own merge base: headBaseOf's, else base()'s.
+				headBase: async (h) => {
+					const b = headBaseOf[h];
+					if (b instanceof Error) throw b;
+					return b ?? "c".repeat(40);
+				},
 				comments: async (ids) => {
 					if (!ghComments) throw new Error("gh: comments unreadable");
 					return ghComments(ids);
@@ -2115,6 +2122,79 @@ describe("AgentHost with a session joined through MCP", () => {
 			expect(codeOf(q)?.notice ?? "").not.toContain("merge base of");
 		});
 
+		it("a span opened in a view on a head no patch set has: the view stores that head's merge base, and every tool keeps it though a read now would differ (CAR-315 review)", async () => {
+			patchsets = [PS1];
+			mergeBase = M1;
+			head = H1;
+			codeWindow = windowOf;
+			const H9 = "9".repeat(40);
+			const M9 = "8".repeat(40);
+			headBaseOf[H9] = M9;
+			fileAt[`${M9}:src/cache.ts`] = { text: "the rebased head's base\n" };
+			const x = await host.open({
+				clientId: "c1",
+				text: "Why was this removed?",
+				span: removedLine(H9),
+				view: { target: { head: H9 }, from: { branch: true } },
+			});
+			expect(x.messages[0]?.view).toMatchObject({ left: M9, base: M9 });
+			// The base branch then absorbs the head (a stacked parent lands,
+			// or a merge commit lands the PR): a read now says otherwise.
+			headBaseOf[H9] = "7".repeat(40);
+			const token = await approve();
+			const q = await host.sessionNext(token);
+			expect(codeOf(q)?.thread.anchor).toMatchObject(onBase(M9));
+			expect(q?.anchoredFile).toMatchObject({ commit: M9 });
+			for (const now of ["7".repeat(40), H9]) {
+				headBaseOf[H9] = now;
+				const listed = (await host.sessionThreads(token)).find(
+					(t) => t.id === x.id,
+				);
+				expect(listed?.anchor).toMatchObject(onBase(M9));
+				expect(listed?.code?.anchor).toMatchObject(onBase(M9));
+			}
+		});
+
+		it("a view on a head whose merge base can't be read refuses the question, naming the head, and stores nothing (CAR-315 review)", async () => {
+			patchsets = [PS1];
+			mergeBase = M1;
+			head = H1;
+			const H9 = "9".repeat(40);
+			headBaseOf[H9] = new Error("commit gone");
+			await expect(
+				host.open({
+					clientId: "c1",
+					text: "Why was this removed?",
+					span: removedLine(H9),
+					view: { target: { head: H9 }, from: { branch: true } },
+				}),
+			).rejects.toThrow(
+				new AgentRequestError(
+					`The merge base of the viewed head ${H9} can't be read now (commit gone)`,
+				),
+			);
+			expect(await host.threads()).toEqual([]);
+			// A malformed request is refused before any read.
+			delete headBaseOf[H9];
+			let read = 0;
+			headBaseOf = new Proxy(headBaseOf, {
+				get: (o, k) => {
+					read++;
+					return Reflect.get(o, k);
+				},
+			});
+			await expect(
+				host.open({
+					clientId: "c2",
+					text: "Both?",
+					span: removedLine(H9),
+					review: true,
+					view: { target: { head: H9 }, from: { branch: true } },
+				}),
+			).rejects.toThrow("A span, a thread or the review, one of them");
+			expect(read).toBe(0);
+		});
+
 		/**
 		 * CAR-315: after a rebase, GitHub's thread sits on a removed line of
 		 * a head nobody marked (no patch set). Its line is numbered in that
@@ -2166,6 +2246,9 @@ describe("AgentHost with a session joined through MCP", () => {
 				(t) => t.id === x.id,
 			);
 			expect(again?.anchor).toMatchObject({ commit: "" });
+			expect(again?.notice).toContain(
+				`The merge base of ${H9} can't be read now (commit gone)`,
+			);
 			await host.sessionReply(token, {
 				thread: x.id,
 				replyTo: q?.replyTo as string,

@@ -12,6 +12,7 @@ import {
 } from "../../shared/agent.js";
 import {
 	anchorFor,
+	anchorOpened,
 	type GithubThreadFacts,
 	headBaseNotice,
 	headBases,
@@ -181,6 +182,97 @@ describe("the preamble and anchors", () => {
 			anchorFor({ ...right, commit: H2 }, review, [], {}, new Map([[H2, M2]]))
 				.commit,
 		).toBe(H2);
+	});
+
+	it("the opening view's recorded merge base wins over a read made now, for its own head only, and never names the head itself (CAR-315 review)", async () => {
+		const H2 = "e".repeat(40);
+		const M2 = "f".repeat(40);
+		const later = "3".repeat(40);
+		const left = (commit: string) =>
+			({
+				...right,
+				commit,
+				side: "LEFT" as const,
+				startSide: "LEFT" as const,
+			}) as AgentSpanAnchor;
+		const thread = (anchor: AgentSpanAnchor, base: string, head = H2) => ({
+			anchor,
+			at: "2026-11-27T00:00:00Z",
+			messages: [
+				{
+					id: "m1",
+					by: "human" as const,
+					text: "Why?",
+					at: "2026-11-27T00:00:00Z",
+					view: {
+						target: { head },
+						from: { branch: true as const },
+						left: base,
+						right: head,
+						base,
+					},
+				},
+			],
+		});
+		const opened = anchorOpened(thread(left(H2), M2));
+		expect(opened.base).toEqual({ head: H2, mergeBase: M2 });
+		// The base branch absorbed the head since (a stacked parent landed,
+		// or a merge commit landed it): a read now would say otherwise.
+		expect(
+			anchorFor(left(H2), review, [], opened, new Map([[H2, later]])).commit,
+		).toBe(M2);
+		expect(
+			anchorFor(left(H2), review, [], opened, new Map([[H2, H2]])).commit,
+		).toBe(M2);
+		// A code window moved to another head: not this base.
+		expect(
+			anchorFor(
+				left(later),
+				review,
+				[],
+				opened,
+				new Map([[later, "4".repeat(40)]]),
+			).commit,
+		).toBe("4".repeat(40));
+		// No read for it.
+		const asked: string[] = [];
+		await headBases([{ anchor: left(H2), opened }], review, [], async (h) => {
+			asked.push(h);
+			return later;
+		});
+		expect(asked).toEqual([]);
+		// A view whose base is the head itself (seen once landed), or on
+		// another head, or a GitHub thread conversation: nothing recorded.
+		expect(anchorOpened(thread(left(H2), H2)).base).toBeUndefined();
+		expect(
+			anchorOpened(thread(left(H2), M2, "1".repeat(40))).base,
+		).toBeUndefined();
+		expect(
+			anchorOpened(
+				thread({ ...left(H2), subject: "thread", thread: "T" } as never, M2),
+			).base,
+		).toBeUndefined();
+	});
+
+	it("headBases never gives a head as its own merge base (the base branch holds it: a landing by merge commit)", async () => {
+		const H2 = "e".repeat(40);
+		const { heads, errors } = await headBases(
+			[
+				{
+					anchor: {
+						...right,
+						commit: H2,
+						side: "LEFT",
+						startSide: "LEFT",
+					},
+				},
+			],
+			review,
+			[],
+			async () => H2,
+		);
+		expect(heads.get(H2)).toBeNull();
+		expect(errors.get(H2)).toBe("the base branch now contains this head");
 	});
 
 	it("headBases reads each LEFT head no patch set has once, skips the review's head, a patch set's and a non-OID, and keeps a failure's reason (CAR-315)", async () => {
