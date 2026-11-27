@@ -182,3 +182,22 @@ under `ignoreBinaries`. Vitest's and Playwright's plugins are off (loading
 their configs outside the test queue throws, or starts a trace run), so a
 new test setup file or reporter named in those configs goes into `entry`
 by hand.
+
+### Shell scripts (shellcheck)
+
+`pnpm lint` ends with `node scripts/shellcheck.mjs` (CAR-314): a pinned
+[shellcheck](https://www.shellcheck.net) on every tracked `*.sh`/`*.bash`
+file, every file with a sh/bash shebang (`test/fake-gh/gh`), and the sh and
+bash `run:` steps of `.github/workflows/*.yml`, reported at their line and
+column in the workflow. A `run:` shape it can't read (a script starting on
+the next line, `>`, escapes in quotes) fails lint naming the line: use
+`run: |`. The binary is the release for the machine's platform, downloaded
+once (60 s timeout) into `node_modules/.cache/shellcheck/` and checked
+against its sha256 in the script: a mismatch always fails. A failed
+download fails in CI (`$CI`) and locally prints `shellcheck SKIPPED` and
+passes; a platform without a release (Windows) skips, saying so. The repo's
+`.shellcheckrc` (`source ./lib.sh` from the script's directory) applies to
+every check, never `~/.shellcheckrc`. Workflow steps are checked as Actions
+runs them (`set -e`), with SC2016 off (`node -e '…${x}…'` is JavaScript).
+Fix a finding, or disable it on its line with a reason:
+`# shellcheck disable=SC2015 # why`.

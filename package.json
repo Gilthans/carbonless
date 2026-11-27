@@ -23,7 +23,7 @@
 		"build": "node scripts/dist-lock.mjs sh -c 'rm -rf dist && tsc -p tsconfig.build.json && node scripts/build-info.mjs && vite build'",
 		"start": "node dist/cli.js",
 		"typecheck": "tsc -p tsconfig.json",
-		"lint": "biome check . && knip",
+		"lint": "biome check . && knip && node scripts/shellcheck.mjs",
 		"fix": "biome check --write .",
 		"test": "node scripts/queue.mjs vitest run",
 		"test:watch": "vitest",

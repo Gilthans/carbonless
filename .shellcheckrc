@@ -1,0 +1,2 @@
+# shellcheck (scripts/shellcheck.mjs, `pnpm lint`): resolve `source ./lib.sh` from the script's own directory.
+source-path=SCRIPTDIR

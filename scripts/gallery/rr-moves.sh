@@ -88,6 +88,7 @@ EOF
 # PS1, commit 1: edits in names, widget's render and format; a poller added.
 write_push1() {
 	sed -i 's|    .replace(/\[^a-z0-9\]+/g, "-")|    .replace(/[^a-z0-9]+/g, "-").slice(0, 64)|' src/names.ts
+	# shellcheck disable=SC2016 # ${i} is TypeScript template text, written literally.
 	sed -i 's|  const rows = w.items.map((i) => `<li>${i}</li>`).join("");|  const rows = w.items.map((i) => `<li>${escape(i)}</li>`).join("");|' src/widget.ts
 	sed -i 's|	const abs = Math.abs(cents);|	const abs = Math.abs(Math.round(cents));|' src/format.ts
 	mkdir -p src/legacy
