@@ -30,6 +30,7 @@ export interface Action {
 	key?: string;
 	sha?: string;
 	note?: string;
+	scan?: boolean;
 	runIds?: string[];
 	failure?: { check: string; runId: string; jobId: string; kind: string };
 }
@@ -67,6 +68,12 @@ export function releaseNote(
 	alerts: Alert[],
 ): string;
 export function classifyJob(job: unknown): "test" | "build" | "infra";
+export const SCAN_REBASE_WAIT_MS: number;
+export const SCAN_WAITING: RegExp;
+export function missingScans(
+	tools: string[],
+	checkRuns: { name: string; app?: string; status?: string }[],
+): string[];
 // biome-ignore lint/suspicious/noExplicitAny: facts are plain JSON from gh
 export function decide(facts: any): Action;
 export function scrub(text: string, max?: number): string;

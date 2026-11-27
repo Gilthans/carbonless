@@ -13,9 +13,12 @@ import {
 	hasReleaseNote,
 	manifestProblems,
 	metadataMajor,
+	missingScans,
 	otherNoteLines,
 	parseResult,
 	releaseNote,
+	SCAN_REBASE_WAIT_MS,
+	SCAN_WAITING,
 	sandboxArgs,
 	scrub,
 } from "./dependabot-sweep.mjs";
@@ -307,6 +310,105 @@ describe("decide", () => {
 				}),
 			).type,
 		).toBe("refresh-note");
+	});
+});
+
+describe("missing code scanning results (CAR-311)", () => {
+	const NOW = Date.parse("2026-11-27T06:00:00Z");
+	const ago = (ms: number) => new Date(NOW - ms).toISOString();
+	const noScan = (over: Record<string, unknown> = {}, pr = {}) =>
+		facts(
+			{ scanTools: ["CodeQL"], scansMissing: ["CodeQL"], now: NOW, ...over },
+			pr,
+		);
+
+	it("finds a required tool with no completed check run on the head", () => {
+		const done = {
+			name: "CodeQL",
+			app: "github-advanced-security",
+			status: "completed",
+		};
+		expect(missingScans(["CodeQL"], [])).toEqual(["CodeQL"]);
+		expect(missingScans(["CodeQL"], [done])).toEqual([]);
+		expect(
+			missingScans(["CodeQL"], [{ ...done, status: "in_progress" }]),
+		).toEqual(["CodeQL"]);
+		// A workflow job can't stand in for the code scanning app's run.
+		expect(
+			missingScans(["CodeQL"], [{ ...done, app: "github-actions" }]),
+		).toEqual(["CodeQL"]);
+		expect(missingScans([], [])).toEqual([]);
+	});
+
+	it("asks Dependabot to rebase instead of merging, once per PR", () => {
+		const first = decide(noScan());
+		expect(first).toMatchObject({ type: "rebase", scan: true });
+		expect(first.reason).toContain("CodeQL");
+		// Asked at this head, Dependabot hasn't rebased yet: wait a while.
+		expect(
+			decide(noScan({ scanRebase: { sha: SHA, at: ago(60_000) } })).type,
+		).toBe("wait");
+	});
+
+	it("leaves it to the owner when results are still missing after the rebase", () => {
+		const d = decide(
+			noScan({ scanRebase: { sha: "b".repeat(40), at: ago(60_000) } }),
+		);
+		expect(d).toMatchObject({ type: "owner", key: `scan:${SHA}` });
+		expect(d.comment).toMatch(/after a rebase/);
+	});
+
+	it("leaves it to the owner when Dependabot never rebased", () => {
+		const d = decide(
+			noScan({ scanRebase: { sha: SHA, at: ago(SCAN_REBASE_WAIT_MS + 1) } }),
+		);
+		expect(d).toMatchObject({ type: "owner", key: `scan-norebase:${SHA}` });
+	});
+
+	it("merges once the results are there, and never before checks finish", () => {
+		expect(decide(noScan({ scansMissing: [] })).type).toBe("merge");
+		expect(
+			decide(
+				noScan({
+					scanRebase: { sha: "b".repeat(40), at: ago(60_000) },
+					scansMissing: [],
+				}),
+			).type,
+		).toBe("merge");
+		const running = noScan({
+			checks: [...REQUIRED.map(pass), { name: "analyze", bucket: "pending" }],
+		});
+		expect(decide(running).type).toBe("wait");
+	});
+
+	it("knows the ruleset's refusal, the fallback when the check runs misled it", () => {
+		expect(
+			SCAN_WAITING.test(
+				"gh pr merge 201 --merge --admin exited 1: GraphQL: Repository rule violations found |  | Code scanning is waiting for results from CodeQL for the commits 2d16cc3 or 7d79f0b. |  |  (mergePullRequest)",
+			),
+		).toBe(true);
+		expect(SCAN_WAITING.test("Required status check is expected")).toBe(false);
+	});
+
+	it("posts fixed text only", () => {
+		const evil = "@evil <img src=x> https://evil.example `x` #9";
+		for (const scanRebase of [
+			{ sha: "b".repeat(40), at: ago(1) },
+			{ sha: SHA, at: ago(SCAN_REBASE_WAIT_MS + 1) },
+		]) {
+			const d = decide(
+				noScan(
+					{ scanRebase },
+					{
+						title: evil,
+						body: `${evil}\n\nRelease note: none (dependency update)`,
+					},
+				),
+			);
+			expect(d.type).toBe("owner");
+			expect(d.comment).not.toMatch(/evil|@|<|`|http/);
+			expect(d.key).toMatch(/^[a-z-]+:[0-9a-f]{40}$/);
+		}
 	});
 });
 
