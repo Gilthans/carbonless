@@ -52,7 +52,8 @@ import type { Placements } from "./threadPlacement";
 import {
 	CHUNK,
 	configureWordWork,
-	markPairs,
+	type MarkJob,
+	markJobs,
 	type Runner,
 	resetWordWork,
 	SYNC_BUDGET_MS,
@@ -2748,7 +2749,7 @@ describe("DiffBody word marks", () => {
 
 	/** A word-marks runner whose jobs wait for `release` (or `fail`), keeping what it was sent. */
 	const heldMarks = () => {
-		const sent: (readonly [string, string])[][] = [];
+		const sent: MarkJob[][] = [];
 		let open: () => void = () => {};
 		let refuse: (error: unknown) => void = () => {};
 		const gate = new Promise<void>((resolve, reject) => {
@@ -2758,7 +2759,7 @@ describe("DiffBody word marks", () => {
 		const runner: Runner = async (pairs) => {
 			sent.push([...pairs]);
 			await gate;
-			return markPairs(pairs);
+			return markJobs(pairs);
 		};
 		return {
 			runner,

@@ -4256,11 +4256,14 @@ function HunkRows(props: {
 	// Unmounted, the hunk stops waiting, and work nobody waits for is dropped.
 	const [marked, setMarked] = useState(0);
 	// biome-ignore lint/correctness/useExhaustiveDependencies: `marked` says more pairs are done.
-	const hunkMarks = useMemo(() => hunkWords(pairs), [pairs, marked]);
+	const hunkMarks = useMemo(
+		() => hunkWords({ pairs, groups: [] }, false),
+		[pairs, marked],
+	);
 	const words = hunkMarks.marks;
 	useEffect(() => {
 		if (hunkMarks.later.length === 0) return;
-		return requestMarks(hunkMarks.later, () => setMarked((n) => n + 1));
+		return requestMarks(hunkMarks.later, false, () => setMarked((n) => n + 1));
 	}, [hunkMarks]);
 	// The lines whose change doesn't show with hidden characters off (none
 	// to look for while they show).
@@ -4273,7 +4276,7 @@ function HunkRows(props: {
 						hunkRuns.flatMap((run) => run.rows),
 						words,
 						props.tabWidth ?? DEFAULT_TAB_WIDTH,
-						pairs,
+						{ pairs, groups: [] },
 					),
 		[showHidden, hunkRuns, words, pairs, props.tabWidth],
 	);

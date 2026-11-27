@@ -84,7 +84,7 @@ describe("hiddenLines", () => {
 		const pairs = hunkPairs(r);
 		expect(pairs).toEqual([[d, a]]);
 		const words = pairWordMarks(pairs);
-		expect([...hiddenLines(r, words, 4, pairs)]).toEqual([a]);
+		expect([...hiddenLines(r, words, 4, { pairs, groups: [] })]).toEqual([a]);
 		expect([...hiddenLines(r, words, 4)]).toEqual([a]);
 	});
 
@@ -168,5 +168,45 @@ describe("hiddenLines", () => {
 
 	it("names nothing without marks", () => {
 		expect(hiddenLines(rows(del("a "), add("a")), new Map(), 4).size).toBe(0);
+	});
+});
+
+describe("hiddenLines on groups (CAR-130)", () => {
+	const hidden = (one: DiffLine, run: DiffLine[], m: [DiffLine, Mark[]][]) =>
+		hiddenLines(rows(one, ...run), new Map(m), 4, {
+			pairs: [],
+			groups: [{ one, run }],
+		});
+
+	it("a CRLF pure split flags nothing", () => {
+		const one = del("a b\r");
+		const run = [add("a\r"), add("b\r")];
+		expect(hidden(one, run, [[run[0] as DiffLine, []]]).size).toBe(0);
+		expect(hidden(one, run, []).size).toBe(0);
+	});
+
+	it("an indented split flags nothing", () => {
+		const one = del("    foo bar");
+		const run = [add("    foo"), add("        bar")];
+		expect(hidden(one, run, [[run[1] as DiffLine, [[0, 3]]]]).size).toBe(0);
+	});
+
+	it("a split whose first line adds trailing blanks flags it", () => {
+		const one = del("foo bar");
+		const run = [add("foo \t"), add("bar")];
+		expect([...hidden(one, run, [[run[0] as DiffLine, [[3, 5]]]])]).toEqual([
+			run[0],
+		]);
+	});
+
+	it("the first run line is compared with the one line, and the others with nothing", () => {
+		const one = del("foo bar ");
+		const run = [add("foo bar"), add("x")];
+		// Looks exactly like its partner: flagged.
+		expect([...hidden(one, run, [[run[0] as DiffLine, [[1, 2]]]])]).toEqual([
+			run[0],
+		]);
+		// A later run line has no partner: nothing to look alike.
+		expect(hidden(one, run, [[run[1] as DiffLine, [[0, 1]]]]).size).toBe(0);
 	});
 });
