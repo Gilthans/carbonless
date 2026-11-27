@@ -84,7 +84,12 @@ describe("the telemetry mailbox", () => {
 		execFileSync("git", ["--git-dir", remote.path, ...args], {
 			encoding: "utf8",
 			input: "",
-			env: testGitEnv(),
+			env: testGitEnv({
+				GIT_AUTHOR_NAME: "Someone",
+				GIT_AUTHOR_EMAIL: "someone@example.com",
+				GIT_COMMITTER_NAME: "Someone",
+				GIT_COMMITTER_EMAIL: "someone@example.com",
+			}),
 		}).trim();
 	const config = (): CrbConfig => ({
 		...DEFAULT_CONFIG,
