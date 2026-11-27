@@ -847,7 +847,10 @@ review state or refetches anything. What it guarantees, pure and checked
 for any input (principle 2): every removed, added and context line of the
 hunk is in the rows exactly once per side, left cells in old-file order,
 right cells in new-file order, a changed line never in a cell of the wrong
-side, and a blank cell only once the other side has run out. The sides
+side, and a blank cell only once the other side of that gap or group has
+run out (a line split into several shares its first row with the run's
+first line, the run's other lines get rows of their own; a join mirrors
+it). The sides
 never widen the page: code wraps in its cell, on a phone too.
 
 ## Agent threads are the reviewer's own

@@ -1,8 +1,10 @@
 import { describe, expect, it } from "vitest";
+import { seeded, stretchWithItems } from "../../../test/group-stretches";
 import { type Cluster, pairingClusters } from "../../../test/pairing-fixtures";
+import type { HunkItems } from "../../shared/hunkPairs";
 import type { DiffLine } from "../../shared/types";
 import { alignCluster } from "./linePairing";
-import type { Partners } from "./pairOrder";
+import { orderRun, type Partners, partnersOf } from "./pairOrder";
 import { layoutRows, type SideRow, sides } from "./sideBySide";
 import { type DiffRow, hunkView, matchHunk, pairRun, runs } from "./whitespace";
 
@@ -54,7 +56,9 @@ const adds = (n: number, from = 1) =>
  * context lines) and new side (add or context lines) in order; the layout's
  * left cells and right cells hold exactly those, once each, on their own
  * side; a whitespace row stays one row with its own lines; no row is
- * empty; and a blank cell appears only once the other side has run out.
+ * empty; and a blank cell appears only once the other side has run out
+ * (with no partners the whole stretch is one gap; groups: "layoutRows
+ * with groups").
  */
 function expectLayout(input: DiffRow[], out: SideRow[]) {
 	// Each line's segment: a whitespace row (two-sided or not) and a
@@ -398,7 +402,7 @@ describe("layoutRows", () => {
 
 /** Partners both ways, as hunkView gives them. */
 const partnered = (...pairs: [DiffLine, DiffLine][]): Partners =>
-	new Map(pairs.flatMap(([d, a]) => [[d, a] as const, [a, d] as const]));
+	partnersOf({ pairs, groups: [] });
 
 describe("layoutRows with partners", () => {
 	const D = (n: number): DiffLine => del(n, `d${n}`);
@@ -588,6 +592,139 @@ describe("layoutRows with partners", () => {
 			}
 			expect(layoutRows(mixed, partnered(...pairs))).toEqual(out);
 		}
+		expect(twoSidedGaps).toBeGreaterThan(50);
+	});
+});
+
+describe("layoutRows with groups (CAR-130)", () => {
+	const D = (n: number): DiffLine => del(n, `d${n}`);
+	const A = (n: number): DiffLine => add(n, `a${n}`);
+	const items = (x: Partial<HunkItems>): Partners =>
+		partnersOf({ pairs: [], groups: [], ...x });
+
+	it("a split: the one line beside the run's first, then the run alone", () => {
+		const one = D(1);
+		const run = [A(1), A(2), A(3)];
+		const rows = [one, ...run].map(line);
+		expect(trace(layoutRows(rows, items({ groups: [{ one, run }] })))).toEqual([
+			"[-1|+1]",
+			"[|+2]",
+			"[|+3]",
+		]);
+	});
+	it("a join: the run's first beside the one line, then the run alone", () => {
+		const run = [D(1), D(2)];
+		const one = A(1);
+		const rows = [...run, one].map(line);
+		expect(trace(layoutRows(rows, items({ groups: [{ one, run }] })))).toEqual([
+			"[-1|+1]",
+			"[-2|]",
+		]);
+	});
+	it("a split next to a pair, and a gap before a group", () => {
+		const [p, one] = [D(1), D(2)];
+		const [p2, r1, r2] = [A(1), A(2), A(3)];
+		const got = items({ pairs: [[p, p2]], groups: [{ one, run: [r1, r2] }] });
+		expect(trace(layoutRows([p, one, p2, r1, r2].map(line), got))).toEqual([
+			"[-1|+1]",
+			"[-2|+2]",
+			"[|+3]",
+		]);
+		// A gap (d1 / a1) by position, then the split, its run longer than
+		// the gap's other side could fill.
+		const [x, g] = [D(1), D(2)];
+		const [y, s1, s2, s3] = [A(1), A(2), A(3), A(4)];
+		const split = items({ groups: [{ one: g, run: [s1, s2, s3] }] });
+		expect(trace(layoutRows([x, g, y, s1, s2, s3].map(line), split))).toEqual([
+			"[-1|+1]",
+			"[-2|+2]",
+			"[|+3]",
+			"[|+4]",
+		]);
+	});
+	it("a group with a line outside the stretch lays out as no group", () => {
+		const one = D(1);
+		const run = [A(1), A(2)];
+		const c = ctx(5, 5, "c");
+		const rows = [
+			line(one),
+			line(run[0] as DiffLine),
+			line(c),
+			line(run[1] as DiffLine),
+		];
+		expect(layoutRows(rows, items({ groups: [{ one, run }] }))).toEqual(
+			layoutRows(rows),
+		);
+	});
+
+	it("property: every line once per side, in order; a group's rows together; a blank only once that gap's or group's other side ran out", () => {
+		const rand = seeded(4130);
+		let groups = 0;
+		let twoSidedGaps = 0;
+		for (let n = 0; n < 500; n++) {
+			const s = stretchWithItems(rand);
+			const partners = partnersOf(s.items);
+			const git = [...s.dels, ...s.adds].map(line);
+			const out = layoutRows(git, partners);
+			expect(
+				out.flatMap((r) => (r.kind === "pair" && r.del ? [r.del] : [])),
+			).toEqual(s.dels);
+			expect(
+				out.flatMap((r) => (r.kind === "pair" && r.add ? [r.add] : [])),
+			).toEqual(s.adds);
+			// Each row's unit: the item its lines belong to, else its gap.
+			const unit = (r: SideRow) => {
+				if (r.kind !== "pair") return "context";
+				const l = (r.del ?? r.add) as DiffLine;
+				return partners.get(l) ?? "gap";
+			};
+			let at = 0;
+			while (at < out.length) {
+				const u = unit(out[at] as SideRow);
+				let end = at;
+				while (end + 1 < out.length && unit(out[end + 1] as SideRow) === u)
+					end++;
+				const shape = out
+					.slice(at, end + 1)
+					.map((r) =>
+						r.kind === "pair" && r.del && r.add
+							? "two"
+							: r.kind === "pair" && r.del
+								? "left"
+								: "right",
+					);
+				const lastTwo = shape.lastIndexOf("two");
+				expect(
+					shape.slice(0, lastTwo + 1).every((p) => p === "two"),
+					`blank before the other side ran out: ${trace(out)}`,
+				).toBe(true);
+				expect(new Set(shape.slice(lastTwo + 1)).size).toBeLessThanOrEqual(1);
+				if (u === "gap" && lastTwo >= 0) twoSidedGaps++;
+				at = end + 1;
+			}
+			for (const g of s.items.groups) {
+				groups++;
+				const first = out.findIndex(
+					(r) => r.kind === "pair" && (r.del === g.one || r.add === g.one),
+				);
+				const row = out[first] as SideRow & { kind: "pair" };
+				const split = g.one.kind === "del";
+				expect(split ? row.add : row.del).toBe(g.run[0]);
+				g.run.slice(1).forEach((l, k) => {
+					const r = out[first + 1 + k] as SideRow & { kind: "pair" };
+					expect(split ? r.add : r.del).toBe(l);
+					expect(split ? r.del : r.add).toBeUndefined();
+				});
+			}
+			for (const [d, a] of s.items.pairs) {
+				expect(
+					out.some((r) => r.kind === "pair" && r.del === d && r.add === a),
+				).toBe(true);
+			}
+			// Unified's order (orderRun) lays out the same as git's.
+			expect(layoutRows(orderRun(git, partners), partners)).toEqual(out);
+		}
+		expect(groups).toBeGreaterThan(300);
 		expect(twoSidedGaps).toBeGreaterThan(50);
 	});
 });

@@ -4230,14 +4230,15 @@ function HunkRows(props: {
 	// matching is O(n·m) over the whole hunk), not again on a toggle, a
 	// landing, a thread opening or a context load. Rows never leave their
 	// run: unified, a run's rows are already in hunkView's order (a
-	// similarity pair reads together); side by side, they're laid out as
-	// rows with a pair on one (sideBySide.ts, by the hunk's partners), so the
+	// similarity pair or a split/joined group reads together); side by
+	// side, they're laid out as rows with a pair on one, a group from its
+	// first (sideBySide.ts, by the hunk's partners), so the
 	// whitespace and pairing compose. A pair whose lines sit in two runs
 	// gets its marks only: neither row moves.
 	// The since view: each piece is a run of its own (its first line starts
 	// one), so every piece has its controls (CAR-218).
 	const sincePieces = props.pieces;
-	const { hunkRuns, pairs } = useMemo(() => {
+	const { hunkRuns, items } = useMemo(() => {
 		const starts = sincePieces
 			? new Set(hunk.lines.filter((l) => sincePieces.has(l)))
 			: undefined;
@@ -4247,19 +4248,16 @@ function HunkRows(props: {
 			side:
 				view === "side-by-side" ? layoutRows(run.rows, shown.partners) : null,
 		}));
-		return { hunkRuns: runs, pairs: shown.pairs };
+		return { hunkRuns: runs, items: shown.items };
 	}, [hunk, ignoreWhitespace, view, sincePieces]);
-	// The word marks of the hunk's pairs: those done before and those the
+	// The word marks of the hunk's pairs and groups: those done before and those the
 	// render budget allows now; the rest are marked off the render path and
 	// come in with `marked`, chunk by chunk (wordWork.ts, CAR-135). Their
 	// lines show a spinner meanwhile, or a warning if marking them failed.
 	// Unmounted, the hunk stops waiting, and work nobody waits for is dropped.
 	const [marked, setMarked] = useState(0);
 	// biome-ignore lint/correctness/useExhaustiveDependencies: `marked` says more pairs are done.
-	const hunkMarks = useMemo(
-		() => hunkWords({ pairs, groups: [] }, false),
-		[pairs, marked],
-	);
+	const hunkMarks = useMemo(() => hunkWords(items, false), [items, marked]);
 	const words = hunkMarks.marks;
 	useEffect(() => {
 		if (hunkMarks.later.length === 0) return;
@@ -4276,9 +4274,9 @@ function HunkRows(props: {
 						hunkRuns.flatMap((run) => run.rows),
 						words,
 						props.tabWidth ?? DEFAULT_TAB_WIDTH,
-						{ pairs, groups: [] },
+						items,
 					),
-		[showHidden, hunkRuns, words, pairs, props.tabWidth],
+		[showHidden, hunkRuns, words, items, props.tabWidth],
 	);
 	const columns = columnsOf(view);
 	// Unified, the file bubble is centred on rows that aren't code (FileBubbleSlot).
