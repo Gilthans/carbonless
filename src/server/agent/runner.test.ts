@@ -143,6 +143,7 @@ const facts = (): RunnerFacts => ({
 	views: () => ({ patchsets: [], current: prHead }),
 	checkHead: async () => {},
 	missing: (oids) => missingCommits(cache.path, oids),
+	fetchesHead: () => true,
 });
 
 const dir = () => join(agentsDir(), REVIEW);

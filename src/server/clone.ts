@@ -648,9 +648,10 @@ async function answerBatch(path: string, batch: CommitBatch): Promise<void> {
 export async function missingCommits(
 	path: string,
 	oids: readonly string[],
+	signal?: AbortSignal,
 ): Promise<string[]> {
 	const wanted = [...new Set(oids)].filter((o) => OID.test(o));
-	const present = await presentCommits(path, wanted);
+	const present = await presentCommits(path, wanted, signal);
 	return wanted.filter((o) => !present.has(o));
 }
 

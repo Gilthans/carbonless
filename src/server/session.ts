@@ -517,6 +517,8 @@ export class Session {
 			},
 			patchsets: () => this.#patchsets,
 			currentHead: () => this.#meta.headOid,
+			// As #noteHead decides whether to fetch it.
+			fetchesHead: () => !this.pinned && this.#meta.state === "OPEN",
 			checkHead: async () => {
 				await this.checkHead();
 			},
