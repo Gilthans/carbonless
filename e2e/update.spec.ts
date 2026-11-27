@@ -1498,6 +1498,21 @@ async function expectBannerOnTop(page: Page, header: Locator) {
 	expect(h?.y ?? 0).toBeGreaterThanOrEqual((b?.y ?? 0) + (b?.height ?? 0) - 1);
 }
 
+/**
+ * Until crb's own check answered (`lastChecked` set): the page then reads
+ * a settled /api/update, on a loaded machine too.
+ */
+async function checked(url: string) {
+	await expect
+		.poll(async () => {
+			const info = (await (await fetch(`${url}/api/update`)).json()) as {
+				lastChecked: string | null;
+			};
+			return info.lastChecked !== null;
+		})
+		.toBe(true);
+}
+
 /** The element at a locator's center is inside it (nothing laid over it). */
 async function expectHittable(target: Locator) {
 	const hit = await target.evaluate((el) => {
@@ -1521,6 +1536,7 @@ it("Withdrawn with a fix: a red banner pinned above the header, pushing it down,
 	if (isMobile) await page.setViewportSize({ width: 360, height: 740 });
 	installed.registry.deprecated[CURRENT] = `withdrawn: ${REASON}`;
 	const { url } = await installed.start();
+	await checked(url);
 	const review = await openReview(url);
 	await page.goto(review);
 	await expect(banner(page)).toBeVisible();
@@ -1624,7 +1640,9 @@ it("Withdrawn: the banner's Update installs the fix, crb restarts on it and the 
 	await pr();
 	installed.registry.deprecated[CURRENT] = `withdrawn: ${REASON}`;
 	const { url } = await installed.start();
+	await checked(url);
 	await page.goto(`${url}/`);
+	await expect(banner(page)).toBeVisible();
 	await page.evaluate(() => {
 		(window as unknown as { beforeUpdate: boolean }).beforeUpdate = true;
 	});
@@ -1698,6 +1716,7 @@ it("Withdrawn without a fix: nothing until crb's check answers, then the banner 
 	installed.registry.deprecated[CURRENT] = `withdrawn: ${REASON}`;
 	installed.registry.deprecated[NEWER] = "withdrawn: same bug";
 	const { url } = await installed.start();
+	await checked(url);
 	// Held: the page has no answer yet.
 	let release: () => void = () => {};
 	const gate = new Promise<void>((r) => {

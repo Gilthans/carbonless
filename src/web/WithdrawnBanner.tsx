@@ -115,8 +115,10 @@ function Bar(props: { info: UpdateInfo; reason: string }) {
 		);
 	}
 	return (
-		<div
-			role="alert"
+		// A labelled region, not a live one: it isn't announced again on
+		// every page the reviewer opens.
+		<section
+			aria-label="Withdrawn version"
 			data-testid="withdrawn-banner"
 			className="flex flex-wrap items-center gap-x-2.5 gap-y-1 border-b border-del-ink bg-del px-3 py-1 text-sm text-del-ink sm:px-6"
 		>
@@ -137,10 +139,10 @@ function Bar(props: { info: UpdateInfo; reason: string }) {
 				data-testid="withdrawn-reason"
 				className="min-w-0 flex-[1_1_10rem] break-words text-ink"
 			>
-				{info.current ? `${info.current}: ` : ""}
-				{props.reason}
+				{/* No reason given: the version alone, no dangling ": ". */}
+				{[info.current, props.reason].filter((t) => t !== "").join(": ")}
 			</span>
 			{action}
-		</div>
+		</section>
 	);
 }

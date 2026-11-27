@@ -326,6 +326,20 @@ describe("checkRegistry: withdrawn and deprecated versions (CAR-212)", () => {
 		}
 	});
 
+	it("the reason reaches /api/update sanitized: one line, bidi replaced, at most 300 characters", async () => {
+		const RLO = String.fromCharCode(0x202e);
+		const r = await versionRegistry(
+			{ latest: "0.2.0" },
+			{ "0.2.0": { deprecated: `withdrawn: a\n<b>${RLO}${"x".repeat(400)}` } },
+		);
+		const reason = (await checkRegistry("0.2.0", { registry: r.url }))
+			.withdrawn;
+		expect(reason).toBe(`a <b>?${"x".repeat(294)}`);
+		expect(Array.from(reason ?? "")).toHaveLength(300);
+		expect(reason).not.toContain("\n");
+		expect(reason).not.toContain(RLO);
+	});
+
 	it("a non-string deprecated on a candidate is no deprecation: offered", async () => {
 		const r = await versionRegistry(
 			{ latest: "0.3.0" },

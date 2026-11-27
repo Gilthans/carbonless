@@ -2,6 +2,7 @@
 
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import {
+	act,
 	cleanup,
 	render,
 	screen,
@@ -113,7 +114,11 @@ describe("WithdrawnBanner", () => {
 		const { posts } = serve(WITHDRAWN);
 		show();
 		const b = await banner();
-		expect(b.getAttribute("role")).toBe("alert");
+		// A labelled region, not a live one (no announcement per page).
+		expect(b.tagName).toBe("SECTION");
+		expect(b.getAttribute("aria-label")).toBe("Withdrawn version");
+		expect(b.getAttribute("role")).toBe(null);
+		expect(b.getAttribute("aria-live")).toBe(null);
 		expect(
 			within(b).getByRole("img", { name: "Withdrawn version" }),
 		).toBeTruthy();
@@ -160,6 +165,84 @@ describe("WithdrawnBanner", () => {
 			"npm install -g carbonless-review@0.4.1",
 		);
 		expect(within(b).queryByRole("button", { name: /^Update/ })).toBeNull();
+	});
+
+	it("no reason given: the version alone, no dangling colon", async () => {
+		serve({ ...WITHDRAWN, withdrawn: { reason: "" } });
+		show();
+		const b = await banner();
+		expect(within(b).getByTestId("withdrawn-reason").textContent).toBe("0.4.0");
+		expect(within(b).getByText("Withdrawn")).toBeTruthy();
+	});
+
+	it("crb's check not answered yet: asks again in 3 s, until it has; then the usual poll", async () => {
+		vi.useFakeTimers({
+			toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"],
+		});
+		try {
+			let info: UpdateInfo = {
+				...WITHDRAWN,
+				lastChecked: null,
+				withdrawn: null,
+				available: null,
+				command: null,
+			};
+			let asked = 0;
+			vi.stubGlobal(
+				"fetch",
+				vi.fn(async (url: string) => {
+					if (url === "/api/update") {
+						asked++;
+						return json(200, info);
+					}
+					return json(404, {});
+				}),
+			);
+			show();
+			await vi.waitFor(() => expect(asked).toBe(1));
+			// Not answered: asked again soon.
+			await act(() => vi.advanceTimersByTimeAsync(3_000));
+			expect(asked).toBe(2);
+			info = { ...WITHDRAWN, available: null, command: null };
+			await act(() => vi.advanceTimersByTimeAsync(3_000));
+			expect(asked).toBe(3);
+			// The answer's render (the query's notify is a timer too).
+			await act(() => vi.advanceTimersByTimeAsync(10));
+			expect(screen.getByTestId("withdrawn-banner")).toBeTruthy();
+			// Answered: back to the usual poll (minutes), no more 3 s asks.
+			await act(() => vi.advanceTimersByTimeAsync(60_000));
+			expect(asked).toBe(3);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it("checks off: never the quick asks", async () => {
+		vi.useFakeTimers({
+			toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"],
+		});
+		try {
+			let asked = 0;
+			vi.stubGlobal(
+				"fetch",
+				vi.fn(async () => {
+					asked++;
+					return json(200, {
+						...WITHDRAWN,
+						lastChecked: null,
+						withdrawn: null,
+						available: null,
+						checksOff: "local-build",
+					});
+				}),
+			);
+			show();
+			await vi.waitFor(() => expect(asked).toBe(1));
+			await act(() => vi.advanceTimersByTimeAsync(60_000));
+			expect(asked).toBe(1);
+		} finally {
+			vi.useRealTimers();
+		}
 	});
 
 	it("the reason is plain text: markup shows as typed, nothing rendered from it", async () => {

@@ -202,7 +202,9 @@ export async function checkRegistry(
 		const a = answerOf.get(v);
 		return a?.kind === "found" && isDeprecated(a.deprecated);
 	});
-	// A candidate whose request failed is not offered this time.
+	// A candidate whose request failed is not offered this time. (An offer
+	// made earlier whose `also` request fails stays on offer that round:
+	// only npm saying "deprecated" drops it.)
 	const newer =
 		candidates.find(
 			(v) => answerOf.get(v)?.kind === "found" && !deprecated.includes(v),
