@@ -9,6 +9,7 @@ import { buildReviewView } from "../review/coverage.js";
 import type { CrbEvent } from "../review/events.js";
 import { foldProgress } from "../review/fold.js";
 import { RefStore } from "../review/refStore.js";
+import { reviewCreated } from "../review/reviews.js";
 import { withSplitCarries } from "../review/splitCarry.js";
 import type { StartedReview } from "./facts.js";
 
@@ -50,7 +51,7 @@ function coverageOf(
 
 /**
  * What a review's two refs said at their tips: its summary (null: not
- * started, or as-of), and its coverage once read. Kept per review while
+ * started, as-of, or its history unreadable), and its coverage once read. Kept per review while
  * both tips stay where they were.
  */
 interface Memo {
@@ -67,7 +68,7 @@ interface Memo {
 }
 
 const PROGRESS_REF =
-	/^refs\/crb\/reviews\/([0-9a-z]{26})\/reviewers\/[^/]+\/progress$/;
+	/^refs\/crb\/reviews\/([0-9a-z]{26})\/reviewers\/([^/]+)\/progress$/;
 const META_REF = /^refs\/crb\/reviews\/([0-9a-z]{26})\/meta$/;
 
 export class StartedReviews {
@@ -179,8 +180,10 @@ export class StartedReviews {
 		for (const [ref, tip] of tips) {
 			const meta = META_REF.exec(ref)?.[1];
 			if (meta) metas.set(meta, tip);
-			const progress = PROGRESS_REF.exec(ref)?.[1];
-			if (progress) progresses.set(progress, tip);
+			const progress = PROGRESS_REF.exec(ref);
+			if (progress?.[1] && progress[2] === slug) {
+				progresses.set(progress[1], tip);
+			}
 		}
 		const memoKey = `${repo}\0${slug}`;
 		const before = this.#memos.get(memoKey) ?? new Map<string, Memo>();
@@ -235,6 +238,9 @@ export class StartedReviews {
 					toCover.set(id, memo);
 				}
 			} catch (error) {
+				// Kept as not started until a tip moves: a broken history is
+				// neither read nor logged again on every load.
+				memos.set(id, { metaTip, progressTip, review: null });
 				console.error(`crb: skipped review ${id} in ${repo}: ${String(error)}`);
 			}
 		}
@@ -309,8 +315,8 @@ function summary(
 	meta: CrbEvent[],
 	events: CrbEvent[],
 ): Omit<StartedReview, "coverage"> | null {
-	const created = meta.find((e) => e.type === "review-created");
-	if (created?.type !== "review-created") return null;
+	const created = reviewCreated(meta);
+	if (!created) return null;
 	const details = created.details ?? {};
 	const asOf = typeof details.asOf === "string" ? details.asOf : null;
 	// Dev mode views of the past never count as started.

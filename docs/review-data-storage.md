@@ -1008,10 +1008,13 @@ read forever, would spread the old cut through every reader of states.
    lists the tips it needs (`RefStore.tips`), and the tips that moved since
    its last scan are read together in one `git log --stdin`
    (`RefStore.eventsOfTips`), split per tip by walking parents (a tip whose
-   history is broken is read alone, failing only itself). The scan keeps each
-   review's summary and coverage keyed by its meta and progress tips, so a
-   load where nothing moved costs one `for-each-ref` per clone, however many
-   reviews were started (CAR-307). It needs no invalidation: a write by
+   history is broken is isolated by halving the batch, failing only itself).
+   The scan keeps each review's summary and coverage keyed by its meta and
+   progress tips (an unreadable review too, as not started), so a load where
+   nothing moved costs one `for-each-ref` per clone, however many reviews
+   were started (CAR-307). A meta ref merged from two copies may hold two
+   `review-created` events; every reader takes the earliest by `(ts, id)`
+   (`reviewCreated`), whatever order it read the commits in. It needs no invalidation: a write by
    another tab, the crb CLI or a fetch moves a tip, and the next scan sees it.
 
 This is the same idea as git's `cat_sort_uniq` notes merge (concatenate, sort,

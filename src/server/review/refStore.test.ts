@@ -152,6 +152,49 @@ describe("RefStore", () => {
 		expect(read.get(broken.trim())).toBeInstanceOf(Error);
 	});
 
+	it("isolates a broken tip among many by halving, not one git log per tip", async () => {
+		const tips: string[] = [];
+		for (let i = 0; i < 16; i++) {
+			tips.push(
+				await store.appendEvent(
+					`refs/crb/reviews/r${i}/reviewers/dan/progress`,
+					"s",
+					evN(i),
+					"dan",
+				),
+			);
+		}
+		const broken = (
+			await runGit(repo, ["hash-object", "-w", "-t", "commit", "--stdin"], {
+				input: `tree ${await store.emptyTree()}\nparent ${"1".repeat(40)}\nauthor dan <dan@crb> 0 +0000\ncommitter crb <crb@crb> 0 +0000\n\ncrb: x\n`,
+			})
+		).trim();
+		vi.mocked(runGit).mockClear();
+		const read = await store.eventsOfTips([...tips, broken]);
+		// 17 tips, one bad: about 2·log2(17) batches, where one git log per
+		// tip would be 18.
+		expect(vi.mocked(runGit).mock.calls.length).toBeLessThanOrEqual(11);
+		for (const [i, tip] of tips.entries())
+			expect(read.get(tip)).toEqual([evN(i)]);
+		expect(read.get(broken)).toBeInstanceOf(Error);
+	});
+
+	it("reads only object IDs, never options or names, from a caller", async () => {
+		await expect(store.eventsOfTips(["-n1"])).rejects.toThrow(/object ID/);
+		await expect(store.eventsOfTips(["HEAD"])).rejects.toThrow(/object ID/);
+	});
+
+	it("a directory that isn't a repo lists no tips, quietly", async () => {
+		const junk = mkdtempSync(join(tmpdir(), "crb-junk-"));
+		try {
+			expect(
+				await new RefStore(junk).tips(["refs/crb/reviews/*/meta"]),
+			).toEqual(new Map());
+		} finally {
+			rmSync(junk, { recursive: true, force: true });
+		}
+	});
+
 	it("lists tips only under refs/crb/", async () => {
 		await expect(store.tips(["refs/heads/*"])).rejects.toThrow(
 			/crb ref pattern/,

@@ -125,7 +125,7 @@ export class RefStore {
 	/**
 	 * The tip of every ref matching `patterns` (for-each-ref patterns under
 	 * refs/crb/), by ref name: one git call however many refs match, where a
-	 * `tip` per ref would start a git each.
+	 * `tip` per ref would start a git each. Empty when git can't list them.
 	 */
 	async tips(patterns: readonly string[]): Promise<Map<string, string>> {
 		for (const p of patterns) {
@@ -133,12 +133,17 @@ export class RefStore {
 				throw new Error(`Not a crb ref pattern: ${p}`);
 			}
 		}
-		const out = await runGit(this.repo, [
-			"for-each-ref",
-			"--format=%(objectname) %(refname)",
-			"--end-of-options",
-			...patterns,
-		]);
+		// A directory git can't read (not a repo) lists nothing, quietly.
+		const out = await runGit(
+			this.repo,
+			[
+				"for-each-ref",
+				"--format=%(objectname) %(refname)",
+				"--end-of-options",
+				...patterns,
+			],
+			{ allowFailure: true },
+		);
 		const tips = new Map<string, string>();
 		for (const line of out.split("\n")) {
 			const space = line.indexOf(" ");
@@ -149,11 +154,12 @@ export class RefStore {
 	}
 
 	/**
-	 * The events reachable from each of `tips` (commit OIDs), as readEvents
-	 * reads one ref's: all of them in one `git log`, split by walking each
-	 * tip's parents, so a caller reading many refs starts one git, not one per
-	 * ref. A tip whose history can't be read in that pass (a missing parent)
-	 * is read alone, so a broken history costs only its own entry: an Error.
+	 * The events reachable from each of `tips` (commit OIDs), the same set
+	 * readEvents reads for a ref at that tip: all of them in one `git log`,
+	 * split by walking each tip's parents, so a caller reading many refs
+	 * starts one git, not one per ref. A tip whose history is broken (a
+	 * missing parent) is isolated by halving the batch, so it costs only its
+	 * own entry, an Error, and a few gits.
 	 */
 	async eventsOfTips(
 		tips: readonly string[],
@@ -161,43 +167,42 @@ export class RefStore {
 		const wanted = [...new Set(tips)];
 		for (const t of wanted) checkOid(t);
 		const result = new Map<string, CrbEvent[] | Error>();
-		if (wanted.length === 0) return result;
-		const commits = new Map<string, { parents: string[]; body: string }>();
+		if (wanted.length > 0) await this.#readBatch(wanted, result);
+		return result;
+	}
+
+	/**
+	 * eventsOfTips for `tips`: one git log. When it fails (a tip whose
+	 * history is broken), each half is tried again, so k bad tips among n
+	 * cost about 2k·log2(n) gits, not n; a lone tip that fails is its Error.
+	 */
+	async #readBatch(
+		tips: readonly string[],
+		result: Map<string, CrbEvent[] | Error>,
+	): Promise<void> {
+		let commits: Map<string, { parents: string[]; body: string }>;
 		try {
-			const out = await runGit(
-				this.repo,
-				[
-					"--no-replace-objects",
-					"-c",
-					"log.showSignature=false",
-					"-c",
-					"i18n.logOutputEncoding=UTF-8",
-					"log",
-					"-z",
-					"--no-color",
-					"--format=%H %P%n%B",
-					"--stdin",
-				],
-				{ input: `${wanted.join("\n")}\n` },
-			);
-			for (const record of out.split("\0")) {
-				const nl = record.indexOf("\n");
-				const head = (nl < 0 ? record : record.slice(0, nl)).trim();
-				if (!head) continue;
-				const [oid, ...parents] = head.split(" ").filter(Boolean);
-				if (!oid) continue;
-				commits.set(oid, {
-					parents,
-					body: nl < 0 ? "" : record.slice(nl + 1),
-				});
+			commits = await this.#logCommits(tips);
+		} catch (error) {
+			if (tips.length === 1) {
+				result.set(
+					tips[0] as string,
+					error instanceof Error ? error : new Error(String(error)),
+				);
+				return;
 			}
-		} catch {
-			// Some tip's history is broken: each is read alone below.
+			const mid = Math.ceil(tips.length / 2);
+			await Promise.all([
+				this.#readBatch(tips.slice(0, mid), result),
+				this.#readBatch(tips.slice(mid), result),
+			]);
+			return;
 		}
 		const alone: string[] = [];
-		for (const tip of wanted) {
+		for (const tip of tips) {
 			const events = eventsFrom(tip, commits);
 			if (events) result.set(tip, events);
+			// Not a commit's history git walked (an annotated tag): read as a ref.
 			else alone.push(tip);
 		}
 		await Promise.all(
@@ -212,7 +217,38 @@ export class RefStore {
 				}
 			}),
 		);
-		return result;
+	}
+
+	/** Every commit reachable from `tips`, by OID: its parents and message. */
+	async #logCommits(
+		tips: readonly string[],
+	): Promise<Map<string, { parents: string[]; body: string }>> {
+		const out = await runGit(
+			this.repo,
+			[
+				"--no-replace-objects",
+				"-c",
+				"log.showSignature=false",
+				"-c",
+				"i18n.logOutputEncoding=UTF-8",
+				"log",
+				"-z",
+				"--no-color",
+				"--format=%H %P%n%B",
+				"--stdin",
+			],
+			{ input: `${tips.join("\n")}\n` },
+		);
+		const commits = new Map<string, { parents: string[]; body: string }>();
+		for (const record of out.split("\0")) {
+			const nl = record.indexOf("\n");
+			const head = (nl < 0 ? record : record.slice(0, nl)).trim();
+			if (!head) continue;
+			const [oid, ...parents] = head.split(" ").filter(Boolean);
+			if (!oid) continue;
+			commits.set(oid, { parents, body: nl < 0 ? "" : record.slice(nl + 1) });
+		}
+		return commits;
 	}
 
 	async #logEvents(tip: string): Promise<CrbEvent[]> {
@@ -396,8 +432,11 @@ export class RefStore {
 
 /**
  * The events of every commit reachable from `tip` in `commits` (OID →
- * parents and message), parents before children as `git log --reverse`
- * gives them; null when a commit in its history is missing.
+ * parents and message), parents before children. Linear history comes out
+ * as `git log --reverse` gives it; a merge's sides need not be in git's date
+ * order, which nothing depends on (the fold sorts by ts and id, and the
+ * review-created pick is by ts and id too). Null when a commit in its
+ * history is missing.
  */
 function eventsFrom(
 	tip: string,
