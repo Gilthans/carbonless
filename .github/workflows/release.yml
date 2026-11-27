@@ -94,7 +94,9 @@ jobs:
       github.event.workflow_run.event == 'push' &&
       github.event.workflow_run.head_repository.full_name == github.repository
     runs-on: ubuntu-latest
-    timeout-minutes: 6
+    # Over the steps' own timeouts together (7), so no step's timeout can
+    # turn into the job's (which would count as cancelled).
+    timeout-minutes: 8
     environment: release-note
     permissions:
       contents: read
@@ -104,19 +106,31 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         continue-on-error: true
-        timeout-minutes: 2
+        timeout-minutes: 1
         with:
           ref: ${{ github.event.workflow_run.head_sha }}
           fetch-depth: 0 # the release's range, from its previous tag
           persist-credentials: false
       - name: The PRs' descriptions
+        # Every PR merged since the previous release's range began (by merge
+        # date, not creation: one opened long ago still counts), from a day
+        # before the oldest commit the range can hold (its merge base with
+        # that tag), so time zones can't drop one. ci:rc-notes warns about
+        # any PR of the range still missing.
         continue-on-error: true
         timeout-minutes: 1
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          search=()
+          prev="$(git tag -l 'v*' | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -1 || true)"
+          if [[ -n "$prev" ]]; then
+            base="$(git merge-base "refs/tags/$prev" HEAD)"
+            since="$(date -u -d "$(git log -1 --format=%cI "$base") - 1 day" +%Y-%m-%d)"
+            search=(--search "merged:>=$since")
+          fi
           gh pr list --repo "$GITHUB_REPOSITORY" --state merged --base master \
-            --limit 300 --json number,body >"$RUNNER_TEMP/prs.json"
+            "${search[@]}" --limit 1000 --json number,body >"$RUNNER_TEMP/prs.json"
       - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v4.4.0
         continue-on-error: true
         timeout-minutes: 1
@@ -131,11 +145,11 @@ jobs:
       # No install scripts, before the key is in any env.
       - run: pnpm install --frozen-lockfile --ignore-scripts
         continue-on-error: true
-        timeout-minutes: 3
+        timeout-minutes: 2
       - name: Notes so far
         id: notes
         continue-on-error: true
-        timeout-minutes: 3 # rcNotes gives up after 2
+        timeout-minutes: 1 # rcNotes gives up after 40 s
         env:
           LINEAR_API_KEY: ${{ secrets.LINEAR_READ_API_KEY }}
         run: pnpm exec tsx scripts/release.ts ci:rc-notes "$RUNNER_TEMP/prs.json" "$GITHUB_OUTPUT" "$GITHUB_STEP_SUMMARY"

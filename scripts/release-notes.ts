@@ -2033,8 +2033,11 @@ export function prBodiesIo(io: Io, bodies: PrBodies): Io {
 	};
 }
 
-/** How long an RC build waits for its notes (then ships without them). */
-const RC_NOTES_TIMEOUT_MS = 120_000;
+/**
+ * How long an RC build waits for its notes (then ships without them):
+ * inside the workflow step's own timeout (release.yml, rc-notes).
+ */
+const RC_NOTES_TIMEOUT_MS = 40_000;
 
 /**
  * The notes of release `version` written so far, for an RC build of it
@@ -2042,7 +2045,9 @@ const RC_NOTES_TIMEOUT_MS = 120_000;
  * PRs' descriptions), best effort. A ticket or PR without a note is
  * skipped (`missing` counts them; the RC lists its PR as having none yet),
  * and no key, Linear or git failing, or the timeout give no notes and a
- * warning: never a throw. Reads only.
+ * warning: never a throw. `prs`: the release's PRs (not the exempt ones)
+ * once the range was read, so the caller can tell which descriptions it
+ * lacked. Reads only.
  */
 export async function rcNotes(
 	io: Io,
@@ -2053,13 +2058,11 @@ export async function rcNotes(
 ): Promise<{
 	file: ReleaseNotesFile | null;
 	missing: number;
+	prs: number[];
 	warnings: string[];
 }> {
-	const { linear } = found;
-	if (!linear) {
-		return { file: null, missing: 0, warnings: [noLinearKey(found.tried)] };
-	}
 	const timeoutMs = opts.timeoutMs ?? RC_NOTES_TIMEOUT_MS;
+	let prs: number[] = [];
 	let timer: ReturnType<typeof setTimeout> | undefined;
 	const timeout = new Promise<never>((_, reject) => {
 		timer = setTimeout(
@@ -2075,20 +2078,33 @@ export async function rcNotes(
 				throw new Error(`not a release X.Y.Z: ${version}`);
 			}
 			const range = await releaseRange(io, version, to, opts.cwd);
+			prs = range.prs.filter((p) => !p.exempt).map((p) => p.number);
+			const { linear } = found;
+			if (!linear) return null;
 			const files = await notesFilesAt(io, to, opts.cwd);
 			return collectNotes(io, linear, version, range, files);
 		})();
 		collect.catch(() => {}); // settled after a timeout: nobody waits
 		const collected = await Promise.race([collect, timeout]);
+		if (!collected) {
+			return {
+				file: null,
+				missing: 0,
+				prs,
+				warnings: [noLinearKey(found.tried)],
+			};
+		}
 		return {
 			file: collected.file,
 			missing: collected.missing.length,
+			prs,
 			warnings: collected.warnings,
 		};
 	} catch (error) {
 		return {
 			file: null,
 			missing: 0,
+			prs,
 			warnings: [
 				`${version}'s notes couldn't be collected: ${(error as Error).message}`,
 			],
@@ -2096,4 +2112,13 @@ export async function rcNotes(
 	} finally {
 		clearTimeout(timer);
 	}
+}
+
+/** The release's PRs `bodies` has no entry for (their descriptions weren't fetched). */
+export function undescribedPrs(
+	prs: readonly number[],
+	bodies: PrBodies,
+): number[] {
+	const have = new Set(bodies.map((b) => b.number));
+	return prs.filter((n) => !have.has(n));
 }

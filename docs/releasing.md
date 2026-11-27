@@ -282,13 +282,19 @@ checks them from git alone (CAR-242).
   through `rcNotes` in `scripts/release-notes.ts`), best effort: no
   coverage check, a ticket or PR without a note is skipped (What's new
   counts its PR among the changes with no notes yet), and no key,
-  Linear or GitHub failing, or two minutes without an answer give no
+  Linear or GitHub failing, or 40 seconds without an answer give no
   notes and a warning in the run's summary: the RC then ships what it
   did before (the committed file and the PRs' titles). The job holds the
   Linear key (environment `release-note`), installs without scripts, and
   gets the PR descriptions in a step before any repo code runs (`gh pr
-  list`, the run's read-only token), so `release.ts ci:rc-notes` never
-  calls gh. Every step may fail without failing the run; its output (the
+  list`, the run's read-only token, every PR merged since a day before
+  the previous release's range began: by merge date, so a PR opened long
+  ago still counts), so `release.ts ci:rc-notes` never calls gh. A PR of
+  the range missing from that list gets a warning and the summary says
+  how many descriptions were fetched, so a description not fetched reads
+  apart from a note not written. Every step may fail without failing the
+  run, and the steps' timeouts together (7 minutes) stay under the job's
+  (8), so a slow step fails rather than cancelling the job; its output (the
   notes, gzip+base64 as promote's input) reaches `rc-build`'s
   `ci:set-version` as `$RC_NOTES` (unreadable: a warning, no notes),
   which puts them over any committed `release-notes/X.Y.Z.json` (theirs

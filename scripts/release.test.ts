@@ -3063,7 +3063,17 @@ describe("an RC's notes so far (CAR-321)", { timeout: 30_000 }, () => {
 			expect(step).toMatch(/continue-on-error: true/);
 			expect(step).toMatch(/timeout-minutes: \d/);
 		}
-		expect(job).toMatch(/^ {4}timeout-minutes: [1-9]$/m);
+		// The steps' timeouts together stay under the job's: a step that
+		// times out fails (best effort), but a job that does is cancelled.
+		const jobMinutes = Number(/^ {4}timeout-minutes: (\d+)$/m.exec(job)?.[1]);
+		const stepMinutes = steps.map((st) =>
+			Number(/^ {8}timeout-minutes: (\d+)/m.exec(st)?.[1]),
+		);
+		expect(stepMinutes.every((m) => m > 0)).toBe(true);
+		const sum = stepMinutes.reduce((a, b) => a + b, 0);
+		expect(sum).toBeLessThan(jobMinutes);
+		// The RC waits at most this long for its notes.
+		expect(jobMinutes).toBeLessThanOrEqual(8);
 		const build = byName.get("rc-build") ?? "";
 		expect(build).toMatch(/^ {4}needs: rc-notes$/m);
 		expect(conjuncts(ifOf(build))).toContain("!cancelled()");
@@ -3081,6 +3091,88 @@ describe("an RC's notes so far (CAR-321)", { timeout: 30_000 }, () => {
 		);
 		for (const run of runValues(workflow("release.yml"))) {
 			expect(run).not.toContain("${{");
+		}
+	});
+
+	it("fetches the PRs' descriptions by merge date since the previous release's range began, not the newest few created; with no release yet, all of them", () => {
+		const job = release().get("rc-notes") ?? "";
+		const step =
+			job
+				.split(/\n(?= {6}- )/)
+				.find((st) => st.includes("name: The PRs' descriptions")) ?? "";
+		expect(step).not.toContain("--limit 300");
+		const script = (runValues(step)[0] ?? "")
+			.replace(/^\s*run: \|\n/, "")
+			.replace(/^ {10}/gm, "");
+		expect(script).toContain("gh pr list");
+		const dir = mkdtempSync(join(tmpdir(), "crb-rc-prs-"));
+		try {
+			const repo = join(dir, "repo");
+			mkdirSync(repo);
+			const git = (...args: string[]) =>
+				execFileSync("git", args, { cwd: repo, encoding: "utf8" }).trim();
+			const commit = (subject: string, date: string) =>
+				execFileSync(
+					"git",
+					[
+						"-c",
+						"user.name=t",
+						"-c",
+						"user.email=t@e",
+						"commit",
+						"-q",
+						"--allow-empty",
+						"-m",
+						subject,
+					],
+					{
+						cwd: repo,
+						env: {
+							...process.env,
+							GIT_AUTHOR_DATE: date,
+							GIT_COMMITTER_DATE: date,
+						},
+					},
+				);
+			git("init", "-q", "-b", "master");
+			mkdirSync(join(dir, "bin"));
+			writeFileSync(
+				join(dir, "bin/gh"),
+				`#!/usr/bin/env bash\nprintf '%s\\n' "$@" >"${dir}/args"\necho '[]'\n`,
+				{ mode: 0o755 },
+			);
+			const run = () => {
+				execFileSync("bash", ["-eo", "pipefail", "-c", script], {
+					cwd: repo,
+					env: {
+						...process.env,
+						PATH: `${join(dir, "bin")}:${process.env.PATH}`,
+						RUNNER_TEMP: dir,
+						GITHUB_REPOSITORY: "owner/repo",
+					},
+				});
+				expect(readFileSync(join(dir, "prs.json"), "utf8")).toBe("[]\n");
+				return readFileSync(join(dir, "args"), "utf8").trim().split("\n");
+			};
+			commit("start (#1)", "2026-01-01T10:00:00Z");
+			// No release yet: every merged PR, no date bound.
+			const all = run();
+			expect(all).not.toContain("--search");
+			expect(all.join(" ")).toContain(
+				"pr list --repo owner/repo --state merged --base master --limit 1000 --json number,body",
+			);
+			commit("Feature (#2)", "2026-03-10T00:30:00Z");
+			git("tag", "v0.3.0");
+			git("tag", "v0.3.0-rc.9");
+			commit("After (#3)", "2026-04-01T00:00:00Z");
+			// The newest release (not an RC), from a day before its commit.
+			expect(run().join(" ")).toContain(
+				"--search merged:>=2026-03-09 --limit 1000",
+			);
+			git("tag", "v0.10.0");
+			expect(run().join(" ")).toContain("--search merged:>=2026-03-31");
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
 		}
 	});
 
@@ -3127,9 +3219,32 @@ describe("an RC's notes so far (CAR-321)", { timeout: 30_000 }, () => {
 			);
 			expect(out).toMatch(/^::warning title=RC notes::no PR descriptions/m);
 			expect(out).toMatch(/^::warning title=RC notes::no Linear key/m);
+			// A description not fetched reads apart from a note not written.
+			expect(out).toMatch(
+				/^::warning title=RC notes::1 of the release's 1 PRs not in the fetched descriptions \(#1\)/m,
+			);
 			expect(readFileSync(output, "utf8")).toBe("");
 			expect(readFileSync(summary, "utf8")).toMatch(
-				/^RC notes: none collected/,
+				/^RC notes: none collected \(1 warnings; 0\/1 PR descriptions fetched\)/,
+			);
+			// With #1's description fetched: no such warning, all counted.
+			const prs = join(dir, "prs.json");
+			writeFileSync(prs, JSON.stringify([{ number: 1, body: "" }]));
+			writeFileSync(summary, "");
+			const again = execFileSync(
+				join(import.meta.dirname, "../node_modules/.bin/tsx"),
+				[
+					join(import.meta.dirname, "release.ts"),
+					"ci:rc-notes",
+					prs,
+					output,
+					summary,
+				],
+				{ cwd: dir, encoding: "utf8", env },
+			);
+			expect(again).not.toMatch(/not in the fetched descriptions/);
+			expect(readFileSync(summary, "utf8")).toMatch(
+				/1\/1 PR descriptions fetched/,
 			);
 		} finally {
 			rmSync(dir, { recursive: true, force: true });

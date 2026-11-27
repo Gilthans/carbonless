@@ -133,6 +133,7 @@ import {
 	releaseRange,
 	renderNotesBody,
 	shippedNotes,
+	undescribedPrs,
 	withChangelogSection,
 	withReleaseNotes,
 	workflowText,
@@ -605,14 +606,22 @@ async function main(argv: string[]) {
 					"HEAD",
 				);
 				for (const w of r.warnings) warn(w);
+				// A description not fetched isn't a missing note: say which.
+				const undescribed = undescribedPrs(r.prs, bodies);
+				if (undescribed.length > 0) {
+					warn(
+						`${undescribed.length} of the release's ${r.prs.length} PRs not in the fetched descriptions (${undescribed.map((n) => `#${n}`).join(", ")}): a note there can't count`,
+					);
+				}
+				const fetched = `${r.prs.length - undescribed.length}/${r.prs.length} PR descriptions fetched`;
 				if (!r.file) {
 					say(
-						`RC notes: none collected (${r.warnings.length} warnings): the RC shows ${notesPath(version)} and its PRs' titles`,
+						`RC notes: none collected (${r.warnings.length} warnings; ${fetched}): the RC shows ${notesPath(version)} and its PRs' titles`,
 					);
 				} else {
 					appendFileSync(output, `notes=${encodeNotesInput(r.file)}\n`);
 					say(
-						`RC notes so far for ${version}: ${r.file.notes.length} notes, ${r.file.none.length} none, ${r.missing} without a note yet (shown by title)`,
+						`RC notes so far for ${version}: ${r.file.notes.length} notes, ${r.file.none.length} none, ${r.missing} without a note yet (shown by title); ${fetched}`,
 					);
 				}
 			} catch (error) {

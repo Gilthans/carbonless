@@ -59,6 +59,7 @@ import {
 	subjectPr,
 	ticketNote,
 	titleTickets,
+	undescribedPrs,
 	withChangelogSection,
 	workflowText,
 	writeNotes,
@@ -1526,6 +1527,11 @@ describe("against a repository", {
 				expect(noKey.warnings).toEqual([
 					expect.stringMatching(/^no Linear key \(tried \$LINEAR_API_KEY\)/),
 				]);
+				// The range is read before the key is needed: the caller can
+				// still tell which PRs' descriptions it lacked (not #60, exempt).
+				expect(noKey.prs).toEqual([110, 111, 125, 126, 127]);
+				expect(undescribedPrs(noKey.prs, BODIES)).toEqual([110, 111, 127]);
+				expect(undescribedPrs(noKey.prs, [])).toEqual(noKey.prs);
 				const down: Linear = {
 					query: async () => {
 						throw new Error("Linear answered 503: no data");
