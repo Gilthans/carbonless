@@ -890,7 +890,7 @@ describe("/mcp", () => {
 
 		it("the default comparison's reviewed and unreviewed lines, as the page's coverage counts them; calling it writes nothing", async () => {
 			const before = await view();
-			let v = await mark(before, [
+			await mark(before, [
 				{ key: keyOf(before, "a.txt", 2), state: "reviewed" },
 				// Part of a cluster: its added line only (index 1 of del + add).
 				{
@@ -899,7 +899,7 @@ describe("/mcp", () => {
 					reviewedLines: [[1, 2]],
 				},
 			]);
-			v = await view();
+			const v = await view();
 			await askReview();
 			const client = await connect();
 			const a = await join(client);

@@ -268,14 +268,12 @@ async function mcpTurn(cx, sessionId, prompt) {
 		if (typeof t === "string") await tool(t, { token });
 		else await tool(t.name, { token, ...(t.args ?? {}) });
 	}
-	let crashed = false;
 	for (;;) {
 		if (cfg.next === false) break;
 		if (stopped()) return { stopReason: "cancelled" };
 		const q = await tool("next", { token });
 		if (q.error || q.value.none) break;
-		if (s.crashOnPrompt && !crashed) {
-			crashed = true;
+		if (s.crashOnPrompt) {
 			process.stdout.write("", () => process.exit(70));
 			return new Promise(() => {});
 		}
