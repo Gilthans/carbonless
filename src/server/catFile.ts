@@ -26,6 +26,12 @@ import { tracer } from "./trace.js";
  * and a relative path (`<oid>:./x`, which git refuses in a bare clone by
  * exiting, failing every read queued beside it) is read by a `cat-file`
  * of its own.
+ *
+ * Ref names go through it too (readRef, CAR-326: crb reads refs only
+ * through git): git resolves a name afresh on every line it reads, its
+ * loose ref file and packed-refs (rechecked by stat) included, so a ref
+ * that any process moved, packed or deleted since the process started
+ * answers as it is now (catFile.test.ts).
  */
 
 /** A read object: its OID, type (`blob`, `commit`, ...) and bytes. */
@@ -363,6 +369,26 @@ export async function readObject(
 		return readAlone(repo, name, signal);
 	}
 	return processOf(repo).read(name, signal);
+}
+
+/** A full ref name the shared process takes: `refs/…`, plain characters. */
+const REF_NAME = /^refs\/[A-Za-z0-9_-][A-Za-z0-9._/-]*$/;
+
+/**
+ * The object full ref name `ref` points at (its OID, type and bytes), null
+ * when no such ref exists, read through the clone's shared process: no
+ * process of its own. A ref whose object the clone hasn't got reads as
+ * null too (git answers "missing" for both). A git failure rejects.
+ */
+export function readRef(
+	repo: string,
+	ref: string,
+	signal?: AbortSignal,
+): Promise<GitObject | null> {
+	if (!REF_NAME.test(ref) || ref.includes("..") || ref.includes("//")) {
+		return Promise.reject(new GitError(`Not a ref name: ${ref}`));
+	}
+	return processOf(repo).read(ref, signal);
 }
 
 /**

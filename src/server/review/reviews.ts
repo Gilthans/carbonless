@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
-import { readdir } from "node:fs/promises";
-import { join } from "node:path";
+import { mkdir, readdir, readFile, rename, writeFile } from "node:fs/promises";
+import { basename, dirname, join } from "node:path";
 import { ulid } from "ulid";
 import { type LineRanges, parseRanges, size } from "../../shared/lineRanges.js";
 import { changeFor, fitRanges, sinceMarkKey } from "../../shared/pieces.js";
@@ -10,7 +10,7 @@ import type {
 	Snapshot,
 	StateChange,
 } from "../../shared/types.js";
-import { readBlob } from "../catFile.js";
+import { readBlob, readRef } from "../catFile.js";
 import { runGit } from "../git.js";
 import {
 	type CarriedEvent,
@@ -913,16 +913,96 @@ export function listReviews(repoDir: string): Promise<StoredReview[]> {
 	return readMetas(repoDir, "refs/crb/reviews/*/meta");
 }
 
+/** A GitHub owner or repository name, as a clone's directory names it. */
+const CLONE_NAME = /^[a-z0-9_-][a-z0-9._-]*$/;
+
+/** `<cacheRoot>/review-clones/<id>`: which clone holds the review (a hint). */
+const hintFile = (cacheRoot: string, id: string) =>
+	join(cacheRoot, "review-clones", id);
+
 /**
- * The review `id` and the clone that holds it, searched among the cache's
- * clones (`<cacheRoot>/repos/<owner>/<repo>.git`): how a server that never
- * opened it (a restart, a bookmark) finds it. Null when none has it.
+ * Notes that clone `<owner>/<repo>` holds review `id`, so findReviewById
+ * finds it with no scan of every clone (CAR-326). A file crb owns, outside
+ * git; only a hint: the review is still read from the clone's refs, through
+ * git. Never fails.
+ */
+export async function rememberReviewClone(
+	cacheRoot: string,
+	id: string,
+	owner: string,
+	repo: string,
+): Promise<void> {
+	const name = `${owner.toLowerCase()}/${repo.toLowerCase()}`;
+	const [o = "", r = ""] = name.split("/");
+	if (!REVIEW_ID.test(id) || !CLONE_NAME.test(o) || !CLONE_NAME.test(r)) {
+		return;
+	}
+	try {
+		const file = hintFile(cacheRoot, id);
+		const known = await readFile(file, "utf8").catch(() => null);
+		if (known === name) return;
+		await mkdir(join(cacheRoot, "review-clones"), { recursive: true });
+		const tmp = `${file}.${process.pid}.${Date.now()}.tmp`;
+		await writeFile(tmp, name);
+		await rename(tmp, file);
+	} catch {
+		// Only a hint: the next lookup scans.
+	}
+}
+
+/**
+ * The review `id` in the clone its hint names, its meta ref read through
+ * the clone's shared `git cat-file` (no process of its own); null when the
+ * hint is missing, odd or wrong.
+ */
+async function findByHint(
+	cacheRoot: string,
+	id: string,
+): Promise<{ repoDir: string; review: StoredReview } | null> {
+	const name = (
+		await readFile(hintFile(cacheRoot, id), "utf8").catch(() => "")
+	).trim();
+	const [owner = "", repo = "", ...rest] = name.split("/");
+	if (
+		rest.length > 0 ||
+		!CLONE_NAME.test(owner) ||
+		!CLONE_NAME.test(repo) ||
+		owner === ".." ||
+		repo === ".."
+	) {
+		return null;
+	}
+	const repoDir = join(cacheRoot, "repos", owner, `${repo}.git`);
+	try {
+		const tip = await readRef(repoDir, `refs/crb/reviews/${id}/meta`);
+		if (!tip || tip.type !== "commit") return null;
+		const text = tip.content.toString("utf8");
+		const body = text.indexOf("\n\n");
+		const review =
+			storedReview(id, parseEventLines(body < 0 ? "" : text.slice(body + 2))) ??
+			storedReview(
+				id,
+				await new RefStore(repoDir).readEvents(`refs/crb/reviews/${id}/meta`),
+			);
+		return review ? { repoDir, review } : null;
+	} catch {
+		return null;
+	}
+}
+
+/**
+ * The review `id` and the clone that holds it: the clone its hint names
+ * (rememberReviewClone), else searched among the cache's clones
+ * (`<cacheRoot>/repos/<owner>/<repo>.git`, a git each): how a server that
+ * never opened it (a restart, a bookmark) finds it. Null when none has it.
  */
 export async function findReviewById(
 	cacheRoot: string,
 	id: string,
 ): Promise<{ repoDir: string; review: StoredReview } | null> {
 	if (!REVIEW_ID.test(id)) return null;
+	const hinted = await findByHint(cacheRoot, id);
+	if (hinted) return hinted;
 	const repos = join(cacheRoot, "repos");
 	const dirs = async (dir: string) =>
 		(await readdir(dir, { withFileTypes: true }).catch(() => []))
@@ -940,5 +1020,14 @@ export async function findReviewById(
 			return review ? { repoDir, review } : null;
 		}),
 	);
-	return hits.find((h) => h !== null) ?? null;
+	const hit = hits.find((h) => h !== null) ?? null;
+	if (hit) {
+		await rememberReviewClone(
+			cacheRoot,
+			id,
+			basename(dirname(hit.repoDir)),
+			basename(hit.repoDir).replace(/\.git$/, ""),
+		);
+	}
+	return hit;
 }
