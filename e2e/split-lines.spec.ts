@@ -182,12 +182,24 @@ async function expand(section: Locator) {
 }
 
 /** The number cells named by `label`: in their accessible name and their title. */
+/** The number cells named by a group label. */
+const labelledCells = (section: Locator, label: string | RegExp) =>
+	section
+		.locator('td[data-testid="old"], td[data-testid="new"]')
+		.filter({ hasText: label });
+
+/**
+ * The number cells named by `label`: in their accessible name, and in
+ * their pick button's accessible description (what focus announces).
+ */
 async function expectLabelled(section: Locator, label: string, count: number) {
-	const titled = section.locator(`td[title="${label}"]`);
-	await expect(titled).toHaveCount(count);
-	for (const cell of await titled.all()) {
-		await expect(cell).toHaveAttribute("data-testid", /^(old|new)$/);
+	const cells = labelledCells(section, label);
+	await expect(cells).toHaveCount(count);
+	for (const cell of await cells.all()) {
 		await expect(cell).toHaveAccessibleName(new RegExp(label));
+		await expect(cell.locator("button[data-pick]")).toHaveAccessibleDescription(
+			label,
+		);
 	}
 	// Every piece of the bracket says it too, and is hidden from readers.
 	const pieces = section.getByTestId("group-bracket");
@@ -196,6 +208,60 @@ async function expectLabelled(section: Locator, label: string, count: number) {
 		await expect(piece).toHaveAttribute("aria-hidden", "true");
 	}
 }
+
+/**
+ * Every `through` piece in `rows` shows: nothing (a thread's card) is over
+ * its middle.
+ */
+async function expectThroughShown(rows: Locator) {
+	const pieces = rows.locator('[data-group-at="through"]');
+	expect(await pieces.count()).toBeGreaterThan(0);
+	for (const piece of await pieces.all()) {
+		await piece.scrollIntoViewIfNeeded();
+		await piece.evaluate((el) =>
+			el.scrollIntoView({ block: "center", inline: "nearest" }),
+		);
+		// What is over its middle, down to it: nothing that paints (a
+		// card's background, a border); a transparent box is fine.
+		const over = await piece.evaluate((el) => {
+			const r = el.getBoundingClientRect();
+			const stack = document.elementsFromPoint(
+				r.left + r.width / 2,
+				r.top + r.height / 2,
+			);
+			const at = stack.indexOf(el);
+			if (at < 0) return ["not under its own middle"];
+			return stack.slice(0, at).flatMap((e) => {
+				const css = getComputedStyle(e);
+				const clear =
+					/rgba\(.*, 0\)|transparent/.test(css.backgroundColor) &&
+					css.backgroundImage === "none";
+				return clear ? [] : [e.outerHTML.slice(0, 120)];
+			});
+		});
+		expect(over).toEqual([]);
+	}
+}
+
+/** Each side's code text's left edge, over every changed or context row: one x per side. */
+const codeLefts = (section: Locator) =>
+	section
+		.locator('tr[data-testid="diff-line"] td[data-testid="code"]')
+		.evaluateAll((cells) => {
+			const out: Record<string, number[]> = {};
+			for (const cell of cells) {
+				const code = cell.querySelector("[data-code]");
+				if (!code) continue;
+				const side = cell.getAttribute("data-side") ?? "";
+				const key =
+					cell.closest("table")?.dataset.view === "unified" ? "all" : side;
+				// Its first line box: a wrapped line's later ones start
+				// further left, under the sign.
+				const x = Math.round(code.getClientRects()[0]?.left ?? -1);
+				out[key] = [...new Set([...(out[key] ?? []), x])];
+			}
+			return out;
+		});
 
 const phone = async (page: Page, isMobile: boolean) => {
 	if (isMobile) await page.setViewportSize({ width: 360, height: 780 });
@@ -246,6 +312,34 @@ for (const view of ["unified", "side-by-side"] as const) {
 			: ["3/:Lfirst", "/3:Rmid", "/4:Rmid", "/5:Rmid", "/6:Rmid", "/7:Rlast"];
 		await expect.poll(() => bracketRows(split)).toEqual(splitRows);
 		await expectLabelled(split, "Line 3 split into 3–7", 6);
+		// The bracket moves no code: a group row's code starts where a
+		// context row's does, on each side.
+		for (const xs of Object.values(await codeLefts(split)))
+			expect(xs).toHaveLength(1);
+		// The label on the number: a tooltip on keyboard focus (desktop);
+		// on a phone a tap picks the line and a long press (Android's
+		// contextmenu) shows the label without picking.
+		const four = split
+			.locator(
+				'tr[data-testid="diff-line"][data-new-no="4"] td[data-testid="new"]',
+			)
+			.locator("button[data-pick]");
+		// (aria-hidden: the button's description says it already.)
+		const tip = page.locator('[role="tooltip"]:visible');
+		if (isMobile) {
+			await four.tap();
+			await expect(four).toHaveAttribute("aria-pressed", "true");
+			await four.tap();
+			await expect(four).toHaveAttribute("aria-pressed", "false");
+			await four.dispatchEvent("contextmenu");
+			await expect(tip).toHaveText("Line 3 split into 3–7");
+			await expect(four).toHaveAttribute("aria-pressed", "false");
+		} else {
+			await page.keyboard.press("Shift");
+			await four.focus();
+			await expect(tip).toHaveText("Line 3 split into 3–7");
+		}
+		await page.keyboard.press("Escape");
 		await expect(
 			split.getByRole("img", { name: "Marking changed words" }),
 		).toHaveCount(0);
@@ -265,6 +359,13 @@ for (const view of ["unified", "side-by-side"] as const) {
 				"thread-row:through",
 				...splitRows.slice(at),
 			]);
+		// The bracket shows beside the card, never under it, where the diff
+		// has room; on a phone the card keeps the row's width (a narrower
+		// one is unreadable) and the bracket runs on under it, shown beside
+		// the bubble row's bubbles.
+		if (!isMobile) await expectThroughShown(split.getByTestId("thread-row"));
+		if (sbs && isMobile)
+			await expectThroughShown(split.getByTestId("bubble-row"));
 		expect(
 			await split
 				.locator('tr[data-testid="diff-line"][data-new-no="5"]')
@@ -576,7 +677,7 @@ test("the since view groups a split made after the compared patch set; against t
 		.poll(() => bracketRows(fullSection))
 		.toEqual(expect.not.arrayContaining([expect.stringMatching(/:.+$/)]));
 	await expect(fullSection.getByTestId("group-bracket")).toHaveCount(0);
-	await expect(fullSection.locator("td[title]")).toHaveCount(0);
+	await expect(labelledCells(fullSection, /split into/)).toHaveCount(0);
 });
 
 const FIND = "src/find.ts";

@@ -1049,65 +1049,110 @@ function NumberCell(props: {
 	pick?: NumberPick;
 	/**
 	 * Its line's group label (a split or joined line, CAR-130): in the
-	 * cell's accessible name, and its tooltip on hover.
+	 * cell's accessible name and its pick button's description, and the
+	 * button's tooltip (hover, focus, a tap); a cell without a button
+	 * shows it as its own `title`.
 	 */
 	group?: string;
 }) {
 	const { picker, pick, n, group } = props;
+	const groupId = useId();
+	const picks = Boolean(picker && pick?.button);
+	// A finger's long press on a group line's number holds its label open
+	// (a tap picks the line, and the bar that brings can move the number,
+	// closing a tap's tip); the next press anywhere closes it.
+	const [held, setHeld] = useState(false);
+	useEffect(() => {
+		if (!held) return;
+		const close = () => setHeld(false);
+		window.addEventListener("pointerdown", close, true);
+		return () => window.removeEventListener("pointerdown", close, true);
+	}, [held]);
+	/** The pick's button, showing `shown`; a tooltip saying `tip` when given. */
+	const button = (shown: ReactNode, tip?: ReactNode) => {
+		if (!picker || !pick) return null;
+		const stop = stopOf(props.side, pick.key);
+		const render = (trigger?: TooltipTriggerProps) => (
+			<button
+				{...trigger}
+				type="button"
+				data-pick={pick.key}
+				tabIndex={picker.roving === stop ? 0 : -1}
+				aria-label={pick.label}
+				aria-describedby={group ? groupId : undefined}
+				aria-pressed={pick.picked}
+				onKeyDown={(e) => {
+					trigger?.onKeyDown(e);
+					picker.onKeyDown(e);
+				}}
+				onFocus={(e) => {
+					trigger?.onFocus(e);
+					picker.onFocus(stop);
+				}}
+				onContextMenu={
+					group
+						? (e) => {
+								// A finger's long press (Android's contextmenu): the
+								// label, no menu. A mouse's right click keeps its menu.
+								if (!isTap(clickPointer(e))) return;
+								e.preventDefault();
+								setHeld(true);
+							}
+						: undefined
+				}
+				className={NUMBER_BUTTON}
+			>
+				{shown}
+			</button>
+		);
+		return tip ? (
+			<Tooltip
+				content={tip}
+				describe={false}
+				lazy
+				forceOpen={held}
+				onDismiss={() => setHeld(false)}
+			>
+				{render}
+			</Tooltip>
+		) : (
+			render()
+		);
+	};
 	return (
 		// biome-ignore lint/a11y/useKeyWithClickEvents: the keyboard uses the number button (see above).
 		<td
 			data-testid={props.side === "LEFT" ? "old" : "new"}
 			data-side={props.side}
 			data-picked={pick?.picked || undefined}
-			title={group}
+			title={group && !picks ? group : undefined}
 			onPointerDown={picker?.onPointerDown}
 			onPointerEnter={picker?.onPointerEnter}
 			onClick={picker?.onClick}
 			className={`${NUMBER_W} ${NUMBER_PAD} text-right align-top select-none ${props.className} ${picker ? "cursor-pointer" : ""}`}
 		>
-			{picker && pick?.button && n !== undefined ? (
-				<button
-					type="button"
-					data-pick={pick.key}
-					tabIndex={picker.roving === stopOf(props.side, pick.key) ? 0 : -1}
-					aria-label={pick.label}
-					aria-pressed={pick.picked}
-					onKeyDown={picker.onKeyDown}
-					onFocus={() => picker.onFocus(stopOf(props.side, pick.key))}
-					className={NUMBER_BUTTON}
-				>
-					{n}
-				</button>
-			) : picker && pick?.button && pick.orphan ? (
-				// No number to show: its name says which line it picks (CAR-276).
-				<Tooltip content={pick.label} describe={false} lazy>
-					{(trigger) => (
-						<button
-							{...trigger}
-							type="button"
-							data-pick={pick.key}
-							tabIndex={picker.roving === stopOf(props.side, pick.key) ? 0 : -1}
-							aria-label={pick.label}
-							aria-pressed={pick.picked}
-							onKeyDown={(e) => {
-								trigger.onKeyDown(e);
-								picker.onKeyDown(e);
-							}}
-							onFocus={(e) => {
-								trigger.onFocus(e);
-								picker.onFocus(stopOf(props.side, pick.key));
-							}}
-							className={NUMBER_BUTTON}
-						>
-							{NO_NUMBER}
-						</button>
-					)}
-				</Tooltip>
-			) : (
-				n
+			{picks && n !== undefined
+				? button(n, group)
+				: picks && pick?.orphan
+					? // No number to show: its name says which line it picks (CAR-276).
+						button(
+							NO_NUMBER,
+							group ? (
+								<>
+									{pick.label}
+									<br />
+									{group}
+								</>
+							) : (
+								pick.label
+							),
+						)
+					: n}
+			{group && (
+				<span id={groupId} className="sr-only">
+					{group}
+				</span>
 			)}
-			{group && <span className="sr-only">{group}</span>}
 		</td>
 	);
 }

@@ -5,7 +5,7 @@ import {
 	HistoryIcon,
 } from "@primer/octicons-react";
 import { useQuery } from "@tanstack/react-query";
-import { type ReactNode, useContext, useRef } from "react";
+import { type CSSProperties, type ReactNode, useContext, useRef } from "react";
 import type { SpanAgentThread } from "../../shared/agent";
 import type { ThreadPlacement } from "../../shared/rereview/placement";
 import type { DiffSide, ReviewThread } from "../../shared/types";
@@ -23,6 +23,7 @@ import { useFloatClearCard } from "./floatClear";
 import {
 	BracketPiece,
 	GroupThrough,
+	PAST_BRACKET,
 	THROUGH_CELL,
 	THROUGH_IN_SIDE,
 	throughLeft,
@@ -232,13 +233,35 @@ export function TailRow(props: {
 	// moves.
 	const clear = useContext(StackControls);
 	// Inside a split or joined line's group, its bracket runs on past the
-	// row, under the card (GroupBracket.tsx).
+	// row (GroupBracket.tsx): the card starts just past it, so it shows
+	// beside the card.
 	const through = useGroupThrough();
 	// What a card holds is no group's row.
 	const children = (
 		<GroupThrough.Provider value={null}>{props.children}</GroupThrough.Provider>
 	);
 	if ("columns" in place) {
+		const view = place.columns === 6 ? "side-by-side" : "unified";
+		const at = through ? throughLeft(view, through.side, "rail") : null;
+		// Where the card starts, past the bracket, when the diff has room:
+		// cramped (a phone, `data-tight`) the card keeps the row's width,
+		// as a card a third narrower is unreadable, and the bracket runs on
+		// under it. Nor on a side by side with the run on the right (only a
+		// cramped one spans the table anyway).
+		const inset =
+			at && through && (view === "unified" || through.side === "LEFT")
+				? `calc(${at} + ${PAST_BRACKET})`
+				: null;
+		const rail = (where: string) =>
+			props.rail && (
+				<span
+					aria-hidden
+					data-testid="thread-rail"
+					className={`absolute inset-y-0 left-0 w-1 ${props.rail} ${where}`}
+				/>
+			);
+		const CLEAR_LEFT =
+			"pointer-coarse:left-[calc(0.25rem+var(--controls-w))] pointer-coarse:w-[calc(var(--diff-w,100%)-0.25rem-var(--controls-w))]";
 		return (
 			<tr
 				data-testid={props.testId}
@@ -249,29 +272,28 @@ export function TailRow(props: {
 					colSpan={place.columns}
 					className={`p-0 ${clear ? "pointer-coarse:pl-[calc(0.25rem+var(--controls-w))]" : ""} ${through ? THROUGH_CELL : ""}`}
 				>
-					{through && (
-						<BracketPiece
-							at="through"
-							label={through.label}
-							left={throughLeft(
-								place.columns === 6 ? "side-by-side" : "unified",
-								through.side,
-								"rail",
-							)}
-						/>
+					{through && at && (
+						<BracketPiece at="through" label={through.label} left={at} />
 					)}
+					{/* An inset card: the rail stays at the row's left edge. */}
+					{inset && rail("group-data-[tight]/diff:hidden")}
 					<div
 						ref={floatCard}
 						data-tail-card=""
-						className={`sticky left-0 w-[var(--diff-w,100%)] max-w-full pr-2 pl-3 pointer-coarse:[tr:has([data-sticky-slot])+tr>td>&]:mt-2.5 ${clear ? "pointer-coarse:left-[calc(0.25rem+var(--controls-w))] pointer-coarse:w-[calc(var(--diff-w,100%)-0.25rem-var(--controls-w))]" : ""} ${CARD}`}
+						style={
+							inset
+								? ({ "--through-inset": inset } as CSSProperties)
+								: undefined
+						}
+						className={`sticky left-0 w-[var(--diff-w,100%)] max-w-full pr-2 pl-3 pointer-coarse:[tr:has([data-sticky-slot])+tr>td>&]:mt-2.5 ${
+							inset
+								? `group-not-data-[tight]/diff:left-[var(--through-inset)] group-not-data-[tight]/diff:w-[calc(var(--diff-w,100%)-var(--through-inset))] ${clear ? "group-data-[tight]/diff:pointer-coarse:left-[calc(0.25rem+var(--controls-w))] group-data-[tight]/diff:pointer-coarse:w-[calc(var(--diff-w,100%)-0.25rem-var(--controls-w))]" : ""}`
+								: clear
+									? CLEAR_LEFT
+									: ""
+						} ${CARD}`}
 					>
-						{props.rail && (
-							<span
-								aria-hidden
-								data-testid="thread-rail"
-								className={`absolute inset-y-0 left-0 w-1 ${props.rail}`}
-							/>
-						)}
+						{rail(inset ? "group-not-data-[tight]/diff:hidden" : "")}
 						{children}
 					</div>
 				</td>
@@ -302,7 +324,17 @@ export function TailRow(props: {
 			{place.side === "RIGHT" && blank}
 			<td colSpan={2} className={`p-0 ${throughCell(place.side)}`}>
 				{piece(place.side)}
-				<div ref={floatCard} data-tail-card="" className={`px-2 ${CARD}`}>
+				<div
+					ref={floatCard}
+					data-tail-card=""
+					// On the bracket's side, the card starts just past it.
+					style={
+						through?.side === place.side
+							? { marginLeft: `calc(${THROUGH_IN_SIDE} + ${PAST_BRACKET})` }
+							: undefined
+					}
+					className={`px-2 ${CARD}`}
+				>
 					{children}
 				</div>
 			</td>

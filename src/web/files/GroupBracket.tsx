@@ -89,5 +89,12 @@ export function throughLeft(
 		: `calc((100% + ${CONTROLS} + 2 * ${NUM}) / 2 + 0.125rem)`;
 }
 
+/**
+ * From a `through` piece's x to where a card under its row starts: the
+ * piece (0.375rem) and a gap (0.375rem), so the bracket runs on beside the
+ * card, never under it.
+ */
+export const PAST_BRACKET = "0.75rem";
+
 /** Within one side's number and code columns (a side-by-side card's or blank's cell). */
 export const THROUGH_IN_SIDE = `calc(${NUM} + 0.125rem)`;
