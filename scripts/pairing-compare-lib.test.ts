@@ -1,10 +1,13 @@
 import { describe, expect, it } from "vitest";
 import {
 	byWorst,
+	byWorstGroups,
 	type ClusterLayouts,
 	changedByStep2,
 	esc,
 	farthestMove,
+	groupIndexes,
+	hasGroups,
 	markup,
 } from "./pairing-compare-lib";
 
@@ -112,5 +115,48 @@ describe("esc and markup (third-party code reaches the page's HTML)", () => {
 		expect(markup("<b>", undefined)).toBe("&lt;b&gt;");
 		const html = markup("<script>", [[3, 5]]);
 		expect(html.replace(/<\/?mark>/g, "")).toBe("&lt;scr" + "ipt&gt;");
+	});
+});
+
+describe("groups page", () => {
+	const line = (text: string, kind: "del" | "add") =>
+		({ kind, text, oldNo: 1, newNo: 1 }) as never;
+	it("turns groups into line indexes and drops one with a stray line", () => {
+		const a = line("a", "del");
+		const b = line("b", "add");
+		const c = line("c", "add");
+		const stray = line("s", "add");
+		const at = new Map<never, number>([
+			[a, 0],
+			[b, 1],
+			[c, 2],
+		]);
+		expect(
+			groupIndexes(
+				[
+					{ one: a, run: [b, c] },
+					{ one: a, run: [b, stray] },
+				],
+				at,
+			),
+		).toEqual([{ one: 0, run: [1, 2] }]);
+	});
+	it("lists a stretch only when it has a group", () => {
+		expect(hasGroups([{}])).toBe(true);
+		expect(hasGroups([])).toBe(false);
+	});
+	it("orders worst first: lowest score, then longest run, then size", () => {
+		const rows = [
+			{ minScore: 0.8, runLength: 9, size: 10 },
+			{ minScore: 0.5, runLength: 2, size: 3 },
+			{ minScore: 0.5, runLength: 4, size: 3 },
+			{ minScore: 0.5, runLength: 4, size: 8 },
+		];
+		expect([...rows].sort(byWorstGroups)).toEqual([
+			rows[3],
+			rows[2],
+			rows[1],
+			rows[0],
+		]);
 	});
 });

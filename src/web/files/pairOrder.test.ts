@@ -1,11 +1,13 @@
 import fc from "fast-check";
 import { describe, expect, it } from "vitest";
+import { seeded, stretchWithItems } from "../../../test/group-stretches";
 import { type Cluster, pairingClusters } from "../../../test/pairing-fixtures";
+import { type HunkItems, hunkItems } from "../../shared/hunkPairs";
 import type { DiffLine } from "../../shared/types";
 import { alignCluster } from "./linePairing";
-import { orderRun, type Partners } from "./pairOrder";
+import { orderRun, type Partners, partnersOf } from "./pairOrder";
 import { layoutRows } from "./sideBySide";
-import { type DiffRow, hunkView } from "./whitespace";
+import { type DiffRow, hunkView, runs } from "./whitespace";
 
 let n = 0;
 const del = (text: string, clusterKey = "k"): DiffLine => ({
@@ -28,14 +30,8 @@ const ctx = (text: string): DiffLine => ({
 });
 const plain = (...lines: DiffLine[]): DiffRow[] =>
 	lines.map((line) => ({ kind: "line", line }));
-const partners = (...pairs: [DiffLine, DiffLine][]): Partners => {
-	const m = new Map<DiffLine, DiffLine>();
-	for (const [d, a] of pairs) {
-		m.set(d, a);
-		m.set(a, d);
-	}
-	return m;
-};
+const partners = (...pairs: [DiffLine, DiffLine][]): Partners =>
+	partnersOf({ pairs, groups: [] });
 const texts = (rows: DiffRow[]) =>
 	rows.map((r) =>
 		r.kind === "line"
@@ -144,7 +140,7 @@ describe("orderRun", () => {
 		fc.assert(
 			fc.property(fc.array(shape, { minLength: 1, maxLength: 3 }), (parts) => {
 				const rows: DiffRow[] = [];
-				const m = new Map<DiffLine, DiffLine>();
+				const m = new Map<DiffLine, [DiffLine, DiffLine]>();
 				for (const p of parts) {
 					const ds = Array.from({ length: p.dels }, () => del("d"));
 					const as = Array.from({ length: p.adds }, () => add("a"));
@@ -155,8 +151,12 @@ describe("orderRun", () => {
 						di += pick % 2;
 						aj += (pick >> 1) % 3;
 						if (di >= ds.length || aj >= as.length) break;
-						m.set(ds[di] as DiffLine, as[aj] as DiffLine);
-						m.set(as[aj] as DiffLine, ds[di] as DiffLine);
+						const pair: [DiffLine, DiffLine] = [
+							ds[di] as DiffLine,
+							as[aj] as DiffLine,
+						];
+						m.set(pair[0], pair);
+						m.set(pair[1], pair);
 						di++;
 						aj++;
 					}
@@ -177,6 +177,156 @@ describe("orderRun", () => {
 				expect(side("add")(out)).toEqual(side("add")(rows));
 			}),
 		);
+	});
+});
+
+describe("orderRun with groups (CAR-130)", () => {
+	const items = (x: Partial<HunkItems>): Partners =>
+		partnersOf({ pairs: [], groups: [], ...x });
+	it("a split reads −one, +run…, after the gap's lines", () => {
+		const one = del("f(a, b)");
+		const x = add("x");
+		const r = [add("f("), add("a,"), add("b)")];
+		const rows = plain(one, x, ...r);
+		expect(texts(orderRun(rows, items({ groups: [{ one, run: r }] })))).toEqual(
+			["+x", "-f(a, b)", "+f(", "+a,", "+b)"],
+		);
+	});
+	it("a join reads −run…, +one; the gap's removed line after it", () => {
+		const r = [del("f("), del("a, b)")];
+		const y = del("y");
+		const one = add("f(a, b)");
+		const rows = plain(...r, y, one);
+		expect(texts(orderRun(rows, items({ groups: [{ one, run: r }] })))).toEqual(
+			["-f(", "-a, b)", "+f(a, b)", "-y"],
+		);
+	});
+	it("a split next to a pair: each its own block, never merged", () => {
+		const p = del("p");
+		const one = del("f(a, b)");
+		const p2 = add("p'");
+		const r = [add("f("), add("a, b)")];
+		const rows = plain(p, one, p2, ...r);
+		const got = items({ pairs: [[p, p2]], groups: [{ one, run: r }] });
+		expect(texts(orderRun(rows, got))).toEqual([
+			"-p",
+			"+p'",
+			"-f(a, b)",
+			"+f(",
+			"+a, b)",
+		]);
+		// And the group first, then the pair.
+		const q = del("q");
+		const q2 = add("q'");
+		const after = plain(one, q, ...r, q2);
+		const both = items({ pairs: [[q, q2]], groups: [{ one, run: r }] });
+		expect(texts(orderRun(after, both))).toEqual([
+			"-f(a, b)",
+			"+f(",
+			"+a, b)",
+			"-q",
+			"+q'",
+		]);
+	});
+	it("items that share a line (a bug in hunkItems) never lose or double one, unified or side by side", () => {
+		const [j1, j2] = [del("j1"), del("j2")];
+		const [ja, s1, s2] = [add("ja"), add("s1"), add("s2")];
+		// j2 is in a join's run and also a split's one line.
+		const bad = partnersOf({
+			pairs: [],
+			groups: [
+				{ one: ja, run: [j1, j2] },
+				{ one: j2, run: [s1, s2] },
+			],
+		});
+		const rows = plain(j1, j2, ja, s1, s2);
+		const out = orderRun(rows, bad);
+		expect(out).toHaveLength(rows.length);
+		expect(new Set(out)).toEqual(new Set(rows));
+		const side = layoutRows(rows, bad);
+		expect(
+			side.flatMap((r) => (r.kind === "pair" && r.del ? [r.del] : [])),
+		).toEqual([j1, j2]);
+		expect(
+			side.flatMap((r) => (r.kind === "pair" && r.add ? [r.add] : [])),
+		).toEqual([ja, s1, s2]);
+	});
+	it("a removed line after an added one starts a new stretch: the group before it still reads together", () => {
+		const one = del("f(a, b)");
+		const x = del("x");
+		const r = [add("f("), add("a, b)")];
+		const x2 = add("x'");
+		const y = del("y");
+		const rows = plain(one, x, ...r, x2, y);
+		const got = items({ pairs: [[x, x2]], groups: [{ one, run: r }] });
+		expect(texts(orderRun(rows, got))).toEqual([
+			"-f(a, b)",
+			"+f(",
+			"+a, b)",
+			"-x",
+			"+x'",
+			"-y",
+		]);
+	});
+	it("a group with a line outside the stretch leaves it as it is", () => {
+		const one = del("f(a, b)");
+		const r = [add("f("), add("a, b)")];
+		const c = ctx("c");
+		const rows = plain(one, r[0] as DiffLine, c, r[1] as DiffLine);
+		expect(orderRun(rows, items({ groups: [{ one, run: r }] }))).toEqual(rows);
+	});
+	it("property: a permutation, each side in order, every group's rows adjacent in its order", () => {
+		const rand = seeded(130);
+		let grouped = 0;
+		for (let n = 0; n < 500; n++) {
+			const s = stretchWithItems(rand);
+			const rows = plain(...s.dels, ...s.adds);
+			if (rand(3) === 0) rows.push(...plain(ctx("c")));
+			const out = orderRun(rows, partnersOf(s.items));
+			expect(new Set(out)).toEqual(new Set(rows));
+			expect(out).toHaveLength(rows.length);
+			const lines = out.flatMap((r) => (r.kind === "line" ? [r.line] : []));
+			expect(lines.filter((l) => l.kind === "del")).toEqual(s.dels);
+			expect(lines.filter((l) => l.kind === "add")).toEqual(s.adds);
+			for (const g of s.items.groups) {
+				grouped++;
+				const shown =
+					g.one.kind === "del" ? [g.one, ...g.run] : [...g.run, g.one];
+				const at = lines.indexOf(shown[0] as DiffLine);
+				expect(lines.slice(at, at + shown.length)).toEqual(shown);
+			}
+			for (const [d, a] of s.items.pairs) {
+				expect(lines.indexOf(a)).toBeGreaterThan(lines.indexOf(d));
+			}
+		}
+		expect(grouped).toBeGreaterThan(300);
+	});
+	it("hunkView: a split reads together, its lines and counts as without groups", () => {
+		const LINE = "def load(path, retries=3, timeout=30):";
+		const SPLIT = ["def load(", "    path,", "    retries=3,", "):"];
+		const one = del(LINE);
+		const other = del("print(42)");
+		const run = SPLIT.map((t) => add(t));
+		const lines = [ctx("a"), one, other, ...run, ctx("b")];
+		for (const ws of [false, true]) {
+			const v = hunkView(lines, ws);
+			expect(v.items.groups).toEqual([{ one, run }]);
+			expect(v.pairs).toBe(v.items.pairs);
+			expect(texts(v.runs.flatMap((r) => r.rows))).toEqual([
+				" a",
+				`-${LINE}`,
+				...SPLIT.map((t) => `+${t}`),
+				"-print(42)",
+				" b",
+			]);
+			for (const l of [one, ...run])
+				expect(v.partners.get(l)).toBe(v.items.groups[0]);
+			expect(v.partners.has(other)).toBe(false);
+			// The items are hunkItems' over the view's runs in git order.
+			expect(v.items).toEqual(
+				hunkItems(runs(lines).map((r) => plain(...r.lines))),
+			);
+		}
 	});
 });
 
@@ -256,6 +406,11 @@ describe("principle 2 end to end: hunkView's rows, unified and side by side", ()
 		"foo bar baz",
 	];
 	const text = fc.constantFrom(...vocab);
+	// A split or a join (CAR-130) at the stretch's middle: the one line last
+	// of the removed lines and its run first of the added ones, or the
+	// other way round. Whether it groups is hunkItems' call.
+	const ONE = "call(alpha, beta, gamma)";
+	const RUN = ["call(", "  alpha,", "  beta, gamma)"];
 	const run = fc.record({
 		context: fc.array(text, { maxLength: 2 }),
 		sameKeyAsLast: fc.boolean(),
@@ -263,12 +418,14 @@ describe("principle 2 end to end: hunkView's rows, unified and side by side", ()
 		adds: fc.array(fc.record({ text, otherKey: fc.boolean() }), {
 			maxLength: 4,
 		}),
+		group: fc.constantFrom("none", "split", "join"),
 	});
 	type RunShape = {
 		context: string[];
 		sameKeyAsLast: boolean;
 		dels: string[];
 		adds: { text: string; otherKey: boolean }[];
+		group: "none" | "split" | "join";
 	};
 	const hunkOf = (runs: RunShape[]): DiffLine[] => {
 		const lines: DiffLine[] = [];
@@ -283,9 +440,22 @@ describe("principle 2 end to end: hunkView's rows, unified and side by side", ()
 					text: t,
 				});
 			const key = r.sameKeyAsLast && k > 0 ? `k${k - 1}` : `k${k}`;
-			for (const t of r.dels)
+			const own = (text: string) => ({ text, otherKey: false });
+			const dels =
+				r.group === "split"
+					? [...r.dels, ONE]
+					: r.group === "join"
+						? [...r.dels, ...RUN]
+						: r.dels;
+			const adds =
+				r.group === "split"
+					? [...RUN.map(own), ...r.adds]
+					: r.group === "join"
+						? [own(ONE), ...r.adds]
+						: r.adds;
+			for (const t of dels)
 				lines.push({ kind: "del", oldNo: oldNo++, text: t, clusterKey: key });
-			for (const a of r.adds)
+			for (const a of adds)
 				lines.push({
 					kind: "add",
 					newNo: newNo++,
@@ -296,6 +466,7 @@ describe("principle 2 end to end: hunkView's rows, unified and side by side", ()
 		return lines;
 	};
 	it("property: every line exactly once, each side in order, no row leaves its run", () => {
+		let groups = 0;
 		// A wall-clock timeout only: about a second of CPU, which a loaded
 		// machine stretches several times over.
 		fc.assert(
@@ -305,6 +476,11 @@ describe("principle 2 end to end: hunkView's rows, unified and side by side", ()
 				const right = lines.filter((l) => l.kind !== "del");
 				for (const ws of [false, true]) {
 					const v = hunkView(lines, ws);
+					// The same runs, keys and lines as without groups.
+					expect(v.runs.map((r) => [r.key, r.orphan, r.lines])).toEqual(
+						runs(lines).map((r) => [r.key, r.orphan, r.lines]),
+					);
+					groups += v.items.groups.length;
 					// Unified: the rows' lines, every one once.
 					const shown: DiffLine[] = [];
 					for (const r of v.runs) {
@@ -319,6 +495,12 @@ describe("principle 2 end to end: hunkView's rows, unified and side by side", ()
 							for (const l of got) expect(own.has(l)).toBe(true);
 							shown.push(...got);
 						}
+					}
+					for (const g of v.items.groups) {
+						const rows =
+							g.one.kind === "del" ? [g.one, ...g.run] : [...g.run, g.one];
+						const at = shown.indexOf(rows[0] as DiffLine);
+						expect(shown.slice(at, at + rows.length)).toEqual(rows);
 					}
 					expect(shown).toHaveLength(lines.length);
 					expect(new Set(shown).size).toBe(lines.length);
@@ -343,5 +525,6 @@ describe("principle 2 end to end: hunkView's rows, unified and side by side", ()
 			}),
 			{ numRuns: 1000 },
 		);
+		expect(groups).toBeGreaterThan(20);
 	}, 60_000);
 });

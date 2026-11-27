@@ -5,7 +5,7 @@ import {
 	HistoryIcon,
 } from "@primer/octicons-react";
 import { useQuery } from "@tanstack/react-query";
-import { type ReactNode, useContext, useRef } from "react";
+import { type CSSProperties, type ReactNode, useContext, useRef } from "react";
 import type { SpanAgentThread } from "../../shared/agent";
 import type { ThreadPlacement } from "../../shared/rereview/placement";
 import type { DiffSide, ReviewThread } from "../../shared/types";
@@ -20,6 +20,15 @@ import { Conversation } from "../threads/Conversation";
 import { Avatar } from "../threads/people";
 import { ThreadStatus } from "../threads/ThreadStatus";
 import { useFloatClearCard } from "./floatClear";
+import {
+	BracketPiece,
+	GroupThrough,
+	PAST_BRACKET,
+	THROUGH_CELL,
+	THROUGH_IN_SIDE,
+	throughLeft,
+	useGroupThrough,
+} from "./GroupBracket";
 import { StackControls } from "./stickyControls";
 import {
 	ChangedChip,
@@ -187,6 +196,12 @@ export function ThreadBlock(props: {
  */
 export type CardPlace = { columns: number } | { side: DiffSide };
 
+/**
+ * The diff table's columns side by side (rail, controls, old number, old
+ * code, new number, new code); unified has one code column, so one fewer.
+ */
+export const SIDE_BY_SIDE_COLUMNS = 6;
+
 /** The card's box: a conversation's font and wrapping, on the canvas. */
 const CARD =
 	"space-y-2 border-y border-line bg-canvas py-2 font-sans text-sm leading-normal whitespace-normal text-ink";
@@ -223,7 +238,37 @@ export function TailRow(props: {
 	// neither covers the other, whenever the card opens, and nothing else
 	// moves.
 	const clear = useContext(StackControls);
+	// Inside a split or joined line's group, its bracket runs on past the
+	// row (GroupBracket.tsx): the card starts just past it, so it shows
+	// beside the card.
+	const through = useGroupThrough();
+	// What a card holds is no group's row.
+	const children = (
+		<GroupThrough.Provider value={null}>{props.children}</GroupThrough.Provider>
+	);
 	if ("columns" in place) {
+		const view =
+			place.columns === SIDE_BY_SIDE_COLUMNS ? "side-by-side" : "unified";
+		const at = through ? throughLeft(view, through.side, "rail") : null;
+		// Where the card starts, past the bracket, when the diff has room:
+		// cramped (a phone, `data-tight`) the card keeps the row's width,
+		// as a card a third narrower is unreadable, and the bracket runs on
+		// under it. Nor on a side by side with the run on the right (only a
+		// cramped one spans the table anyway).
+		const inset =
+			at && through && (view === "unified" || through.side === "LEFT")
+				? `calc(${at} + ${PAST_BRACKET})`
+				: null;
+		const rail = (where: string) =>
+			props.rail && (
+				<span
+					aria-hidden
+					data-testid="thread-rail"
+					className={`absolute inset-y-0 left-0 w-1 ${props.rail} ${where}`}
+				/>
+			);
+		const CLEAR_LEFT =
+			"pointer-coarse:left-[calc(0.25rem+var(--controls-w))] pointer-coarse:w-[calc(var(--diff-w,100%)-0.25rem-var(--controls-w))]";
 		return (
 			<tr
 				data-testid={props.testId}
@@ -232,27 +277,49 @@ export function TailRow(props: {
 			>
 				<td
 					colSpan={place.columns}
-					className={`p-0 ${clear ? "pointer-coarse:pl-[calc(0.25rem+var(--controls-w))]" : ""}`}
+					className={`p-0 ${clear ? "pointer-coarse:pl-[calc(0.25rem+var(--controls-w))]" : ""} ${through ? THROUGH_CELL : ""}`}
 				>
+					{through && at && (
+						<BracketPiece at="through" label={through.label} left={at} />
+					)}
+					{/* An inset card: the rail stays at the row's left edge. */}
+					{inset && rail("group-data-[tight]/diff:hidden")}
 					<div
 						ref={floatCard}
 						data-tail-card=""
-						className={`sticky left-0 w-[var(--diff-w,100%)] max-w-full pr-2 pl-3 pointer-coarse:[tr:has([data-sticky-slot])+tr>td>&]:mt-2.5 ${clear ? "pointer-coarse:left-[calc(0.25rem+var(--controls-w))] pointer-coarse:w-[calc(var(--diff-w,100%)-0.25rem-var(--controls-w))]" : ""} ${CARD}`}
+						style={
+							inset
+								? ({ "--through-inset": inset } as CSSProperties)
+								: undefined
+						}
+						className={`sticky left-0 w-[var(--diff-w,100%)] max-w-full pr-2 pl-3 pointer-coarse:[tr:has([data-sticky-slot])+tr>td>&]:mt-2.5 ${
+							inset
+								? `group-not-data-[tight]/diff:left-[var(--through-inset)] group-not-data-[tight]/diff:w-[calc(var(--diff-w,100%)-var(--through-inset))] ${clear ? "group-data-[tight]/diff:pointer-coarse:left-[calc(0.25rem+var(--controls-w))] group-data-[tight]/diff:pointer-coarse:w-[calc(var(--diff-w,100%)-0.25rem-var(--controls-w))]" : ""}`
+								: clear
+									? CLEAR_LEFT
+									: ""
+						} ${CARD}`}
 					>
-						{props.rail && (
-							<span
-								aria-hidden
-								data-testid="thread-rail"
-								className={`absolute inset-y-0 left-0 w-1 ${props.rail}`}
-							/>
-						)}
-						{props.children}
+						{rail(inset ? "group-not-data-[tight]/diff:hidden" : "")}
+						{children}
 					</div>
 				</td>
 			</tr>
 		);
 	}
-	const blank = <td colSpan={2} className="bg-band" />;
+	// The bracket's piece in its side's cell, the card's or the blank's.
+	const piece = (side: DiffSide) =>
+		through?.side === side && (
+			<BracketPiece at="through" label={through.label} left={THROUGH_IN_SIDE} />
+		);
+	const throughCell = (side: DiffSide) =>
+		through?.side === side ? THROUGH_CELL : "";
+	const blankSide = place.side === "RIGHT" ? "LEFT" : "RIGHT";
+	const blank = (
+		<td colSpan={2} className={`bg-band ${throughCell(blankSide)}`}>
+			{piece(blankSide)}
+		</td>
+	);
 	return (
 		<tr data-testid={props.testId} id={props.id}>
 			<td
@@ -262,9 +329,20 @@ export function TailRow(props: {
 			/>
 			<td />
 			{place.side === "RIGHT" && blank}
-			<td colSpan={2} className="p-0">
-				<div ref={floatCard} data-tail-card="" className={`px-2 ${CARD}`}>
-					{props.children}
+			<td colSpan={2} className={`p-0 ${throughCell(place.side)}`}>
+				{piece(place.side)}
+				<div
+					ref={floatCard}
+					data-tail-card=""
+					// On the bracket's side, the card starts just past it.
+					style={
+						through?.side === place.side
+							? { marginLeft: `calc(${THROUGH_IN_SIDE} + ${PAST_BRACKET})` }
+							: undefined
+					}
+					className={`px-2 ${CARD}`}
+				>
+					{children}
 				</div>
 			</td>
 			{place.side === "LEFT" && blank}

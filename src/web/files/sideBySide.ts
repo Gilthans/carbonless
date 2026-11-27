@@ -1,5 +1,5 @@
 import type { DiffLine } from "../../shared/types";
-import type { Partners } from "./pairOrder";
+import { type Partners, spansOf } from "./pairOrder";
 import type { DiffRow } from "./whitespace";
 
 /**
@@ -19,10 +19,13 @@ export type SideRow =
  * One cluster run's (or context run's) rows, laid out side by side: a
  * whitespace row (`ws`) stays one row with each side's own line. Between
  * them, a similarity pair (`partners`, both lines in the stretch, not
- * crossing an earlier pair) shares one row, and the plain removed and added
- * lines in each gap around the pairs pair by position, the i-th removed
- * against the i-th added, the surplus one-sided. Without `partners`, the
- * whole stretch is one gap.
+ * crossing an earlier item) shares one row, and the plain removed and added
+ * lines in each gap around the items pair by position, the i-th removed
+ * against the i-th added, the surplus one-sided. A group (CAR-130): a
+ * split puts its one line beside the run's first, then the run's other
+ * lines on rows of their own, blank opposite; a join mirrors it. So a
+ * blank cell only once the other side of that gap or group has run out.
+ * Without `partners`, the whole stretch is one gap.
  */
 export function layoutRows(rows: DiffRow[], partners?: Partners): SideRow[] {
 	const out: SideRow[] = [];
@@ -33,22 +36,21 @@ export function layoutRows(rows: DiffRow[], partners?: Partners): SideRow[] {
 		for (let i = 0; i < n; i++) out.push(pair(d[i], a[i], false));
 	};
 	const flush = () => {
-		// Similarity pairs (both lines in this stretch, not crossing an
-		// earlier pair) share one row; the gaps between them lay out by
-		// position. Independent of how the stretch's dels and adds interleave.
+		// Items (both lines, or every line of a group, in this stretch, not
+		// crossing an earlier item) share their first row; the gaps between
+		// them lay out by position. Independent of how the stretch's dels
+		// and adds interleave.
 		let di = 0;
 		let ai = 0;
 		if (partners) {
-			const addAt = new Map(adds.map((l, i) => [l, i]));
-			for (let i = 0; i < dels.length; i++) {
-				const d = dels[i] as DiffLine;
-				const p = partners.get(d);
-				const j = p === undefined ? undefined : addAt.get(p);
-				if (j === undefined || j < ai) continue;
-				gap(dels.slice(di, i), adds.slice(ai, j));
-				out.push(pair(d, adds[j], false));
-				di = i + 1;
-				ai = j + 1;
+			for (const { d0, d1, a0, a1 } of spansOf(dels, adds, partners)) {
+				if (d0 < di || a0 < ai) continue;
+				gap(dels.slice(di, d0), adds.slice(ai, a0));
+				// A pair is one row; a group its first row, then the run's
+				// other lines alone (one side holds one line).
+				gap(dels.slice(d0, d1 + 1), adds.slice(a0, a1 + 1));
+				di = d1 + 1;
+				ai = a1 + 1;
 			}
 		}
 		gap(dels.slice(di), adds.slice(ai));

@@ -148,7 +148,10 @@ that are clearly similar instead, and marks the words that changed in each
 pair. Unified shows a pair together, the removed line right above its
 added one; side by side puts it on one row. Unpaired lines keep today's
 layout, nothing is hidden, and each side stays in its own order. This is
-the first place carbonless deliberately differs from GitHub.
+the first place carbonless deliberately differs from GitHub. A line split
+into several, or several joined into one, reads as one group with a bracket
+in the gutter, and only the text that changed is marked (a pure split marks
+nothing; its lines are still changed and unreviewed).
 
 ## Why doesn't Find in PR find a line I know is in the file?
 

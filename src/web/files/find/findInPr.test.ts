@@ -1406,3 +1406,130 @@ describe("findInPr in the since view (pieces cut the runs, CAR-244)", () => {
 		expect(order(setup().base)).toEqual(["new 1", "new 2", "old 2"]);
 	});
 });
+
+describe("findInPr over split and joined lines (CAR-130)", () => {
+	const del = (n: number, text: string): DiffLine => ({
+		kind: "del",
+		oldNo: n,
+		text,
+		clusterKey: "k",
+	});
+	const add = (n: number, text: string): DiffLine => ({
+		kind: "add",
+		newNo: n,
+		text,
+		clusterKey: "k",
+	});
+	it.each([true, false])(
+		"steps through a group's rows in the order shown (Ignore whitespace %s)",
+		(ws) => {
+			// Git's order: −one, −other, +run…; shown: −one, +run…, −other.
+			const lines = [
+				ctx(1, 1, "x"),
+				del(2, "load(path, retries, timeout)"),
+				del(3, "log(path)"),
+				add(2, "load("),
+				add(3, "  path,"),
+				add(4, "  retries,"),
+				add(5, "  timeout)"),
+				ctx(4, 6, "y"),
+			];
+			const v = hunkView(lines, ws);
+			expect(v.items.groups).toHaveLength(1);
+			const hunks: FileHunks = {
+				newLineCount: 6,
+				hunks: [{ oldStart: 1, oldCount: 4, newStart: 1, newCount: 6, lines }],
+			};
+			const shown = shownHits(
+				findInPr(
+					"path",
+					[file(0, { path: "a.txt" })],
+					() => hunks,
+					noContext,
+					false,
+					true,
+					true,
+					ws,
+				),
+				true,
+			).map((h) => `${h.side === "LEFT" ? "old" : "new"} ${h.line}`);
+			expect(shown).toEqual(["old 2", "new 3", "old 3"]);
+			// The oracle: the rows HunkRows renders.
+			const oracle = v.runs
+				.flatMap((r) => r.rows)
+				.flatMap((r) => (r.kind === "line" ? [r.line] : []))
+				.filter((l) => l.text.includes("path"))
+				.map((l) => (l.kind === "del" ? `old ${l.oldNo}` : `new ${l.newNo}`));
+			expect(oracle).toEqual(shown);
+		},
+	);
+
+	// CPU (spec "Caps and CPU": a hunk of 40 group-heavy stretches, in
+	// Find): hunkItems.test.ts's costliest group stretch (2 removed lines
+	// of 1,000 punctuation tokens, 56 added lines cycling their 50-token
+	// pieces), 40 of them with a context line between, each first removed
+	// line a hit, so the first unified search lays out the hunk (hunkView).
+	const LOADED = 60_000;
+	it(
+		"a first search over 40 costliest group stretches costs about the budget's, against plain word steps",
+		() => {
+			const lines: DiffLine[] = [];
+			let oldNo = 1;
+			let newNo = 1;
+			const texts: string[] = [];
+			for (let k = 0; k < 40; k++) {
+				if (k > 0) lines.push(ctx(oldNo++, newNo++, `between ${k}`));
+				const line = punctuation(1, 1000, k + 3)[0] as string;
+				const pieces = Array.from({ length: 20 }, (_, i) =>
+					line.slice(50 * i, 50 * i + 50),
+				);
+				const dels = [`hit${line.slice(3)}`, line];
+				const adds = Array.from(
+					{ length: 56 },
+					(_, i) => pieces[i % 20] as string,
+				);
+				for (const text of dels) lines.push(del(oldNo++, text));
+				for (const text of adds) lines.push(add(newNo++, text));
+				texts.push(...dels, ...adds);
+			}
+			const f = file(0, { path: "groups.txt" });
+			const fresh = (): FileHunks => ({
+				newLineCount: newNo - 1,
+				hunks: [
+					{
+						oldStart: 1,
+						oldCount: oldNo - 1,
+						newStart: 1,
+						newCount: newNo - 1,
+						lines: lines.slice(),
+					},
+				],
+			});
+			const search = (pairs: boolean) =>
+				findInPr("hit", [f], fresh, noContext, false, pairs, true, false);
+			expect(shownHits(search(true), true)).toHaveLength(40);
+			const first = fresh().hunks[0]?.lines as DiffLine[];
+			expect(hunkView(first, false).items.groups.length).toBeGreaterThan(0);
+			// As hunkItems.test.ts: the pairs' estimates leave the budget room
+			// for one stretch's groups (2,972,800 word steps).
+			const groupOps = 2 * 32 * (37 * 20 + 189) * 50;
+			// The yardstick shares no code with the LCS: the same search
+			// without pairing, every line tokenized (the pairs read them all)
+			// and one stretch's group word steps in a plain loop. Without the
+			// budget all 40 stretches group: 40 times the word steps.
+			const { best, ref, ratio } = bestCpuRatio(
+				() => search(true),
+				() => {
+					search(false);
+					for (const t of texts) tokenize(t);
+					plainWordSteps(groupOps);
+				},
+			);
+			console.info(
+				`Find over 40 costliest group stretches: ${best} µs, ${ratio.toFixed(2)}x unpaired search, tokenizing and one stretch's word steps (${ref} µs)`,
+			);
+			expect(ratio).toBeLessThan(12);
+		},
+		LOADED,
+	);
+});

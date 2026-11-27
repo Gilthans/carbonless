@@ -1,9 +1,13 @@
-import type { DiffRow } from "../../shared/hunkPairs";
+import {
+	type DiffRow,
+	type HunkItems,
+	hunkItems,
+	type LinePair,
+} from "../../shared/hunkPairs";
 import { lineRuns } from "../../shared/pieces";
 import type { DiffLine } from "../../shared/types";
 import { matchDisplayHunk, whitespaceKey } from "../../shared/whitespace";
-import { orderRun, type Partners } from "./pairOrder";
-import { hunkPairs, type LinePair } from "./wordBlocks";
+import { orderRun, type Partners, partnersOf } from "./pairOrder";
 
 /**
  * "Ignore whitespace" (Settings): the view matches a hunk's removed and
@@ -156,7 +160,7 @@ interface ViewRun {
 	rows: DiffRow[];
 }
 
-/** What the view shows of a hunk: its runs, and the pairs behind the marks and the order. */
+/** What the view shows of a hunk: its runs, and the pairs and groups behind the marks and the order. */
 export interface HunkView {
 	runs: ViewRun[];
 	/**
@@ -164,8 +168,14 @@ export interface HunkView {
 	 * Ignore whitespace on, before orderRun moves a pair together.
 	 */
 	gitRows: DiffRow[];
-	/** hunkPairs over `gitRows`. */
+	/**
+	 * hunkItems over the runs' rows in git's order: the pairs and the
+	 * groups (a line split or joined, CAR-130; never across two runs).
+	 */
+	items: HunkItems;
+	/** `items.pairs`: hunkPairs over `gitRows` wherever no group replaced them. */
 	pairs: LinePair[];
+	/** Every line of a pair or group → its item. */
 	partners: Partners;
 }
 
@@ -177,9 +187,10 @@ const viewsByHunk = new WeakMap<DiffLine[], Map<string, HunkView>>();
  * (the hunks query's arrays: callers must never change `lines` in place).
  * With the setting on, a cluster's run is paired (pairRun, by the whole
  * hunk's twins); otherwise, and for context runs, every line is a row as it
- * is. `pairs` come from the rows in git's order (a stretch ends at a
- * context or `~` row); then each cluster run's rows are put in unified B's
- * order (orderRun): a pair reads together. `starts`: the since view's
+ * is. `items` (pairs and groups) come from the rows in git's order (a
+ * stretch ends at a context or `~` row; a group stays in its run); then
+ * each cluster run's rows are put in unified B's order (orderRun): a pair
+ * or a group reads together. `starts`: the since view's
  * pieces' first lines (runs), cut before pairing, so a pair that would
  * straddle two pieces is two one-sided `~` rows; the full diff and Find
  * pass none.
@@ -208,12 +219,14 @@ export function hunkView(
 				: run.lines.map((line): DiffRow => ({ kind: "line", line })),
 	}));
 	const gitRows = git.flatMap((run) => run.rows);
-	const pairs = hunkPairs(gitRows);
-	const partners = new Map<DiffLine, DiffLine>();
-	for (const [del, add] of pairs) {
-		partners.set(del, add);
-		partners.set(add, del);
-	}
+	// Groups only in the runs orderRun reorders (a cluster's): elsewhere
+	// their rows could sit apart.
+	const items = hunkItems(
+		git.map((run) => run.rows),
+		undefined,
+		(r) => git[r]?.key !== undefined,
+	);
+	const partners = partnersOf(items);
 	const view: HunkView = {
 		runs: git.map((run) =>
 			run.key === undefined
@@ -221,7 +234,8 @@ export function hunkView(
 				: { ...run, rows: orderRun(run.rows, partners) },
 		),
 		gitRows,
-		pairs,
+		items,
+		pairs: items.pairs,
 		partners,
 	};
 	const entry = cached ?? new Map<string, HunkView>();

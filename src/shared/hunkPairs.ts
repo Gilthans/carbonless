@@ -1,6 +1,7 @@
 import {
 	type AlignBudget,
-	alignCluster,
+	alignGroups,
+	alignOrOver,
 	HUNK_ALIGN_WORD_OPS,
 } from "./linePairing.js";
 import type { DiffLine } from "./types.js";
@@ -46,33 +47,133 @@ export function hunkPairs(
 	budget = HUNK_ALIGN_WORD_OPS,
 ): LinePair[] {
 	const work: AlignBudget = { left: budget };
-	const pairs: LinePair[] = [];
-	let dels: DiffLine[] = [];
-	let adds: DiffLine[] = [];
-	const flush = () => {
-		if (dels.length > 0 && dels.length === adds.length) {
-			dels.forEach((del, i) => {
-				pairs.push([del, adds[i] as DiffLine]);
+	return stretchesOf([rows]).flatMap((s) =>
+		(stretchPairs(s, work) ?? []).map(
+			([i, j]): LinePair => [s.dels[i] as DiffLine, s.adds[j] as DiffLine],
+		),
+	);
+}
+
+/**
+ * One line (`one`) and the adjacent run it split into or was joined from.
+ * `one.kind === "del"`: a split (run = added lines); `"add"`: a join (run =
+ * removed lines). run.length in [2, GROUP_MAX_LINES], in order.
+ */
+export type LineGroup = { one: DiffLine; run: readonly DiffLine[] };
+
+/** A hunk's pairs and groups (CAR-130), each line in one at most. */
+export type HunkItems = { pairs: LinePair[]; groups: LineGroup[] };
+
+/**
+ * A hunk's pairs and groups. `runs`: the hunk's view runs' rows in git
+ * order (hunkView's `git`). The pairs are hunkPairs(runs.flat(), budget)'s
+ * wherever no group replaced them, chosen first and spending the budget as
+ * there; the groups (alignGroups, spec:
+ * docs/superpowers/specs/2026-11-24-split-joined-lines-design.md) are then
+ * looked for in each unequal stretch whose pairs were scored, in order,
+ * from what the pairs left of the budget: once a stretch's don't fit, it
+ * and every later stretch keep their pairs alone. A group's lines are all
+ * in one view run; an equal stretch keeps its i-th-with-i-th pairs.
+ * `grouped(r)`: whether run `r` may hold a group (default: every run).
+ * The view puts a group's rows together only in the runs it reorders (a
+ * cluster's, orderRun): in another run a group's rows could sit apart, an
+ * unrelated row breaking its bracket, so a stretch with a line in such a
+ * run keeps its pairs alone.
+ */
+export function hunkItems(
+	runs: readonly (readonly DiffRow[])[],
+	budget = HUNK_ALIGN_WORD_OPS,
+	grouped: (run: number) => boolean = () => true,
+): HunkItems {
+	const work: AlignBudget = { left: budget };
+	const stretches = stretchesOf(runs);
+	const found = stretches.map((s) => stretchPairs(s, work));
+	const groupWork: AlignBudget = { left: work.left };
+	const out: HunkItems = { pairs: [], groups: [] };
+	stretches.forEach((s, k) => {
+		const pairs = found[k];
+		if (!pairs) return;
+		const unequal =
+			s.dels.length !== s.adds.length &&
+			s.delRuns.every(grouped) &&
+			s.addRuns.every(grouped);
+		const { pairs: kept, groups } = unequal
+			? alignGroups(
+					s.dels.map((l) => l.text),
+					s.adds.map((l) => l.text),
+					pairs,
+					s.delRuns,
+					s.addRuns,
+					groupWork,
+				)
+			: { pairs, groups: [] };
+		for (const [i, j] of kept)
+			out.pairs.push([s.dels[i] as DiffLine, s.adds[j] as DiffLine]);
+		for (const g of groups) {
+			const [one, other] =
+				g.one === "del" ? [s.dels, s.adds] : [s.adds, s.dels];
+			out.groups.push({
+				one: one[g.at] as DiffLine,
+				run: other.slice(g.from, g.to),
 			});
-		} else if (dels.length > 0 && adds.length > 0) {
-			for (const [i, j] of alignCluster(
-				dels.map((l) => l.text),
-				adds.map((l) => l.text),
-				work,
-			)) {
-				pairs.push([dels[i] as DiffLine, adds[j] as DiffLine]);
+		}
+	});
+	return out;
+}
+
+/**
+ * A stretch: removed lines directly followed by added ones, both sides
+ * non-empty, with each line's view run.
+ */
+type Stretch = {
+	dels: DiffLine[];
+	adds: DiffLine[];
+	delRuns: number[];
+	addRuns: number[];
+};
+
+/**
+ * The stretches of a hunk's rows, `runs` one after the other: a context
+ * line or a whitespace-only row ends one, and so does a removed line after
+ * an added one.
+ */
+function stretchesOf(runs: readonly (readonly DiffRow[])[]): Stretch[] {
+	const out: Stretch[] = [];
+	let s: Stretch = { dels: [], adds: [], delRuns: [], addRuns: [] };
+	const flush = () => {
+		if (s.dels.length > 0 && s.adds.length > 0) out.push(s);
+		s = { dels: [], adds: [], delRuns: [], addRuns: [] };
+	};
+	runs.forEach((rows, r) => {
+		for (const row of rows) {
+			if (row.kind !== "line" || row.line.kind === "context") flush();
+			else if (row.line.kind === "del") {
+				if (s.adds.length > 0) flush();
+				s.dels.push(row.line);
+				s.delRuns.push(r);
+			} else {
+				s.adds.push(row.line);
+				s.addRuns.push(r);
 			}
 		}
-		dels = [];
-		adds = [];
-	};
-	for (const row of rows) {
-		if (row.kind !== "line" || row.line.kind === "context") flush();
-		else if (row.line.kind === "del") {
-			if (adds.length > 0) flush();
-			dels.push(row.line);
-		} else adds.push(row.line);
-	}
+	});
 	flush();
-	return pairs;
+	return out;
+}
+
+/**
+ * A stretch's pairs as index pairs: i-th with i-th when equal, else
+ * alignCluster's from `work`; null when a guard or the budget stopped them.
+ */
+function stretchPairs(
+	s: Stretch,
+	work: AlignBudget,
+): [number, number][] | null {
+	if (s.dels.length === s.adds.length)
+		return s.dels.map((_, i): [number, number] => [i, i]);
+	return alignOrOver(
+		s.dels.map((l) => l.text),
+		s.adds.map((l) => l.text),
+		work,
+	);
 }

@@ -4,15 +4,18 @@ import type { DiffLine } from "../../shared/types";
 import type { Mark } from "../code/Invisibles";
 import type { DiffRow } from "./whitespace";
 import { hunkPairs, pairWordMarks } from "./wordBlocks";
-import { tokenize, wordMarks } from "./wordDiff";
+import { groupMarks, tokenize, wordMarks } from "./wordDiff";
 import {
 	CHUNK,
 	configureWordWork,
 	Dropped,
-	markPairs,
-	hunkWords as pairsWords,
+	hunkWords as itemsWords,
+	type JobMarks,
+	type Later,
+	type MarkJob,
+	markJobs as markPairs,
 	type Runner,
-	requestMarks,
+	requestMarks as requestLater,
 	resetWordWork,
 	slicedRunner,
 	wordWorkFallback,
@@ -20,7 +23,10 @@ import {
 
 // The rows' pairs as the page gets them (hunkView pairs git-order rows
 // with hunkPairs), so these tests read rows.
-const hunkWords = (rows: readonly DiffRow[]) => pairsWords(hunkPairs(rows));
+const hunkWords = (rows: readonly DiffRow[]) =>
+	itemsWords({ pairs: hunkPairs(rows), groups: [] }, false);
+const requestMarks = (later: readonly Later[], progress: () => void) =>
+	requestLater(later, false, progress);
 /** Every pair marked at once, in render: the marks before CAR-135. */
 const hunkWordMarks = (rows: readonly DiffRow[]) =>
 	pairWordMarks(hunkPairs(rows));
@@ -110,7 +116,7 @@ async function settled(hunk: readonly DiffRow[]) {
 /** A runner whose every job waits for its own `release`, kept in `jobs`. */
 function heldRunner() {
 	const jobs: {
-		pairs: (readonly [string, string])[];
+		pairs: MarkJob[];
 		wanted: () => boolean;
 		release: () => void;
 		fail: (error: unknown) => void;
@@ -207,9 +213,9 @@ describe("hunkWords", () => {
 		);
 		const hunk = block(pairs);
 		const words = hunkWords(hunk);
-		expect(words.later.map(([d]) => d.text)).toEqual(
-			pairs.slice(2).map(([a]) => a),
-		);
+		expect(
+			words.later.map((item) => (item as [DiffLine, DiffLine])[0].text),
+		).toEqual(pairs.slice(2).map(([a]) => a));
 		// The same task's next hunk gets nothing more.
 		expect(hunkWords(block([["b = 1", "b = 2"]])).later).toHaveLength(1);
 		// A new task, a new budget.
@@ -503,11 +509,11 @@ describe("the runners", () => {
 			readonly url: URL,
 			readonly options: { type: string },
 		) {}
-		postMessage(data: { id: number; pairs: [string, string][] }) {
+		postMessage(data: { id: number; jobs: MarkJob[] }) {
 			setTimeout(() => {
 				let answer: object;
 				try {
-					answer = { id: data.id, marks: markPairs(data.pairs) };
+					answer = { id: data.id, marks: markPairs(data.jobs) };
 				} catch (error) {
 					answer = { id: data.id, error: String(error) };
 				}
@@ -597,5 +603,186 @@ describe("the runners", () => {
 		configureWordWork({ budgetMs: 0, runner: throwing });
 		const words = await settled(block(pairs));
 		expect(words.failed.size).toBe(4);
+	});
+});
+
+describe("groups (CAR-130)", () => {
+	const split = () => {
+		const one = del("const total = first + second;");
+		const run = [add("const sum ="), add("  first + second;")];
+		return { one, run, items: { pairs: [], groups: [{ one, run }] } };
+	};
+	const expected = (g: ReturnType<typeof split>) =>
+		groupMarks({
+			one: g.one.text,
+			run: g.run.map((l) => l.text),
+			oneIsOld: true,
+			prose: false,
+		});
+
+	it("holds every line of a group pending, and the group in later", () => {
+		configureWordWork({ budgetMs: 0, runner: heldRunner().runner });
+		const g = split();
+		const words = itemsWords(g.items, false);
+		expect(words.later).toEqual([g.items.groups[0]]);
+		expect(words.pending).toEqual(new Set([g.one, ...g.run]));
+		expect(words.failed.size).toBe(0);
+		expect(words.marks.size).toBe(0);
+	});
+
+	it("marks a group off the render path, as groupMarks does", async () => {
+		configureWordWork({ budgetMs: 0 });
+		const g = split();
+		const words = itemsWords(g.items, false);
+		await new Promise<void>((resolve) => {
+			const cancel = requestLater(words.later, false, () => {
+				cancel();
+				resolve();
+			});
+		});
+		const now = itemsWords(g.items, false);
+		expect(now.pending.size).toBe(0);
+		expect(now.later).toEqual([]);
+		const want = expected(g);
+		expect(want.one.length).toBeGreaterThan(0);
+		expect(now.marks.get(g.one)).toEqual(want.one);
+		g.run.forEach((l, i) => {
+			const m = want.run[i] ?? [];
+			if (m.length > 0) expect(now.marks.get(l)).toEqual(m);
+			else expect(now.marks.has(l)).toBe(false);
+		});
+	});
+
+	it("sends the group's texts and prose flag, counted as one job", async () => {
+		const held = heldRunner();
+		configureWordWork({ budgetMs: 0, runner: held.runner });
+		const g = split();
+		requestLater(itemsWords(g.items, true).later, true, () => {});
+		expect(held.jobs[0]?.pairs).toEqual([
+			{
+				one: g.one.text,
+				run: g.run.map((l) => l.text),
+				oneIsOld: true,
+				prose: true,
+			},
+		]);
+		held.jobs[0]?.release();
+		await flush();
+	});
+
+	it("fails every line of a group when the runner throws, none pending", async () => {
+		const failing: Runner = async () => {
+			throw new Error("no");
+		};
+		configureWordWork({ budgetMs: 0, runner: failing });
+		const g = split();
+		await new Promise<void>((resolve) => {
+			const cancel = requestLater(
+				itemsWords(g.items, false).later,
+				false,
+				() => {
+					cancel();
+					resolve();
+				},
+			);
+		});
+		const words = itemsWords(g.items, false);
+		expect(words.failed).toEqual(new Set([g.one, ...g.run]));
+		expect(words.pending.size).toBe(0);
+		expect(words.later).toEqual([]);
+	});
+
+	it("a missing answer fails the group", async () => {
+		configureWordWork({ budgetMs: 0, runner: async () => [] });
+		const g = split();
+		await new Promise<void>((resolve) => {
+			const cancel = requestLater(
+				itemsWords(g.items, false).later,
+				false,
+				() => {
+					cancel();
+					resolve();
+				},
+			);
+		});
+		expect(itemsWords(g.items, false).failed.size).toBe(3);
+	});
+
+	it("a malformed answer (a short run) fails every line of the group", async () => {
+		configureWordWork({
+			budgetMs: 0,
+			runner: async () => [{ one: [], run: [] }],
+		});
+		const g = split();
+		await new Promise<void>((resolve) => {
+			const cancel = requestLater(
+				itemsWords(g.items, false).later,
+				false,
+				() => {
+					cancel();
+					resolve();
+				},
+			);
+		});
+		const words = itemsWords(g.items, false);
+		expect(words.failed).toEqual(new Set([g.one, ...g.run]));
+		expect(words.pending.size).toBe(0);
+	});
+
+	it("a fresh HunkItems over the same lines needs no runner call", async () => {
+		const held = heldRunner();
+		configureWordWork({ budgetMs: 0, runner: held.runner });
+		const g = split();
+		requestLater(itemsWords(g.items, false).later, false, () => {});
+		held.jobs[0]?.release();
+		await flush();
+		const again = {
+			pairs: [],
+			groups: [{ one: g.one, run: [...g.run] }],
+		};
+		const words = itemsWords(again, false);
+		expect(words.later).toEqual([]);
+		expect(words.pending.size).toBe(0);
+		requestLater(words.later, false, () => {});
+		expect(held.jobs).toHaveLength(1);
+	});
+
+	it("marks a group in render while the budget lasts", () => {
+		configureWordWork({ budgetMs: 1e9 });
+		const g = split();
+		const words = itemsWords(g.items, false);
+		expect(words.later).toEqual([]);
+		expect(words.marks.get(g.one)).toEqual(expected(g).one);
+		expect(expected(g).one.length).toBeGreaterThan(0);
+	});
+
+	it("a group and a pair share a chunk of CHUNK jobs", () => {
+		const held = heldRunner();
+		configureWordWork({ budgetMs: 0, runner: held.runner });
+		const g = split();
+		const pairs = Array.from(
+			{ length: CHUNK },
+			(_, i) => [del(`a = ${i}`), add(`a = ${i + 1}`)] as [DiffLine, DiffLine],
+		);
+		requestLater([g.items.groups[0] as Later, ...pairs], false, () => {});
+		expect(held.jobs).toHaveLength(1);
+		expect(held.jobs[0]?.pairs).toHaveLength(CHUNK);
+	});
+
+	it("markJobs runs each job's own marker", () => {
+		const jobs: MarkJob[] = [
+			["a = 1", "a = 2"],
+			{ one: "x y", run: ["x", "y"], oneIsOld: true, prose: false },
+		];
+		const out: JobMarks[] = markPairs(jobs);
+		expect(out[0]).toEqual(wordMarks("a = 1", "a = 2"));
+		expect(out[1]).toEqual(
+			groupMarks({
+				one: "x y",
+				run: ["x", "y"],
+				oneIsOld: true,
+				prose: false,
+			}),
+		);
 	});
 });

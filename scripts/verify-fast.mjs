@@ -239,6 +239,11 @@ const E2E_MAP = [
 		/^src\/web\/files\/(linePairing|pairOrder|wordBlocks|whitespace|sideBySide|hiddenLines|DiffBody)\.tsx?$/,
 		["linePairing"],
 	],
+	// A line split or joined: its group, bracket and marks (CAR-130).
+	[
+		/^src\/web\/files\/(GroupBracket|groupSpans|pairOrder|sideBySide|whitespace|wordDiff|wordWork|wordWorker|hiddenLines|ThreadRow|DiffBody)\.tsx?$|^src\/shared\/hunkPairs\.ts$|^e2e\/split-lines\.spec\.ts$/,
+		["split-lines"],
+	],
 	[
 		/^src\/server\/home\/|^src\/shared\/home(Sections)?\.ts$/,
 		["home-api", "home"],

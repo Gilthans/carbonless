@@ -14,6 +14,7 @@ import {
 } from "../../../test/whitespace-fixture";
 import { parseU0Patch } from "../../server/diff/clusters";
 import { buildDisplayHunks } from "../../server/diff/hunks";
+import { cutClusters } from "../../server/diff/snapshot";
 import type { DiffLine, DisplayHunk } from "../../shared/types";
 import { SPLIT_CELLS } from "../../shared/whitespace";
 import {
@@ -27,6 +28,7 @@ import {
 	stripWhitespace,
 	whitespaceEqual,
 } from "./whitespace";
+import { groupMarks } from "./wordDiff";
 
 /** Every row is whitespace-only: the run's lines all have twins. */
 const whitespaceOnly = (rows: DiffRow[]): boolean =>
@@ -154,8 +156,11 @@ function expectCoverage(lines: DiffLine[], rows: DiffRow[]) {
 const keyEqual = (a: DiffLine, b: DiffLine) =>
 	whitespaceEqual(a.text, b.text) && !!a.noNewline === !!b.noNewline;
 
-/** The display hunk git and the server would make of two texts. */
-function gitHunk(oldText: string, newText: string): DisplayHunk {
+/**
+ * The display hunk git and the server would make of two texts; with `cut`,
+ * after the server's whitespace cut (cutClusters, CAR-218).
+ */
+function gitHunk(oldText: string, newText: string, cut = false): DisplayHunk {
 	const dir = mkdtempSync(join(tmpdir(), "crb-ws-"));
 	try {
 		writeFileSync(join(dir, "old"), oldText);
@@ -171,13 +176,20 @@ function gitHunk(oldText: string, newText: string): DisplayHunk {
 			// git exits 1 when the files differ.
 			patch = String((error as { stdout?: string }).stdout ?? "");
 		}
-		const clusters = parseU0Patch(patch).map((c, i) => ({
+		const lines = (t: string) => t.split("\n").slice(0, -1);
+		const text = {
+			oldLines: lines(oldText),
+			newLines: lines(newText),
+			noNewlineAtEnd: false,
+		};
+		const parsed = parseU0Patch(patch).map((c) => ({
 			...c,
-			key: `c${i}`,
 			kind: "lines" as const,
 		}));
-		const lines = (t: string) => t.split("\n").slice(0, -1);
-		const hunks = buildDisplayHunks(lines(oldText), lines(newText), clusters);
+		const clusters = cut
+			? cutClusters(parsed, (cs) => cs.map((_, i) => `c${i}`), text)
+			: parsed.map((c, i) => ({ ...c, key: `c${i}` }));
+		const hunks = buildDisplayHunks(text.oldLines, text.newLines, clusters);
 		expect(hunks).toHaveLength(1);
 		return hunks[0] as DisplayHunk;
 	} finally {
@@ -718,6 +730,113 @@ describe("matchSides' equal-keys fast path", () => {
 					matchSides(a, c, false),
 				);
 			}
+		}
+	});
+});
+
+describe("hunkView's groups (CAR-130)", () => {
+	/** A hunk's line by its text (the first one of that kind). */
+	const find = (lines: DiffLine[], kind: DiffLine["kind"], text: string) =>
+		lines.find((l) => l.kind === kind && l.text === text) as DiffLine;
+
+	it("a cut ends a group: the split's `)` has a whitespace twin elsewhere, so the group stops before it and the one line's `);` is marked removed", () => {
+		const hunk = gitHunk(
+			"start()\ncall(alpha, beta);\n  )\nend()\n",
+			"start()\ncall(\n  alpha,\n  beta\n)\nend()\n",
+			true,
+		);
+		const lines = hunk.lines;
+		const one = find(lines, "del", "call(alpha, beta);");
+		const close = find(lines, "add", ")");
+		// The server cut the `)` into a cluster of its own (CAR-218).
+		expect(close.clusterKey).not.toBe(one.clusterKey);
+		const run = ["call(", "  alpha,", "  beta"].map((t) =>
+			find(lines, "add", t),
+		);
+		for (const ws of [false, true]) {
+			const v = hunkView(lines, ws);
+			expect(v.items.groups).toEqual([{ one, run }]);
+			const marks = groupMarks({
+				one: one.text,
+				run: run.map((l) => l.text),
+				oneIsOld: true,
+				prose: false,
+			});
+			expect(marks.one.map(([f, t]) => one.text.slice(f, t))).toEqual([");"]);
+			expect(marks.run.flat()).toEqual([]);
+		}
+	});
+
+	it("Ignore whitespace on: a pure split's cluster still counts as changed, as with it off", () => {
+		const hunk = gitHunk(
+			"a\nload(path, retries, timeout)\nb\n",
+			"a\nload(\n  path,\n  retries,\n  timeout)\nb\n",
+		);
+		const changed = (ws: boolean) =>
+			hunkView(hunk.lines, ws).runs.map((r) => [
+				r.key,
+				r.rows.filter(
+					(row) => row.kind === "line" && row.line.kind !== "context",
+				).length,
+			]);
+		expect(hunkView(hunk.lines, true).items.groups).toHaveLength(1);
+		expect(hunkView(hunk.lines, false).items.groups).toHaveLength(1);
+		expect(changed(true)).toEqual(changed(false));
+		expect(changed(true).find(([k]) => k !== undefined)?.[1]).toBe(5);
+	});
+
+	it("no group in a run the view doesn't reorder (no cluster key): its rows would sit apart", () => {
+		const lines = (key?: string) => {
+			const over = { clusterKey: key };
+			return [
+				ctx(0, 0, "a"),
+				del(1, "const total = price * count;", over),
+				del(2, "load(path, retries, timeout)", over),
+				add(1, "const total = price * amount;", over),
+				add(2, "load(path,", over),
+				add(3, "  retries, timeout)", over),
+				ctx(3, 4, "b"),
+			];
+		};
+		// In a cluster's run: a group, read together (orderRun).
+		const keyed = lines("k");
+		const v = hunkView(keyed, false);
+		expect(v.items.groups).toEqual([
+			{ one: keyed[2], run: [keyed[4], keyed[5]] },
+		]);
+		// Unkeyed, the rows keep git's order, the pair's new line between
+		// the one line and its run: pairs alone, no broken bracket.
+		const unkeyed = lines(undefined);
+		for (const ws of [false, true]) {
+			const u = hunkView(unkeyed, ws);
+			expect(
+				u.runs.some((r) => r.key === undefined && r.lines.length > 1),
+			).toBe(true);
+			expect(u.items.groups).toEqual([]);
+			expect(u.items.pairs.length).toBeGreaterThan(0);
+		}
+	});
+
+	it("the since view: no group across a piece's start", () => {
+		const one = del(1, "load(path, retries, timeout)");
+		const run = [
+			add(1, "load("),
+			add(2, "  path,"),
+			add(3, "  retries,"),
+			add(4, "  timeout)"),
+		];
+		const lines = [ctx(0, 0, "a"), one, ...run, ctx(2, 5, "b")];
+		expect(hunkView(lines, false).items.groups).toEqual([{ one, run }]);
+		// A piece starts at the third added line: the group stays in the
+		// first piece, its run cut there.
+		const starts = new Set([one, run[2] as DiffLine]);
+		for (const ws of [false, true]) {
+			const v = hunkView(lines, ws, starts);
+			expect(v.items.groups).toEqual([{ one, run: run.slice(0, 2) }]);
+			// A piece starting at the one line only: the whole group.
+			expect(hunkView(lines, ws, new Set([one])).items.groups).toEqual([
+				{ one, run },
+			]);
 		}
 	});
 });

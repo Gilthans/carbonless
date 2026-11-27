@@ -1,3 +1,4 @@
+import type { LineGroup } from "../src/shared/hunkPairs";
 import type { DiffLine } from "../src/shared/types";
 import type { SideRow } from "../src/web/files/sideBySide";
 import type { LinePair } from "../src/web/files/wordBlocks";
@@ -117,4 +118,48 @@ export function markup(
 		at = to;
 	}
 	return out + esc(text.slice(at));
+}
+
+/** A group as line indexes: the one line and its run, in order. */
+export interface GroupIndexes {
+	one: number;
+	run: number[];
+}
+
+/** Groups as index groups; a group with a line outside `at` is left out. */
+export function groupIndexes(
+	groups: readonly LineGroup[],
+	at: ReadonlyMap<DiffLine, number>,
+): GroupIndexes[] {
+	const out: GroupIndexes[] = [];
+	for (const g of groups) {
+		const one = at.get(g.one);
+		const run = g.run.map((l) => at.get(l));
+		if (one !== undefined && run.every((i) => i !== undefined)) {
+			out.push({ one, run: run as number[] });
+		}
+	}
+	return out;
+}
+
+/** What the groups page sorts a stretch by. */
+export interface GroupRank {
+	/** The lowest similarity of a group's one line to its run joined. */
+	minScore: number;
+	/** The longest run in the stretch. */
+	runLength: number;
+	/** Removed plus added lines. */
+	size: number;
+}
+
+/** Worst first: the lowest similarity, then the longest run, then the biggest stretch. */
+export function byWorstGroups(a: GroupRank, b: GroupRank): number {
+	return (
+		a.minScore - b.minScore || b.runLength - a.runLength || b.size - a.size
+	);
+}
+
+/** The groups page lists a stretch only when its layout has a group. */
+export function hasGroups(groups: readonly unknown[]): boolean {
+	return groups.length > 0;
 }
