@@ -4,6 +4,7 @@ import {
 	barBottom,
 	expectNoPageOverflow,
 	fileSection,
+	marksReady,
 	openFiles,
 	progress,
 	sideBySide,
@@ -845,4 +846,125 @@ test("every sticky layer is opaque: the diff never shows through", async ({
 		);
 		expect(bg, name).not.toMatch(/\/|rgba|transparent/);
 	}
+});
+
+const JUMP = "src/jump.ts";
+const jumpLines = Array.from({ length: 6 }, (_, i) => `jump ${i + 1}`);
+/** Waits two frames: what a scroll or resize sets off has run. */
+const frames = (page: Page) =>
+	page.evaluate(
+		() =>
+			new Promise<void>((done) =>
+				requestAnimationFrame(() => requestAnimationFrame(() => done())),
+			),
+	);
+
+test("a mark that shortens the page never moves the header's buttons under the finger: the page keeps its scroll (CAR-310)", async ({
+	page,
+	pr,
+	startCrb,
+	isMobile,
+}) => {
+	// A review, a push, the engine's answer and a mark: past the default budget on a loaded machine.
+	test.slow();
+	if (isMobile) await page.setViewportSize({ width: 360, height: 780 });
+	const p = await pr({
+		base: { [JUMP]: text(jumpLines) },
+		files: [
+			{
+				message: "Line 2",
+				files: {
+					[JUMP]: text(jumpLines.map((l, i) => (i === 1 ? `${l} x` : l))),
+				},
+			},
+		],
+	});
+	const s = await startCrb();
+	await openFiles(page, s.url);
+	const ps1 = fileSection(page, JUMP);
+	await ps1.getByRole("button", { name: "Expand file" }).click();
+	await ps1
+		.getByRole("checkbox", { name: /cluster reviewed$/ })
+		.first()
+		.click();
+	await expect(progress(page)).toHaveAttribute("aria-valuenow", "100");
+	// A push: the verdict says it goes on an older commit, until a mark at
+	// the new head starts PS2 and the line goes.
+	p.moveHead({
+		message: "Line 5",
+		files: {
+			[JUMP]: text(
+				jumpLines.map((l, i) => (i === 1 ? `${l} x` : i === 4 ? `${l} y` : l)),
+			),
+		},
+	});
+	await page.reload();
+	await expect(page.getByTestId("ps-tail")).toHaveAttribute(
+		"data-state",
+		"head",
+		{ timeout: 30_000 },
+	);
+	await page
+		.getByTestId("head-toast")
+		.getByRole("button", { name: "View" })
+		.click();
+	await expect(page).toHaveURL(/head=[0-9a-f]{40}/);
+	const older = page.getByTestId("verdict-older");
+	await expect(older).toBeVisible();
+	const section = fileSection(page, JUMP);
+	const expand = section.getByRole("button", { name: "Expand file" });
+	if (await expand.isVisible()) await expand.click();
+	const mark = section
+		.getByRole("checkbox", { name: /cluster reviewed$/ })
+		.first();
+	await expect(mark).toBeVisible();
+	await marksReady(page, section);
+
+	// A window just short of the page by less than the line takes: at the
+	// bottom the header is partly scrolled away and the chip docked; with
+	// the line gone the browser would pull the page back to the top.
+	const { pageHeight, line } = await older.evaluate((el) => {
+		const gap = Number.parseFloat(
+			getComputedStyle(el.parentElement as Element).rowGap,
+		);
+		return {
+			pageHeight: document.documentElement.scrollHeight,
+			line: el.getBoundingClientRect().height + (Number.isNaN(gap) ? 0 : gap),
+		};
+	});
+	const width = page.viewportSize()?.width ?? 0;
+	await page.setViewportSize({
+		width,
+		height: Math.round(pageHeight - line + 4),
+	});
+	await page.evaluate(() =>
+		window.scrollTo(0, document.documentElement.scrollHeight),
+	);
+	await frames(page);
+	await expect(mark).toBeInViewport({ ratio: 1 });
+	// Where the chip is (docked in the row on a phone, by then): it stays.
+	const chip = page.getByTestId("agent-chip");
+	const docked = await appRow(page).locator(chip).count();
+	if (isMobile) expect(docked).toBe(1);
+	const settings = appRow(page).getByRole("button", { name: "Settings" });
+	const find = appRow(page).getByRole("button", { name: "Find in PR" });
+	const before = {
+		settings: await box(settings),
+		find: await box(find),
+		chip: await box(chip),
+		scroll: await page.evaluate(() => window.scrollY),
+	};
+	expect(before.scroll).toBeGreaterThan(0);
+
+	await mark.click();
+	await expect(older).toHaveCount(0);
+	await frames(page);
+	expect({
+		settings: await box(settings),
+		find: await box(find),
+		chip: await box(chip),
+		scroll: await page.evaluate(() => window.scrollY),
+	}).toEqual(before);
+	expect(await appRow(page).locator(chip).count()).toBe(docked);
+	await expectNoPageOverflow(page);
 });
