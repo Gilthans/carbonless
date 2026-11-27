@@ -214,7 +214,7 @@ const prefixed = (prefix: string, counts: ObjectCounts) =>
 	);
 
 /** Every clone under the cache (`repos/<owner>/<repo>.git`). */
-export async function listClones(root = join(cacheDir(), "repos")) {
+async function listClones(root = join(cacheDir(), "repos")) {
 	const dirs = async (dir: string) =>
 		(await readdir(dir, { withFileTypes: true }).catch(() => []))
 			.filter((d) => d.isDirectory())
@@ -261,9 +261,9 @@ export async function maintainClones(
 }
 
 /** First pass this long after start (a start is busy enough). */
-export const FIRST_PASS_MS = 10 * 60_000;
+const FIRST_PASS_MS = 10 * 60_000;
 /** Later passes: each clone is due once a day, so an hourly look is enough. */
-export const PASS_EVERY_MS = 60 * 60_000;
+const PASS_EVERY_MS = 60 * 60_000;
 
 /**
  * crb serve's background maintenance: a pass FIRST_PASS_MS after start and

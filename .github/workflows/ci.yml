@@ -92,8 +92,9 @@ jobs:
           retention-days: 90
 
   # The agent's spawn and kill differ on Windows (npm .cmd shims, no process
-  # groups), and so do the update helper's wait, install and relaunch; the
-  # rest of the suite assumes POSIX. vitest runs unqueued:
+  # groups), and so do the update helper's wait, install and relaunch, and
+  # clone maintenance's repack and priority; the rest of the suite
+  # assumes POSIX. vitest runs unqueued:
   # scripts/queue.mjs takes its lock with flock.
   windows-agent:
     runs-on: windows-latest
@@ -116,7 +117,7 @@ jobs:
         timeout-minutes: 2
         run: node scripts/spawn-cost.mjs 30
       - id: tests
-        run: pnpm exec vitest run src/server/atomicFile.test.ts src/server/agent/acp.test.ts src/server/agent/runner.test.ts src/server/update/updateHelper.test.ts src/server/update/install.test.ts src/server/catFile.test.ts src/server/review/refFiles.test.ts
+        run: pnpm exec vitest run src/server/atomicFile.test.ts src/server/agent/acp.test.ts src/server/agent/runner.test.ts src/server/update/updateHelper.test.ts src/server/update/install.test.ts src/server/catFile.test.ts src/server/review/refFiles.test.ts src/server/maintenance.test.ts
         env:
           CRB_TEST_JSON: ${{ runner.temp }}/test-outcomes/report.json
       # As in checks (docs/ci-flakes.md): labels failures, never passes the job.

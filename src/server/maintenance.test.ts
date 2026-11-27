@@ -2,6 +2,7 @@ import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { GIT_TEST_TIMEOUTS, testGitEnv } from "../../test/git-fixture";
 import { withRepoLock } from "./clone";
@@ -81,7 +82,7 @@ function grow(tmp: string, k: number): Grown {
 	git(clone, ["config", "gc.auto", "0"]);
 	// Every fetch keeps its pack, as a real fetch of 100+ objects does.
 	git(clone, ["config", "transfer.unpackLimit", "1"]);
-	const url = `file://${src}`;
+	const url = pathToFileURL(src).href;
 	const looseUnreachable: string[] = [];
 	for (let i = 0; i < k; i++) {
 		git(clone, [
