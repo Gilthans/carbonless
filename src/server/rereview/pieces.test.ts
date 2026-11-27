@@ -6,6 +6,7 @@ import {
 	type GitFixture,
 } from "../../../test/git-fixture";
 import { size } from "../../shared/lineRanges";
+import { markdownBlocks } from "../../shared/markdownBlocks";
 import { lineRuns, type SincePiece } from "../../shared/pieces";
 import type { DiffLine, FileHunks, Snapshot } from "../../shared/types";
 import { matchDisplayHunk, SPLIT_CELLS } from "../../shared/whitespace";
@@ -22,6 +23,12 @@ import {
 
 // Real git processes: see GIT_TEST_TIMEOUTS.
 vi.setConfig(GIT_TEST_TIMEOUTS);
+
+// The parse itself, spied on: the since view parses each side once (CAR-318).
+vi.mock("../../shared/markdownBlocks", async (actual) => {
+	const real = await actual<typeof import("../../shared/markdownBlocks")>();
+	return { ...real, markdownBlocks: vi.fn(real.markdownBlocks) };
+});
 
 /*
  * The since view's pieces against a real interdiff (pieces.ts, engine.ts
@@ -491,21 +498,52 @@ describe("a Markdown file's since view: pieces cut at its blocks (CAR-167)", () 
 		expect(entry?.markdownBlocks).toBe(true);
 		expect(hunks.markdownBlocks).toBe(true);
 		expect(entry?.pieces).toEqual(hunks.pieces);
-		// The interdiff's removals are keyed by its first added line's
-		// cluster (the first item's): "- two" is cut off that piece, and
-		// "- two!" is the second item's cluster's (the full diff cut it).
+		// Each removal is keyed by the addition of its block group (CAR-318):
+		// "- two" sits by "- two!", the second item's cluster's (the full
+		// diff cut it), not cut off the first item's on its own.
 		// "- three" and its blank line: unreviewed on PS1 and unchanged
 		// since, an orphan run of their own (CAR-216).
 		expect(shown).toEqual([
 			["-- one", "+- one!"],
-			["-- two"],
-			["+- two!"],
+			["-- two", "+- two!"],
 			["+- three", "+"],
 		]);
-		const [one, two, twoNew] = hunks.pieces ?? [];
-		expect(two?.key).toBe(one?.key);
-		expect(two).toMatchObject({ owns: null, kind: "removed" });
-		expect(twoNew?.key).not.toBe(one?.key);
+		const [one, two] = hunks.pieces ?? [];
+		expect(two?.key).not.toBe(one?.key);
+		expect(two?.owns).not.toBeNull();
+		expect(two?.kind).toBeUndefined();
+	});
+
+	it("parses each side of a .md once for the answer and every since request, not per request (CAR-318)", async () => {
+		const since: SincePatchset = {
+			number: 1,
+			revision: a.revision,
+			mergeBase: a.base,
+			head: a.head,
+			startedAt: 0,
+			since: null,
+			shape: null,
+			baseBranch: "main",
+			interdiff: null,
+			snapshot: a,
+			states: new Map(),
+		};
+		const target = { ...b, baseBranch: "main" };
+		const traced = await traceRereview(r.path, since, [], target);
+		const file =
+			traced.interdiff.status === "available"
+				? traced.interdiff.files.find((f) => f.path === "list.md")
+				: undefined;
+		expect(file?.markdown).toBe(true);
+		const parse = vi.mocked(markdownBlocks);
+		parse.mockClear();
+		const { answer } = answerRereview(traced, since, [], target);
+		const index = b.files.findIndex((f) => f.path === "list.md");
+		for (let i = 0; i < 3; i++) interdiffFileHunks(traced, b, answer, index);
+		const of = (lines: readonly string[] | undefined) =>
+			parse.mock.calls.filter(([arg]) => arg === lines).length;
+		expect(of(file?.oldLines)).toBe(1);
+		expect(of(file?.newLines)).toBe(1);
 	});
 
 	it("a .txt file with the same text isn't cut", async () => {
@@ -550,6 +588,7 @@ describe("a Markdown since view whose patch sets the full diff cut differently (
 					"notes.txt": doc("", ""),
 					"half.md": doc("", ""),
 					"big.md": doc("", pad),
+					"big.txt": doc("", pad),
 				},
 			},
 			{
@@ -559,8 +598,9 @@ describe("a Markdown since view whose patch sets the full diff cut differently (
 					"notes.txt": doc("!", ""),
 					// Over the cap on PS1 only.
 					"half.md": doc("!", pad),
-					// Over the cap on both.
+					// Over the cap on both; and the same text, not Markdown.
 					"big.md": doc("!", pad),
+					"big.txt": doc("!", pad),
 				},
 			},
 			{
@@ -570,6 +610,7 @@ describe("a Markdown since view whose patch sets the full diff cut differently (
 					"notes.md": doc("?", ""),
 					"half.md": doc("?", ""),
 					"big.md": doc("?", pad),
+					"big.txt": doc("?", pad),
 				},
 			},
 		]);
@@ -605,9 +646,31 @@ describe("a Markdown since view whose patch sets the full diff cut differently (
 	/**
 	 * Every changed line, on both sides, is in exactly one piece; returns how
 	 * many. Orphan lines (CAR-216: nothing reviewed on PS1, unchanged since)
-	 * are left out: their pieces own them by cluster, with no numbers here.
+	 * are counted apart: their pieces own them by cluster, with no numbers
+	 * here, so each orphan line is held by the one orphan piece that starts
+	 * its run (CAR-318).
 	 */
 	const coveredOnce = (hunks: Awaited<ReturnType<typeof sinceOf>>["hunks"]) => {
+		const orphanPieces = (hunks.pieces ?? []).filter((p) => p.orphan);
+		const orphanRuns: string[] = [];
+		hunks.hunks.forEach((h, hunk) => {
+			let at = 0;
+			for (const run of lineRuns(h.lines)) {
+				if (run.orphan) {
+					expect(run.lines.every((l) => l.orphan)).toBe(true);
+					const holders = orphanPieces.filter(
+						(p) => p.hunk === hunk && p.line === at,
+					);
+					expect(holders, `orphan run at ${hunk}:${at}`).toHaveLength(1);
+					orphanRuns.push(`${hunk}:${at}`);
+				}
+				at += run.lines.length;
+			}
+		});
+		// No orphan piece holds anything but its own run.
+		expect(orphanPieces.map((p) => `${p.hunk}:${p.line}`).sort()).toEqual(
+			[...orphanRuns].sort(),
+		);
 		const pieces = (hunks.pieces ?? []).filter((p) => !p.orphan);
 		const inRanges = (ranges: [number, number][], n: number) =>
 			ranges.some(([f, t]) => f <= n && n < t);
@@ -676,14 +739,14 @@ describe("a Markdown since view whose patch sets the full diff cut differently (
 				h.lines.every((l) => l.blockPiece === undefined),
 			),
 		).toBe(true);
-		// The base's "- one" and "- two" (unreviewed on PS1) sit between
-		// the removals and the additions as an orphan run (CAR-216), which
-		// parts the cluster's lines into two runs, two pieces.
-		expect(runsOf(hunks)).toEqual([
-			["-- one!", "-- two!"],
-			["+- one?", "+- two?"],
-		]);
-		expect(hunks.pieces?.filter((p) => !p.orphan)).toHaveLength(2);
+		// Exactly as the same text that isn't Markdown (CAR-318): the same
+		// runs, the same pieces.
+		const txt = await sinceOf("big.txt");
+		expect(runsOf(hunks)).toEqual(runsOf(txt.hunks));
+		expect(hunks.pieces?.map(({ key: _, ...p }) => p)).toEqual(
+			txt.hunks.pieces?.map(({ key: _, ...p }) => p),
+		);
+		expect(runsOf(hunks).length).toBeGreaterThan(0);
 	});
 });
 
@@ -1139,9 +1202,13 @@ describe("a Markdown since run cut at its blocks, then one block group at whites
 		const one = of("-- one");
 		const two = of("-- two");
 		const more = of("-  more two");
-		// One run (one key) over both items, cut at the blocks...
-		expect(two?.key).toBe(one?.key);
-		expect(more?.key).toBe(one?.key);
+		// One interdiff cluster over both items, cut at the blocks; item
+		// two's removals keyed by its own addition's cluster, so they sit
+		// by it (CAR-318)...
+		const twoNew = of("+- two!");
+		expect(two?.key).toBe(twoNew?.key);
+		expect(two?.key).not.toBe(one?.key);
+		expect(more?.key).toBe(two?.key);
 		expect(one).toMatchObject({ texts: ["-- one", "+- one!"], ws: false });
 		expect(two?.block).toBeDefined();
 		expect(one?.block).not.toBe(two?.block);
