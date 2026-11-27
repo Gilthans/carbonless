@@ -46,7 +46,15 @@ export interface RunnerFacts {
 	prFacts(): Promise<{ title: string; body: string; files: string[] }>;
 	/** The file at the anchor's commit: pass the anchor as the agent is told it (anchorFor). */
 	anchored(anchor: AgentAnchor): Promise<{ text: string } | null>;
-	hunk(anchor: AgentAnchor): Promise<string | null>;
+	/**
+	 * The diff hunk around a stored (head) anchor, from the comparison it
+	 * was opened on: `mergeBase`..`anchor.commit` (its patch set's merge
+	 * base: patchsetOpened), `mergeBase` null for a head no patch set has
+	 * (that head's own merge base with the base branch); null when that
+	 * diff has no hunk there. Throws when that comparison's code can't be
+	 * read: never another comparison's code in its place (CAR-53).
+	 */
+	hunk(anchor: AgentAnchor, mergeBase: string | null): Promise<string | null>;
 	authorOf(login: string): Promise<CommentRole>;
 	/**
 	 * The folds joined with GitHub's threads (githubJoin.ts): a live

@@ -245,8 +245,23 @@ export function anchorFor(
 		return { ...anchor };
 	}
 	const commit =
-		patchsetOf(anchor.commit, patchsets, opened)?.mergeBase ?? review.mergeBase;
+		patchsetOpened(anchor, patchsets, opened)?.mergeBase ?? review.mergeBase;
 	return { ...anchor, commit };
+}
+
+/**
+ * The patch set a conversation was opened on (patchsetOf, by the head its
+ * anchor names); undefined when that head is no patch set's (a viewed head
+ * nobody marked on). Its merge base and head are the diff its first
+ * question showed (CAR-53: a follow-up's hunk comes from there, whatever
+ * was pushed since).
+ */
+export function patchsetOpened(
+	anchor: { commit: string },
+	patchsets: readonly AnchorPatchset[] = [],
+	opened: AnchorOpened = {},
+): AnchorPatchset | undefined {
+	return patchsetOf(anchor.commit, patchsets, opened);
 }
 
 /**

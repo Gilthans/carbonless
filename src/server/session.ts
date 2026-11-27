@@ -50,6 +50,7 @@ import type {
 } from "../shared/types.js";
 import { join, phase, shared, waitOn, workOf } from "./activity.js";
 import { type AgentHost, reviewAgentHost } from "./agent/host.js";
+import { isSafePath } from "./agent/prompt.js";
 import { type AgentDiff, AgentDiffRequestError } from "./agent/reads.js";
 import { AgentThreadStore, type MovesCheck } from "./agent/store.js";
 import { ensureClone, ensureCommit, fetchPr } from "./clone.js";
@@ -58,6 +59,7 @@ import { contextLines, inDiffHunks } from "./diff/hunks.js";
 import {
 	blobName,
 	buildSnapshot,
+	fileSnapshot,
 	loadContext,
 	loadFileHunks,
 	loadHunksBatch,
@@ -178,6 +180,12 @@ interface CommentLeft {
 
 /** How long a failed compare stands before commentLeft asks again. */
 const COMMENT_LEFT_RETRY_MS = 30_000;
+/**
+ * How long a commit an agent's file snapshot couldn't fetch is taken as gone
+ * (CAR-53): its follow-ups answer at once with the notice, not after the
+ * fetch's timeout each time; a later one tries again.
+ */
+export const UNFETCHABLE_MS = 5 * 60_000;
 
 /** The write queue new threads share (one PR's: one at a time). */
 const NEW_THREADS = "new-threads";
@@ -464,6 +472,8 @@ export class Session {
 			viewer: this.viewer,
 			meta: () => this.#meta,
 			snapshot: () => this.#snapshot,
+			fileSnapshot: (base, head, path) =>
+				this.#agentFileSnapshot(base, head, path),
 			prFacts: async () => {
 				const o = await this.overview();
 				return { title: o.title, body: o.body };
@@ -1897,6 +1907,60 @@ export class Session {
 			this.#building.set(revision, building);
 		}
 		return building;
+	}
+
+	/**
+	 * A snapshot of `base`..`head` holding only `path`'s file, for an agent
+	 * conversation opened on an earlier comparison (CAR-53): fileSnapshot,
+	 * the page's renames, diff options and encoding for that one file;
+	 * `base` null: `head`'s merge base with the base branch, as a viewed
+	 * head's snapshot takes it (#headSnapshot). A commit the clone lacks
+	 * (a force-push dropped it) is fetched by OID (ensureCommit); one that
+	 * can't be is remembered for a while, so follow-ups don't each wait out
+	 * the fetch. Never kept (#snapshots, #building): an agent's read never
+	 * becomes a patch set or a write's target. Throws when it can't be read.
+	 */
+	async #agentFileSnapshot(
+		base: string | null,
+		head: string,
+		path: string,
+	): Promise<Snapshot> {
+		checkOid(head);
+		if (base !== null) checkOid(base);
+		if (!isSafePath(path)) throw new Error("its path isn't a safe one");
+		await this.#agentCommit(head);
+		const from =
+			base ??
+			(
+				await runGit(
+					this.repo,
+					["merge-base", `refs/remotes/origin/${this.#meta.baseBranch}`, head],
+					{ signal: this.#stop.signal },
+				)
+			).trim();
+		checkOid(from);
+		await this.#agentCommit(from);
+		return fileSnapshot(this.repo, from, head, path);
+	}
+
+	/** Commits an agent's file snapshot couldn't fetch, until when (ms). */
+	readonly #unfetchable = new Map<string, number>();
+
+	/** Throws unless `oid` is in the clone, fetched by OID if need be. */
+	async #agentCommit(oid: string): Promise<void> {
+		const until = this.#unfetchable.get(oid);
+		if (until !== undefined && Date.now() < until) {
+			throw new Error(`commit ${oid} can't be fetched (tried just now)`);
+		}
+		const signal = this.#stop.signal;
+		const present = await ensureCommit(this.repo, oid, signal);
+		if (present) {
+			this.#unfetchable.delete(oid);
+			return;
+		}
+		if (signal.aborted) throw new Error("this review is closing");
+		this.#unfetchable.set(oid, Date.now() + UNFETCHABLE_MS);
+		throw new Error(`commit ${oid} is not in crb's clone and can't be fetched`);
 	}
 
 	/** The engine's state-free result for `since` → `target`: cached, or computed once. */

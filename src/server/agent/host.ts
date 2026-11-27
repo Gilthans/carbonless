@@ -76,6 +76,7 @@ import {
 	type PromptMessage,
 	type PromptReview,
 	type PromptReviewEnvelope,
+	patchsetOpened,
 	sanitizeEnvelope,
 	sanitizeThirdParty,
 	takeSuggestion,
@@ -2146,9 +2147,25 @@ async function sessionSpanTurn(
 		facts.views().patchsets,
 		anchorOpened(thread),
 	);
+	// The hunk of the comparison it was opened on (its head, its patch
+	// set's merge base; a head no patch set has: that head's own merge
+	// base, as the page showed it), whatever was pushed since (CAR-53).
+	const base =
+		patchsetOpened(a, facts.views().patchsets, anchorOpened(thread))
+			?.mergeBase ?? null;
+	const [anchored, hunk] = await Promise.all([
+		facts.anchored(told).catch(() => null),
+		facts.hunk(a, base).then(
+			(text) => ({ text }),
+			(error: unknown) => ({ text: null, error: oneError(error) }),
+		),
+	]);
 	const notice = joinNotices([
 		thread.orphaned
 			? `The GitHub thread this conversation was about is gone (deleted, or no longer listed): it is a regular conversation on the thread's last known lines (${a.path} at ${a.commit || "an unknown commit"}).`
+			: undefined,
+		"error" in hunk && a.subject === "line"
+			? `The diff this conversation was opened on (${a.path}, ${base ?? "its merge base"}..${a.commit || "an unknown commit"}) can't be read now (${hunk.error}): \`hunk\` is missing; don't take the PR's current code for it.`
 			: undefined,
 		moved,
 	]);
@@ -2163,11 +2180,7 @@ async function sessionSpanTurn(
 		...(notice ? { notice } : {}),
 		...(pr ? { pr } : {}),
 	});
-	const [anchored, hunk] = await Promise.all([
-		facts.anchored(told).catch(() => null),
-		facts.hunk(a).catch(() => null),
-	]);
-	return { envelope, anchored, hunk };
+	return { envelope, anchored, hunk: hunk.text };
 }
 
 /**
@@ -2385,6 +2398,45 @@ export function buildAgentHost(o: {
 const OID = /^[0-9a-f]{40}([0-9a-f]{24})?$/;
 
 /**
+ * The hunks of `anchor.path` in `mergeBase`..`anchor.commit` (anchorHunk),
+ * as the page builds them (loadFileHunks): from the current snapshot when
+ * it is that comparison, else from a snapshot of that one file
+ * (src.fileSnapshot: never kept); null when the comparison doesn't change it.
+ */
+async function comparisonHunks(
+	src: Pick<ReviewAgentSource, "repo" | "snapshot"> &
+		Partial<Pick<ReviewAgentSource, "fileSnapshot">>,
+	anchor: Extract<AgentAnchor, { subject: "line" }>,
+	mergeBase: string | null | undefined,
+): Promise<{ lines: DiffLine[] }[] | null> {
+	const current = src.snapshot();
+	const head = anchor.commit;
+	let snapshot: Snapshot;
+	if (
+		current.head === head &&
+		(mergeBase == null || mergeBase === current.base)
+	) {
+		snapshot = current;
+	} else {
+		if (!OID.test(head)) throw new Error("its commit is unknown");
+		if (mergeBase != null && !OID.test(mergeBase)) {
+			throw new Error("its merge base is unknown");
+		}
+		if (!src.fileSnapshot) {
+			throw new Error("only the current diff can be read");
+		}
+		snapshot = await src.fileSnapshot(mergeBase ?? null, head, anchor.path);
+	}
+	const file = snapshot.files.find(
+		(f) => f.path === anchor.path || f.oldPath === anchor.path,
+	);
+	if (!file) return null;
+	return (
+		await loadFileHunks(src.repo, snapshot, file.index, { headings: false })
+	).hunks;
+}
+
+/**
  * The newest patch set before `head` (a patch set's number; null: a head
  * after them all): the page's default since view (defaultBase), what
  * "since your last pass" compares from. Null when none is before it.
@@ -2396,6 +2448,7 @@ function sinceOf(
 	const before = patchsets.filter((p) => head === null || p.number < head);
 	return before.at(-1)?.number ?? null;
 }
+
 /** The anchored file is sent up to this size (bytes); past it, or binary, not at all. */
 const MAX_ANCHORED = 256 * 1024;
 /** Lines of the hunk kept on each side of the anchor. */
@@ -2410,6 +2463,20 @@ export interface ReviewAgentSource {
 	viewer: string;
 	meta(): PrMeta;
 	snapshot(): Snapshot;
+	/**
+	 * A snapshot of `base`..`head` holding only the file whose path or old
+	 * path is `path` (diff/snapshot.ts fileSnapshot: the page's renames,
+	 * diff options and encoding), an earlier comparison an agent
+	 * conversation was opened on (CAR-53); `base` null: `head`'s own merge
+	 * base with the base branch. Fetches a commit the clone lacks (a
+	 * force-push dropped it). Never kept, so it never becomes a patch set or
+	 * a write's target. Throws when it can't be read.
+	 */
+	fileSnapshot(
+		base: string | null,
+		head: string,
+		path: string,
+	): Promise<Snapshot>;
 	prFacts(): Promise<{ title: string; body: string }>;
 	code(anchor: CodeAnchor): Promise<CodeWindow | null>;
 	/** The PR's review threads as read from GitHub (their summaries), at most `maxAgeMs` old (default: any). */
@@ -2648,7 +2715,7 @@ export function reviewAgentHost(src: ReviewAgentSource): AgentHost {
 			files: src.snapshot().files.map((f) => f.path),
 		}),
 		anchored: (anchor) => anchoredFile(src, anchor),
-		hunk: (anchor) => anchorHunk(src, anchor),
+		hunk: (anchor, mergeBase) => anchorHunk(src, anchor, mergeBase),
 		authorOf: async (login) =>
 			authorOf(login, { viewer: src.viewer, prAuthor: await prAuthor() }),
 		join: (folds) => joinRead(folds, () => src.threads()),
@@ -2775,23 +2842,25 @@ export async function anchoredFile(
 }
 
 /**
- * The snapshot's diff hunk around a line anchor, as unified diff text,
- * HUNK_CONTEXT lines each side of the anchored range; null for a file
- * anchor, an unsafe path or a file the snapshot doesn't change.
+ * The diff hunk around a stored line anchor, as unified diff text,
+ * HUNK_CONTEXT lines each side of the anchored range, from the comparison
+ * it was opened on (CAR-53): `mergeBase`..`anchor.commit`, `mergeBase`
+ * null for the head's own merge base. The current snapshot when that is
+ * it (as on a first question, or `mergeBase` undefined); else that one
+ * file's snapshot (src.fileSnapshot). Null for a file anchor, an unsafe path or a
+ * file that comparison doesn't change. Throws, without a git read for a
+ * commit that isn't an OID, when that comparison can't be read: never the
+ * current snapshot's code in its place, whose lines may be other lines.
  */
 export async function anchorHunk(
-	src: Pick<ReviewAgentSource, "repo" | "snapshot">,
+	src: Pick<ReviewAgentSource, "repo" | "snapshot"> &
+		Partial<Pick<ReviewAgentSource, "fileSnapshot">>,
 	anchor: AgentAnchor,
+	mergeBase?: string | null,
 ): Promise<string | null> {
 	if (anchor.subject !== "line" || !isSafePath(anchor.path)) return null;
-	const snapshot = src.snapshot();
-	const file = snapshot.files.find(
-		(f) => f.path === anchor.path || f.oldPath === anchor.path,
-	);
-	if (!file) return null;
-	const { hunks } = await loadFileHunks(src.repo, snapshot, file.index, {
-		headings: false,
-	});
+	const hunks = await comparisonHunks(src, anchor, mergeBase);
+	if (!hunks) return null;
 	const numberOf = (l: DiffLine, side: "LEFT" | "RIGHT") =>
 		side === "LEFT" ? l.oldNo : l.newNo;
 	const touches = (l: DiffLine) => {
