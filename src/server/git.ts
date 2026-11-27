@@ -229,6 +229,8 @@ export function runGitFull(
 			// An untimed one stays in ours and goes with a Ctrl-C; a timed one
 			// is killed when crb exits (killDetachedGits).
 			detached: opts.timeoutMs !== undefined,
+			// Windows: a detached console child would get a window of its own.
+			windowsHide: true,
 		});
 		if (opts.timeoutMs !== undefined) trackDetached(child);
 		running.set(child, args);
