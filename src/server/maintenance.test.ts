@@ -1,5 +1,11 @@
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import {
+	existsSync,
+	mkdirSync,
+	mkdtempSync,
+	readdirSync,
+	rmSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -181,6 +187,73 @@ describe("clone maintenance", () => {
 			).toBe("");
 		},
 	);
+
+	it("keeps a review's old commits once a rewrite of its ref (compaction) leaves them unreachable, packed or loose", async () => {
+		const grown = grow(tmp, 4);
+		const { clone } = grown;
+		const ident = ["-c", "user.name=crb", "-c", "user.email=crb@crb"];
+		const empty = git(
+			clone,
+			["hash-object", "-t", "tree", "-w", "--stdin"],
+			"",
+		);
+		/** A chain of `n` event commits on `ref`; returns them oldest first. */
+		const chain = (ref: string, n: number) => {
+			const commits: string[] = [];
+			for (let i = 0; i < n; i++) {
+				const parent = commits.at(-1);
+				commits.push(
+					git(clone, [
+						...ident,
+						"commit-tree",
+						empty,
+						...(parent ? ["-p", parent] : []),
+						"-m",
+						`crb: ${ref} ${i}`,
+					]),
+				);
+			}
+			git(clone, ["update-ref", ref, commits.at(-1) as string]);
+			return commits;
+		};
+		/** Rewrites `ref` to one new commit, as compaction does (compare-and-swap). */
+		const compact = (ref: string, old: string) => {
+			const single = git(clone, [
+				...ident,
+				"commit-tree",
+				empty,
+				"-m",
+				`crb: ${ref} compacted`,
+			]);
+			git(clone, ["update-ref", ref, single, old]);
+		};
+		// Packed while reachable (its own small pack, as a fetch of a
+		// review's refs brings it), then made unreachable.
+		const packed = chain("refs/crb/reviews/p/meta", 5);
+		const name = git(
+			clone,
+			["pack-objects", "--quiet", join("objects", "pack", "pack")],
+			`${packed.join("\n")}\n`,
+		);
+		git(clone, ["prune-packed"]);
+		const ownPack = `pack-${name}.pack`;
+		compact("refs/crb/reviews/p/meta", packed.at(-1) as string);
+		// Still loose when it becomes unreachable.
+		const loose = chain("refs/crb/reviews/l/meta", 5);
+		compact("refs/crb/reviews/l/meta", loose.at(-1) as string);
+		const packs = () => readdirSync(join(clone, "objects", "pack"));
+		expect(packs()).toContain(ownPack);
+
+		expect(await maintainClone(clone)).toMatchObject({ ran: true });
+		expect((await countObjects(clone)).loose).toBe(0);
+		// That pack was rolled up (its objects copied, the pack deleted),
+		// its unreachable commits with it.
+		expect(packs()).not.toContain(ownPack);
+		expect(missing(clone, [...packed, ...loose])).toEqual([]);
+		expect(
+			missing(clone, [...grown.dangling, ...grown.looseUnreachable]),
+		).toEqual([]);
+	});
 
 	it("runs at most once a day per clone, and records when", async () => {
 		const { clone } = grow(tmp, 2);
