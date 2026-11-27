@@ -146,9 +146,11 @@ const isGet = (r: Request, endpoint: string) =>
 /**
  * A first verdict that lands starts patch set 1: the page reads its session
  * again, and once that is back it asks the verdict facts again under the
- * new head key. Between the two the buttons wait ("Comparing with your
- * verdict", aria-disabled) and drop a press (CAR-303). Call it before
- * pressing the first verdict; await what it returns before the next press.
+ * new head key. Between the two the buttons used to wait ("Comparing with
+ * your verdict", aria-disabled) and drop a press (CAR-303); since CAR-309
+ * they stay live (a verdict on the head itself has nothing to compare), and
+ * this keeps the next press on settled reads. Call it before pressing the
+ * first verdict; await what it returns before the next press.
  */
 function comparedAgain(page: Page, card: Locator): () => Promise<void> {
 	let sessionBack = false;
