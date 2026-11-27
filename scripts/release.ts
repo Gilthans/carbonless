@@ -70,13 +70,7 @@
 // scripts/rc-fixup.mjs, with no dependencies, for the jobs that hold npm's
 // OIDC credential.)
 import { execFileSync, spawn } from "node:child_process";
-import {
-	existsSync,
-	mkdirSync,
-	mkdtempSync,
-	readFileSync,
-	writeFileSync,
-} from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { createInterface } from "node:readline/promises";
