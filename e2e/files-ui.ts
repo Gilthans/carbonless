@@ -60,14 +60,20 @@ const narrow = (page: Page) => (page.viewportSize()?.width ?? 1280) < 768;
  * reason still fails), the page scrolls to its end, where the diff's
  * bottom room keeps every card clear of it. Tried again until the tap
  * lands: it can hide just after a look found it shown (a jump's scroll
- * settling a card under it).
+ * settling a card under it). A try whose tap landed just as its timeout ran
+ * out (a loaded machine) still opened the sheet: the next try sees it open
+ * and stops, rather than tapping a button the sheet now covers (CAR-239).
+ * Only after a tap of its own: a sheet an earlier step left open still fails.
  */
 export async function tapFilesButton(page: Page) {
 	const button = page.getByRole("button", { name: "Files", exact: true });
 	const any = page.locator(
 		'button[aria-label="Files"][aria-haspopup="dialog"]',
 	);
+	const sheet = page.getByRole("dialog", { name: "Files" });
+	let tapped = false;
 	await expect(async () => {
+		if (tapped && (await sheet.isVisible())) return;
 		const why = await any.getAttribute("data-fab-hidden", { timeout: 1000 });
 		if (why !== null) {
 			expect(why, "the Files button is hidden only by a card under it").toBe(
@@ -77,6 +83,8 @@ export async function tapFilesButton(page: Page) {
 				window.scrollTo(0, document.documentElement.scrollHeight),
 			);
 		}
+		// Set before the tap: one that times out may still have landed.
+		tapped = true;
 		await button.click({ timeout: 1000 });
 	}).toPass({ timeout: 10_000 });
 }
