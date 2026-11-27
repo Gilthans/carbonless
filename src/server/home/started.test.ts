@@ -1,6 +1,7 @@
 import { execFileSync } from "node:child_process";
 import { mkdirSync, rmSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { pathToFileURL } from "node:url";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { testGitEnv } from "../../../test/git-fixture";
 import { createPrFixture, type PrFixture } from "../../../test/pr-fixture";
@@ -382,13 +383,12 @@ describe("StartedReviews", () => {
 		// Another process, as the crb CLI writes: its own RefStore.
 		const repo = await ensureClone("acme", "widget");
 		const script = [
-			`import { RefStore } from ${JSON.stringify(join(SRC, "review/refStore.ts"))};`,
-			`import { ReviewService } from ${JSON.stringify(join(SRC, "review/reviews.ts"))};`,
-			`import { closeCatFiles } from ${JSON.stringify(join(SRC, "catFile.ts"))};`,
+			`import { RefStore } from ${JSON.stringify(pathToFileURL(join(SRC, "review/refStore.ts")).href)};`,
+			`import { ReviewService } from ${JSON.stringify(pathToFileURL(join(SRC, "review/reviews.ts")).href)};`,
+			// Its cat-file needs no closing: unreferenced, it ends with the process.
 			`const reviews = new ReviewService(new RefStore(${JSON.stringify(repo)}));`,
 			`const id = await reviews.findOrCreateReview(${JSON.stringify({ ...PR, number: 300, url: `${PR.url}300` })}, "octo");`,
 			`await reviews.recordStates(id, "octo", ${JSON.stringify(snap)}, [{ key: ${JSON.stringify(keys()[0])}, state: "reviewed" }]);`,
-			"await closeCatFiles();",
 		].join("\n");
 		execFileSync(
 			process.execPath,

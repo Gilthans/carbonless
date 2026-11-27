@@ -3,6 +3,7 @@ import { readdir } from "node:fs/promises";
 import { join } from "node:path";
 import type { Coverage } from "../../shared/home.js";
 import type { Snapshot } from "../../shared/types.js";
+import { clonePath } from "../clone.js";
 import { buildSnapshot } from "../diff/snapshot.js";
 import { cacheDir } from "../paths.js";
 import { buildReviewView } from "../review/coverage.js";
@@ -26,6 +27,17 @@ const MAX_SNAPSHOTS = 64;
 
 /** `<cache>/carbonless/repos`, where every clone lives. */
 const reposDir = () => join(cacheDir(), "repos");
+
+/** The clone of `owner/repo`, or null when that names none. */
+function cloneOf(only: string): string | null {
+	const [owner = "", repo = "", ...rest] = only.split("/");
+	if (rest.length > 0) return null;
+	try {
+		return clonePath(owner, repo);
+	} catch {
+		return null;
+	}
+}
 
 /**
  * The share a row shows: reviewed out of what isn't crossed off, in lines.
@@ -160,7 +172,7 @@ export class StartedReviews {
 	): Promise<StartedReview[]> {
 		const root = reposDir();
 		const repos = only
-			? [join(root, `${only.toLowerCase()}.git`)].filter((r) => existsSync(r))
+			? [cloneOf(only)].filter((r): r is string => r !== null && existsSync(r))
 			: (
 					await Promise.all(
 						(

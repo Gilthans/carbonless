@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { mkdir, readdir, readFile, rename, writeFile } from "node:fs/promises";
-import { basename, dirname, join } from "node:path";
+import { basename, dirname, join, resolve, sep } from "node:path";
 import { ulid } from "ulid";
 import { type LineRanges, parseRanges, size } from "../../shared/lineRanges.js";
 import { changeFor, fitRanges, sinceMarkKey } from "../../shared/pieces.js";
@@ -916,9 +916,24 @@ export function listReviews(repoDir: string): Promise<StoredReview[]> {
 /** A GitHub owner or repository name, as a clone's directory names it. */
 const CLONE_NAME = /^[a-z0-9_-][a-z0-9._-]*$/;
 
-/** `<cacheRoot>/review-clones/<id>`: which clone holds the review (a hint). */
-const hintFile = (cacheRoot: string, id: string) =>
-	join(cacheRoot, "review-clones", id);
+/** `<cacheRoot>/review-clones/<id>`: which clone holds the review (a hint); null for no review id. */
+function hintFile(cacheRoot: string, id: string): string | null {
+	const dir = resolve(cacheRoot, "review-clones");
+	const file = resolve(dir, id);
+	return REVIEW_ID.test(id) && file.startsWith(dir + sep) ? file : null;
+}
+
+/** `<cacheRoot>/repos/<owner>/<repo>.git`, or null for names that aren't a clone's. */
+function cloneDir(
+	cacheRoot: string,
+	owner: string,
+	repo: string,
+): string | null {
+	if (!CLONE_NAME.test(owner) || !CLONE_NAME.test(repo)) return null;
+	const root = resolve(cacheRoot, "repos");
+	const dir = resolve(root, owner, `${repo}.git`);
+	return dir.startsWith(root + sep) ? dir : null;
+}
 
 /**
  * Notes that clone `<owner>/<repo>` holds review `id`, so findReviewById
@@ -933,12 +948,11 @@ export async function rememberReviewClone(
 	repo: string,
 ): Promise<void> {
 	const name = `${owner.toLowerCase()}/${repo.toLowerCase()}`;
-	const [o = "", r = ""] = name.split("/");
-	if (!REVIEW_ID.test(id) || !CLONE_NAME.test(o) || !CLONE_NAME.test(r)) {
+	const file = hintFile(cacheRoot, id);
+	if (!file || !cloneDir(cacheRoot, owner.toLowerCase(), repo.toLowerCase())) {
 		return;
 	}
 	try {
-		const file = hintFile(cacheRoot, id);
 		const known = await readFile(file, "utf8").catch(() => null);
 		if (known === name) return;
 		await mkdir(join(cacheRoot, "review-clones"), { recursive: true });
@@ -959,20 +973,15 @@ async function findByHint(
 	cacheRoot: string,
 	id: string,
 ): Promise<{ repoDir: string; review: StoredReview } | null> {
-	const name = (
-		await readFile(hintFile(cacheRoot, id), "utf8").catch(() => "")
-	).trim();
+	const file = hintFile(cacheRoot, id);
+	if (!file) return null;
+	const name = (await readFile(file, "utf8").catch(() => "")).trim();
 	const [owner = "", repo = "", ...rest] = name.split("/");
-	if (
-		rest.length > 0 ||
-		!CLONE_NAME.test(owner) ||
-		!CLONE_NAME.test(repo) ||
-		owner === ".." ||
-		repo === ".."
-	) {
-		return null;
-	}
-	const repoDir = join(cacheRoot, "repos", owner, `${repo}.git`);
+	const repoDir =
+		rest.length === 0 && owner !== ".." && repo !== ".."
+			? cloneDir(cacheRoot, owner, repo)
+			: null;
+	if (!repoDir) return null;
 	try {
 		const tip = await readRef(repoDir, `refs/crb/reviews/${id}/meta`);
 		if (!tip || tip.type !== "commit") return null;

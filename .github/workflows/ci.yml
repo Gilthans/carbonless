@@ -116,7 +116,7 @@ jobs:
         timeout-minutes: 2
         run: node scripts/spawn-cost.mjs 30
       - id: tests
-        run: pnpm exec vitest run src/server/agent/acp.test.ts src/server/agent/runner.test.ts src/server/update/updateHelper.test.ts src/server/update/install.test.ts src/server/catFile.test.ts src/server/review/refFiles.test.ts
+        run: pnpm exec vitest run src/server/agent/acp.test.ts src/server/agent/runner.test.ts src/server/update/updateHelper.test.ts src/server/update/install.test.ts src/server/catFile.test.ts src/server/gitFiles.test.ts
         env:
           CRB_TEST_JSON: ${{ runner.temp }}/test-outcomes/report.json
       # As in checks (docs/ci-flakes.md): labels failures, never passes the job.
