@@ -1805,6 +1805,49 @@ describe("GoneFile: a whole file undone since the compared patch set", () => {
 		});
 	});
 
+	it('its header shows the gone count, and no chip at all for zero, never "0 gone" (CAR-319)', () => {
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async () => new Response(JSON.stringify({}), { status: 200 })),
+		);
+		const client = new QueryClient({
+			defaultOptions: { queries: { retry: false } },
+		});
+		const shown = (gone: number) => (
+			<QueryClientProvider client={client}>
+				<GoneFile
+					index={3}
+					path="src/undone.ts"
+					revision="r2"
+					since={1}
+					info={{
+						kinds: new Map(),
+						conflict: false,
+						counts: {
+							reworked: 0,
+							new: 0,
+							gone,
+							carried: 0,
+							reverted: gone === 0 ? 1 : 0,
+							removed: 0,
+							unticked: 0,
+						},
+						left: { units: 1, lines: 1 },
+					}}
+				/>
+			</QueryClientProvider>
+		);
+		const { rerender } = render(shown(2));
+		const chips = () =>
+			screen
+				.getByTestId("since-chips")
+				.querySelectorAll('[data-testid="kind-chip"]');
+		expect([...chips()].map((c) => c.textContent)).toEqual(["2 gone"]);
+		rerender(shown(0));
+		expect(chips()).toHaveLength(0);
+		expect(screen.queryByText(/0 gone/)).toBeNull();
+	});
+
 	it("its header marks every piece at once, closed: ✓ reviews them, ⊘ crosses them off (CAR-155)", async () => {
 		const posts: { changes: unknown[] }[] = [];
 		vi.stubGlobal(

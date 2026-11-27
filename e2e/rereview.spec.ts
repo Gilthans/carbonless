@@ -2869,6 +2869,66 @@ test("a file deleted since the last review keeps its header's ✓ and ⊘: ✓ m
 	await expect(progress(page)).toHaveAttribute("aria-valuenow", "100");
 });
 
+test("a file undone since the last review shows no chip for a zero count: none for an unreviewed file's undone edit, and none once its gone work is marked (CAR-319)", async ({
+	page,
+	pr,
+	startCrb,
+}) => {
+	// A review, a push and the engine's answer: past the default budget on a loaded machine.
+	test.slow();
+	const lines = Array.from({ length: 6 }, (_, i) => `line ${i + 1}`);
+	const base = { "notes.txt": text(lines), "done.txt": text(lines) };
+	const p = await pr({
+		base,
+		files: [
+			{
+				message: "Edit both",
+				files: {
+					"notes.txt": edit(lines, { 2: "line 2 changed" }),
+					"done.txt": edit(lines, { 4: "line 4 changed" }),
+				},
+			},
+		],
+	});
+	const s = await startCrb();
+	await openFiles(page, s.url);
+	// PS1: done.txt reviewed, notes.txt left unread.
+	const review = fileActionButton(
+		fileSection(page, "done.txt"),
+		"Mark remaining reviewed",
+	);
+	await clicksReady(page, review);
+	await review.click();
+	await expect(
+		fileActionButton(fileSection(page, "done.txt"), "Unmark reviewed"),
+	).toBeVisible();
+	await expect(page.getByTestId("sync-notices")).toHaveCount(0);
+	// The push takes both edits back out: both files are undone since PS1.
+	p.moveHead({ message: "Undo both", files: base });
+	await page.reload();
+	await expect(tail(page)).toHaveAttribute("data-state", "head", GIT_WAIT);
+	await toast(page).getByRole("button", { name: "View" }).click();
+	await expect(
+		node(page, "ps1").getByRole("button", { name: "comparison base" }),
+	).toBeVisible();
+	const notes = fileSection(page, "notes.txt");
+	const done = fileSection(page, "done.txt");
+	await expect(notes).toHaveAttribute("data-gone-file", "notes.txt", GIT_WAIT);
+	await expect(done).toHaveAttribute("data-gone-file", "done.txt");
+	// The reviewed edit undone: "1 gone".
+	await expect(chips(done)).toHaveText(["1 gone"]);
+	// The unread edit undone is no gone work: no chip at all, never "0 gone".
+	await expect(chips(notes)).toHaveCount(0);
+	// done.txt's gone work marked: its count is zero, so no chip.
+	const mark = fileActionButton(done, "Mark remaining reviewed");
+	await clicksReady(page, mark);
+	await mark.click();
+	await expect(fileActionButton(done, "Unmark reviewed")).toBeVisible();
+	await expect(page.getByTestId("sync-notices")).toHaveCount(0, GIT_WAIT);
+	await expect(chips(done)).toHaveCount(0);
+	await expect(chips(notes)).toHaveCount(0);
+});
+
 /** Push 2'': A reworked, B reverted (gone, a removed piece), D new in util.ts. */
 const reworkRevert = {
 	message: "rework and revert",

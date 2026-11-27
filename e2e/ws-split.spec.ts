@@ -947,7 +947,7 @@ test("the since view: a re-indent across an accidental unchanged line of markup 
 	await expect(page.getByTestId("ws-left-out")).toHaveCount(0);
 });
 
-test("the since view: a re-indent of markup nobody marked in PS1 still counts with the switch on (principle 2)", async ({
+test("the since view: a re-indent of markup nobody marked in PS1, whitespace only against the base too, is left out with the switch on, as in the full diff (CAR-319)", async ({
 	page,
 	pr,
 	startCrb,
@@ -963,14 +963,11 @@ test("the since view: a re-indent of markup nobody marked in PS1 still counts wi
 	// interdiff's rows, they also cut PS1's `<Title />` off as a piece.
 	await expect(bar).toContainText("0 / 7 clusters reviewed");
 	await ignoreWhitespace(page, true);
-	// On: the orphan pieces (a re-indent against the base, as the full
-	// diff reads them) are left out, and so is the since piece that only
-	// re-indents base lines PS1 left alone (git kept them, byte-equal at
-	// PS1's depth: nothing to read there, as in the full diff; owner
-	// 2026-11-23); all are the card's one cluster, so the `~` says one.
-	// Its other three since pieces, re-indents of lines PS1 changed and
-	// nobody marked, still count with the note.
-	await expect(bar).toContainText("0 / 4 clusters reviewed");
+	// On: the card is whitespace only against the base (depth 2 to 6), so
+	// the full diff has nothing to read there, and neither does the since
+	// view: its pieces, read in PS1 or not, and the orphans are all left
+	// out (the card's one cluster: the `~` says one). Only the note counts.
+	await expect(bar).toContainText("0 / 1 cluster reviewed");
 	await expect(
 		page
 			.locator("[data-page-bar]")
@@ -978,17 +975,97 @@ test("the since view: a re-indent of markup nobody marked in PS1 still counts wi
 				'[data-testid="ws-left-out"][aria-label="1 whitespace-only cluster not counted"]',
 			),
 	).toBeVisible();
-	// Nor are the counted ones collapsed: they show, `~` rows open; only
-	// the left-alone piece and the two orphans are whitespace-only rows.
+	// The card reads quiet: whitespace-only rows, no added or removed rows.
 	const cardSection = fileSection(page, CARD);
 	await opened(cardSection);
+	await expect(cardSection.getByTestId("ws-cluster").first()).toBeVisible();
 	await expect(
-		cardSection.locator('[data-testid="diff-line"][data-kind="ws"]').first(),
-	).toBeVisible();
-	await expect(cardSection.getByTestId("ws-cluster")).toHaveCount(3);
+		cardSection.locator('[data-testid="diff-line"][data-kind="add"]'),
+	).toHaveCount(0);
+	await expect(
+		cardSection.locator('[data-testid="diff-line"][data-kind="del"]'),
+	).toHaveCount(0);
 	// Off: everything counts.
 	await ignoreWhitespace(page, false);
 	await expect(bar).toContainText("0 / 7 clusters reviewed");
+	await expect(page.getByTestId("ws-left-out")).toHaveCount(0);
+});
+
+test("the since view: a .txt line PS1 only re-indented, nobody marked, re-indented again since is nothing to read with the switch on, as in the full diff (CAR-319)", async ({
+	page,
+	pr,
+	startCrb,
+}) => {
+	// A review, a push and the engine's answer: past the default budget on a loaded machine.
+	test.slow();
+	const notes = "notes.txt";
+	const real = "real.txt";
+	const at = (indent: string) =>
+		text([
+			"Shift report",
+			`${indent}Count from the scanner.`,
+			`${indent}Includes children.`,
+			"End",
+		]);
+	// PS1 only re-indents notes.txt (whitespace only against the base),
+	// left unmarked; real.txt's change is reviewed.
+	const p = await pr({
+		base: { [notes]: at("    "), [real]: note("two", "seven") },
+		files: [
+			{
+				message: "Re-indent, edit",
+				files: { [notes]: at("  "), [real]: note("two!", "seven") },
+			},
+		],
+	});
+	const s = await startCrb();
+	await openFiles(page, s.url);
+	const realSection = fileSection(page, real);
+	await opened(realSection);
+	await marksReady(page, realSection);
+	await expect(boxes(realSection)).toHaveCount(1);
+	await boxes(realSection).first().click();
+	await expect(header(realSection)).toHaveAttribute("data-finished");
+	await expect(page.getByTestId("sync-notices")).toHaveCount(0);
+	// PS2 re-indents notes.txt again (still whitespace only against the
+	// base) and edits real.txt for real.
+	p.moveHead({
+		message: "Re-indent again, edit",
+		files: { [notes]: at("   "), [real]: note("two!", "seven!") },
+	});
+	await page.reload();
+	await expect(page.getByTestId("ps-tail")).toHaveAttribute(
+		"data-state",
+		"head",
+		GIT_WAIT,
+	);
+	await page
+		.getByTestId("head-toast")
+		.getByRole("button", { name: "View" })
+		.click();
+	await expect(page).toHaveURL(/head=[0-9a-f]{40}/);
+	const bar = progress(page);
+	// Off: the re-indent counts with the edit.
+	await expect(bar).toContainText(/0 \/ \d+ clusters reviewed/);
+	await expect(bar).not.toContainText("0 / 1 cluster reviewed");
+	// On: the full diff reads notes.txt as whitespace only, and so does
+	// the since view: only real.txt's edit is left to read.
+	await ignoreWhitespace(page, true);
+	await expect(bar).toContainText("0 / 1 cluster reviewed");
+	await expect(page.getByTestId("to-read")).toHaveText(/(^|\s)1 to read$/);
+	await expect(leftOut(page)).toBeVisible();
+	const notesSection = fileSection(page, notes);
+	await opened(notesSection);
+	await expect(notesSection.getByTestId("ws-cluster").first()).toBeVisible();
+	await expect(
+		notesSection.locator('[data-testid="diff-line"][data-kind="add"]'),
+	).toHaveCount(0);
+	await expect(
+		notesSection.locator('[data-testid="diff-line"][data-kind="del"]'),
+	).toHaveCount(0);
+	// Off again: it counts.
+	await ignoreWhitespace(page, false);
+	await expect(bar).not.toContainText("0 / 1 cluster reviewed");
 	await expect(page.getByTestId("ws-left-out")).toHaveCount(0);
 });
 
