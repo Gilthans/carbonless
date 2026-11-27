@@ -92,6 +92,40 @@ one side shows `–`, not a 0. `--only` goes with neither
 `--compare-version` nor `--jaeger`, and test runs refuse all three.
 The tracer reads the build only when tracing is on.
 
+### Loading steps (CAR-296)
+
+What a slow load says beside its spinner (`docs/product-rules.md`, "A
+slow wait says what it waits on") is the span name of the step the
+request is on, through a fixed map (`stepLabel`, `src/shared/activity.ts`),
+so what the reviewer sees is what `pnpm test-profile` shows. Steps are
+kept whether tracing is on or not (`src/server/activity.ts`).
+
+| Span | Shown |
+| --- | --- |
+| `gh <cmd>` (`gh pr view`) | `GitHub: <cmd>` (`GitHub: pr view`) |
+| `gh api <path>` | `GitHub: api <path>`, any segment but crb's API words as `…` |
+| `git <cmd>` | `git <cmd>` |
+| `crb: clone` | `Cloning <owner/repo>…` (the first clone; the page and `crb <pr>` keep CAR-291's wording) |
+| `crb: fetch pr` | `Fetching the PR` |
+| `crb: snapshot` | `Reading the diff` |
+| `crb: split carries` | `Carrying review marks` |
+| `crb: fetch commits` | `Fetching dropped commits` |
+| `crb: home list` | `GitHub: PR list, page <n>` |
+| `crb: home details` | `GitHub: PR details <n> of <m>` |
+| `crb: since` | `Computing the since view` |
+| `crb: repo lock` (a wait, no span) | `Waiting for the repo lock` (held by another crb) |
+| `crb: working` (a wait, no span) | `Working…` (shared work showing no step) |
+
+A named phase (`crb: …`) hides the gh and git calls under it; the
+innermost step shown is the newest phase or wait, else the newest call.
+The `crb: …` phases are spans too while tracing, the calls under them
+nested. Since CAR-296, `crb: clone` spans only a first clone (it used to
+wrap every open's `ensureClone`, its lock and checks included: an open
+of a cloned repo now has no `crb: clone` span), and `crb: fetch pr` is
+fetchPr's own, under the repo lock, so a head check's fetch has one too.
+Compare runs from before that change by `git fetch` rather than by
+these spans.
+
 ### Browser spans (CAR-288)
 
 While `crb serve` traces, the pages it serves record what the reviewer

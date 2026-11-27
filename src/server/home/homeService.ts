@@ -6,6 +6,7 @@ import type {
 	Person,
 	RepoHome,
 } from "../../shared/home.js";
+import { join, shared, waitOn, workOf } from "../activity.js";
 import { slugify } from "../slug.js";
 import { ViewerCache } from "../viewerCache.js";
 import {
@@ -366,24 +367,31 @@ export class HomeService {
 			opts.fresh ||
 			this.#now() - state.checkedAt >= period
 		) {
-			state.reading ??= this.#read(name, state).finally(() => {
-				state.reading = null;
-				state.bump();
-			});
-			if (state.listedAt !== undefined || opts.whole) await state.reading;
+			// Shared: every ask waiting on it shows its step (activity.ts).
+			state.reading ??= shared(() =>
+				this.#read(name, state).finally(() => {
+					state.reading = null;
+					state.bump();
+				}),
+			);
+			const reading = state.reading;
+			if (state.listedAt !== undefined || opts.whole) await join(reading);
 			// Seen as much or more (a page from before a restart, whose read
 			// was further along): wait for the next batch too, never an
 			// answer with fewer rows at once.
 			else if (state.progress <= (opts.seen ?? 0)) {
 				let timer: ReturnType<typeof setTimeout> | undefined;
-				await Promise.race([
-					state.reading,
-					state.progressed,
-					new Promise<void>((resolve) => {
-						timer = setTimeout(resolve, PROGRESS_WAIT_MS);
-						timer.unref?.();
-					}),
-				]);
+				await waitOn(
+					Promise.race([
+						reading,
+						state.progressed,
+						new Promise<void>((resolve) => {
+							timer = setTimeout(resolve, PROGRESS_WAIT_MS);
+							timer.unref?.();
+						}),
+					]),
+					() => workOf(reading),
+				);
 				clearTimeout(timer);
 			}
 		}

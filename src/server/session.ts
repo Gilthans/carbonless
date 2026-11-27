@@ -48,6 +48,7 @@ import type {
 	VerdictFacts,
 	VerdictRequest,
 } from "../shared/types.js";
+import { join, phase, shared, waitOn, workOf } from "./activity.js";
 import { type AgentHost, reviewAgentHost } from "./agent/host.js";
 import { type AgentDiff, AgentDiffRequestError } from "./agent/reads.js";
 import { AgentThreadStore, type MovesCheck } from "./agent/store.js";
@@ -138,7 +139,7 @@ import {
 	setResolved,
 	type ThreadWriteTarget,
 } from "./threadWrites.js";
-import { type Tracer, tracer } from "./trace.js";
+import { tracer } from "./trace.js";
 import {
 	mapVerdict,
 	ruleOf,
@@ -630,12 +631,12 @@ export class Session {
 		// Opt-in ($CRB_TRACE_DIR): the open, with its slow steps under it.
 		const traced = tracer();
 		if (!traced.enabled) {
-			return Session.openReview(arg, cwd, progress, options, traced);
+			return Session.openReview(arg, cwd, progress, options);
 		}
 		const span = traced.start("crb: open review");
 		try {
 			return await traced.run(span, () =>
-				Session.openReview(arg, cwd, progress, options, traced),
+				Session.openReview(arg, cwd, progress, options),
 			);
 		} catch (error) {
 			span.end(undefined, (error as Error).message);
@@ -655,13 +656,11 @@ export class Session {
 		cwd: string,
 		progress: (message: string) => void,
 		options: SessionOptions,
-		traced: Tracer,
 	): Promise<Session> {
-		const step = <T>(name: string, run: () => Promise<T>): Promise<T> => {
-			if (!traced.enabled) return run();
-			const span = traced.start(name);
-			return traced.run(span, run).finally(() => span.end());
-		};
+		// Named phases: a span each when tracing, and the step a request
+		// waiting on the open shows (activity.ts).
+		const step = <T>(name: string, run: () => Promise<T>): Promise<T> =>
+			phase(name, {}, run);
 		// No `gh auth status` first: a logged-out gh fails the first call
 		// below as "not logged in" all the same (runGh), and that check was
 		// 0.7 s before anything else on a real open.
@@ -684,10 +683,8 @@ export class Session {
 			meta = { ...meta, headOid, state: "OPEN" };
 		}
 		const [repo, pinned] = await Promise.all([
-			step("crb: clone", () =>
-				ensureClone(meta.owner, meta.repo, () =>
-					progress(`cloning ${meta.owner}/${meta.repo}…`),
-				),
+			ensureClone(meta.owner, meta.repo, () =>
+				progress(`cloning ${meta.owner}/${meta.repo}…`),
 			),
 			// The head is resolved once: the session keeps it for its life.
 			options.head
@@ -699,12 +696,11 @@ export class Session {
 				: null,
 		]);
 		progress(`fetching PR #${meta.number}…`);
-		const fetched = await step("crb: fetch pr", () =>
-			fetchPr(repo, meta, {
-				asOf,
-				pinned: pinned ?? undefined,
-			}),
-		);
+		// Its phase (crb: fetch pr) is fetchPr's own, under the repo lock.
+		const fetched = await fetchPr(repo, meta, {
+			asOf,
+			pinned: pinned ?? undefined,
+		});
 		// Whether the PR is over comes from GitHub's PR state, never from
 		// history shape: squash and rebase merges leave the head outside the
 		// base (docs/git-methodology.md). As of a cutoff, meta says OPEN.
@@ -1901,26 +1897,29 @@ export class Session {
 		);
 		let pending = this.#tracing.get(key);
 		if (!pending) {
-			pending = (async () => {
+			// Shared: whoever waits on it shows its step (activity.ts).
+			pending = shared(async () => {
 				const cached = await this.#cache.get(key);
 				if (cached) return cached;
 				const progress = await this.#progress();
-				const traced = await traceRereview(
-					this.repo,
-					await this.#sinceOf(since, progress),
-					await this.#earlierOf(since, progress),
-					this.#targetOf(target),
-					this.#stop.signal,
+				const traced = await phase("crb: since", {}, async () =>
+					traceRereview(
+						this.repo,
+						await this.#sinceOf(since, progress),
+						await this.#earlierOf(since, progress),
+						this.#targetOf(target),
+						this.#stop.signal,
+					),
 				);
 				// A cache that can't be written costs the next restart a
 				// computation, never the answer.
 				await this.#cache.set(key, traced).catch(() => {});
 				return traced;
-			})();
+			});
 			this.#tracing.set(key, pending);
 			pending.catch(() => this.#tracing.delete(key));
 		}
-		return pending;
+		return join(pending);
 	}
 
 	/** The answer and the start the traced result gives under the marks of now. */
@@ -2113,7 +2112,7 @@ export class Session {
 		this.#commentLeftNow();
 		const read = this.#pickRead(maxAgeMs);
 		if (forPage) this.#served = read;
-		return read.overview.then((o) => ({
+		return read.waitFor("overview", read.overview).then((o) => ({
 			...o,
 			commentLeft: this.#commentLeftNow(),
 		}));
@@ -2164,7 +2163,7 @@ export class Session {
 	timeline(readId: string): Promise<TimelineView> {
 		const read = this.#reads.find((r) => r.id === readId);
 		if (!read) throw new UnknownReadError(`No read ${readId}`);
-		return read.timeline;
+		return read.waitFor("timeline", read.timeline);
 	}
 
 	/**
@@ -2629,7 +2628,12 @@ export class Session {
 			asOf: asOf ? { at: asOf, head: this.#meta.headOid } : undefined,
 			code: this.#threadCode,
 			base: async () => {
-				await ready?.catch(() => {});
+				// The Refresh's move (shared): the code shows its step meanwhile,
+				// never another part's (activity.ts).
+				const moving = ready?.catch(() => {});
+				if (moving !== undefined) {
+					await waitOn(moving, () => ready && workOf(ready));
+				}
 				return {
 					snapshot: this.#snapshot.base,
 					ref: `refs/remotes/origin/${this.#meta.baseBranch}`,
@@ -2860,32 +2864,35 @@ export class Session {
 			return Promise.resolve(this.info());
 		}
 		// GitHub is read while the snapshot moves; its code once it has.
-		const moved = this.#exclusive(async () => {
-			const seq = ++this.#metaSeq;
-			const signal = this.#stop.signal;
-			const meta = await fetchPrMeta(this.#ref(), { signal });
-			const fetched = await fetchPr(this.repo, meta, {
-				signal,
-				pinned: this.pinned ?? undefined,
-			});
-			this.#setMeta(seq, meta);
-			const progress = await this.#progress();
-			// An unstarted review of a merged or closed PR has nothing to move
-			// to (a merge commit empties the comparison): keep the current
-			// snapshot (headMoved tells the UI). An open PR always moves, even
-			// to an empty comparison.
-			if (!progress.patchset && meta.state !== "OPEN") {
-				this.#patchset = null;
-				this.#head = null;
+		// Shared: the read's code waits on it, showing its step (activity.ts).
+		const moved = shared(() =>
+			this.#exclusive(async () => {
+				const seq = ++this.#metaSeq;
+				const signal = this.#stop.signal;
+				const meta = await fetchPrMeta(this.#ref(), { signal });
+				const fetched = await fetchPr(this.repo, meta, {
+					signal,
+					pinned: this.pinned ?? undefined,
+				});
+				this.#setMeta(seq, meta);
+				const progress = await this.#progress();
+				// An unstarted review of a merged or closed PR has nothing to move
+				// to (a merge commit empties the comparison): keep the current
+				// snapshot (headMoved tells the UI). An open PR always moves, even
+				// to an empty comparison.
+				if (!progress.patchset && meta.state !== "OPEN") {
+					this.#patchset = null;
+					this.#head = null;
+					return this.info();
+				}
+				await this.#moveTo(progress, fetched);
+				this.#fetched(meta, fetched.mergeBase);
+				this.#head = await this.#headInfo(meta, fetched.mergeBase);
 				return this.info();
-			}
-			await this.#moveTo(progress, fetched);
-			this.#fetched(meta, fetched.mergeBase);
-			this.#head = await this.#headInfo(meta, fetched.mergeBase);
-			return this.info();
-		});
+			}),
+		);
 		this.#rereadOverview(moved);
-		return moved;
+		return join(moved);
 	}
 
 	/**

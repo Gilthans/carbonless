@@ -9,6 +9,7 @@ import {
 	type GitFixture,
 	testGitEnv,
 } from "../../test/git-fixture";
+import { Activity, runIn } from "./activity";
 import { ensureCommit } from "./clone";
 
 // Every git call ensureCommit makes, and a gate a fetch waits at.
@@ -178,6 +179,24 @@ describe("ensureCommit: commits a force-push dropped, fetched together", () => {
 			[blob, a].map((oid) => ensureCommit(clone, oid)),
 		);
 		expect(answers).toEqual([false, true]);
+	});
+
+	it("an ask says the batch's step while it waits, a later ask the running batch's (CAR-296)", async () => {
+		const [first = "", second = ""] = dropped;
+		const held = holdFetches();
+		const a = new Activity();
+		const b = new Activity();
+		const answerA = runIn(a, () => ensureCommit(clone, first));
+		await held.waiting;
+		expect(a.current()?.label).toBe("Fetching dropped commits");
+		// Asked while the first batch fetches: it waits on that one first.
+		const answerB = runIn(b, () => ensureCommit(clone, second));
+		expect(b.current()?.label).toBe("Fetching dropped commits");
+		held.release();
+		expect(await answerA).toBe(true);
+		expect(await answerB).toBe(true);
+		expect(a.size).toBe(0);
+		expect(b.size).toBe(0);
 	});
 
 	it("asks made while a fetch runs join one next fetch, not one each", async () => {

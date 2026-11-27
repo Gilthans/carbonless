@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { randomBytes } from "node:crypto";
 import {
 	mkdir,
 	open as openFile,
@@ -25,6 +26,11 @@ import {
 	sameBuild,
 	VERSION_HEADER,
 } from "./server/version.js";
+import {
+	type ActivityAnswer,
+	activityPathOf,
+	REQUEST_ID_HEADER,
+} from "./shared/activity.js";
 import {
 	type CloneState,
 	clonePathOf,
@@ -61,6 +67,10 @@ export interface ClientDeps {
 	err?: (line: string) => void;
 	/** How often a waiting open asks whether its repo is cloning (ms). */
 	clonePollMs?: number;
+	/** A waiting open prints its steps only after this long (ms; CAR-296). */
+	stepAfterMs?: number;
+	/** …asking the server this often (ms). */
+	stepPollMs?: number;
 	openUrl?: (url: string) => Promise<unknown>;
 	/** Starts `crb serve` in the background (default: detached, logging to serve.log). */
 	spawnServer?: () => SpawnedServer;
@@ -252,6 +262,84 @@ function watchFirstClone(
 	};
 }
 
+/** An open's steps are printed only once it has taken this long (ms). */
+const STEP_AFTER_MS = 2_000;
+/** …asked for this often. */
+const STEP_POLL_MS = 500;
+
+/** Waits `ms`, or less when `signal` stops it. */
+const pause = (ms: number, signal: AbortSignal) =>
+	new Promise<void>((resolve) => {
+		const timer = setTimeout(resolve, ms);
+		signal.addEventListener(
+			"abort",
+			() => {
+				clearTimeout(timer);
+				resolve();
+			},
+			{ once: true },
+		);
+	});
+
+/**
+ * Once the open (request `id`) has waited STEP_AFTER_MS, prints the step
+ * it waits on, one line on stderr each time it changes (CAR-296), until
+ * stop(). The first clone's step is CAR-291's line (watchFirstClone),
+ * not printed twice. A failed ask prints nothing.
+ */
+function watchSteps(
+	server: ServerState,
+	id: string,
+	deps: ClientDeps,
+): { stop: () => Promise<void> } {
+	const err = deps.err ?? ((line) => process.stderr.write(`${line}\n`));
+	const stopped = new AbortController();
+	const loop = (async () => {
+		await pause(deps.stepAfterMs ?? STEP_AFTER_MS, stopped.signal);
+		// A fast open: nothing to read (not even the key), nothing to say.
+		if (stopped.signal.aborted) return;
+		let headers: Record<string, string>;
+		try {
+			headers = {
+				[VERSION_HEADER]: JSON.stringify(deps.build ?? BUILD),
+				...(await authHeaders(server)),
+			};
+		} catch {
+			// No key to ask with: the open itself says what went wrong.
+			return;
+		}
+		let last = "";
+		while (!stopped.signal.aborted) {
+			try {
+				const res = await fetch(`${server.url}${activityPathOf([id])}`, {
+					headers,
+					signal: stopped.signal,
+				});
+				const body = (await res.json()) as Partial<ActivityAnswer>;
+				const step = res.ok ? body.steps?.[id] : null;
+				if (
+					step &&
+					step.name !== "crb: clone" &&
+					step.label !== last &&
+					!stopped.signal.aborted
+				) {
+					last = step.label;
+					err(step.label);
+				}
+			} catch {
+				// Stopped, or the server is busy: the open itself reports failures.
+			}
+			await pause(deps.stepPollMs ?? STEP_POLL_MS, stopped.signal);
+		}
+	})();
+	return {
+		stop: async () => {
+			stopped.abort();
+			await loop;
+		},
+	};
+}
+
 /** `crb <pr>`: prints the review's URL; ClientError when it can't. */
 export async function runClient(
 	req: ClientRequest,
@@ -280,12 +368,16 @@ export async function runClient(
 		"owner" in parsed
 			? watchFirstClone(server, parsed.owner, parsed.repo, deps)
 			: null;
+	// …and, once it is slow, what it waits on (CAR-296).
+	const requestId = randomBytes(12).toString("base64url");
+	const steps = watchSteps(server, requestId, deps);
 	try {
 		res = await fetch(`${server.url}/api/reviews`, {
 			method: "POST",
 			headers: {
 				"content-type": "application/json",
 				[VERSION_HEADER]: JSON.stringify(build),
+				[REQUEST_ID_HEADER]: requestId,
 				// The server's span of this open goes under the caller's (a test's).
 				...(parseTraceparent(process.env.TRACEPARENT)
 					? { traceparent: process.env.TRACEPARENT }
@@ -304,7 +396,7 @@ export async function runClient(
 			`Could not reach crb serve at ${server.url}: ${(error as Error).message}`,
 		);
 	} finally {
-		await watch?.stop();
+		await Promise.all([watch?.stop(), steps.stop()]);
 	}
 	const body = (await res.json().catch(() => ({}))) as {
 		url?: unknown;

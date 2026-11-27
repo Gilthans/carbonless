@@ -12,6 +12,7 @@ import {
 } from "node:fs/promises";
 import { hostname } from "node:os";
 import { dirname, join } from "node:path";
+import { Activity, beginStep, phase, runIn, waitOn } from "./activity.js";
 import { GhError } from "./errors.js";
 import type { PrMeta } from "./gh.js";
 import { runGh } from "./gh.js";
@@ -94,6 +95,9 @@ async function removeIfUnchanged(lock: string, content: string) {
 	await rm(aside, { force: true });
 }
 
+/** This process's holder of each repo lock: what a waiter shows. */
+const lockHolders = new Map<string, Activity>();
+
 /**
  * Runs `fn` while holding `<path>.lock`, so concurrent crb processes never
  * clone or fetch into the same repository at once. The holder refreshes the
@@ -110,29 +114,44 @@ export async function withRepoLock<T>(
 	const mine = `${hostname()} ${process.pid} ${randomUUID()}\n`;
 	await mkdir(dirname(lock), { recursive: true });
 	const deadline = Date.now() + timeoutMs;
-	for (;;) {
-		if (await tryCreate(lock, mine)) break;
-		const [content, mtime] = await Promise.all([
-			readLock(lock),
-			stat(lock).then(
-				(s) => s.mtimeMs,
-				() => Date.now(),
-			),
-		]);
-		if (
-			content !== undefined &&
-			(Date.now() - mtime > staleMs || deadHolder(content))
-		) {
-			await removeIfUnchanged(lock, content);
-			continue;
-		}
-		if (Date.now() >= deadline) {
-			throw new GitError(
-				`Timed out waiting for ${lock}. If no other crb is running, delete it.`,
+	// Waiting for another holder: what it does now, when it is this
+	// process's (activity.ts); another crb's reads as the lock's wait.
+	let endWait: (() => void) | null = null;
+	try {
+		for (;;) {
+			if (await tryCreate(lock, mine)) break;
+			endWait ??= beginStep("wait", "crb: repo lock", undefined, () =>
+				lockHolders.get(path),
 			);
+			const [content, mtime] = await Promise.all([
+				readLock(lock),
+				stat(lock).then(
+					(s) => s.mtimeMs,
+					() => Date.now(),
+				),
+			]);
+			if (
+				content !== undefined &&
+				(Date.now() - mtime > staleMs || deadHolder(content))
+			) {
+				await removeIfUnchanged(lock, content);
+				continue;
+			}
+			if (Date.now() >= deadline) {
+				throw new GitError(
+					`Timed out waiting for ${lock}. If no other crb is running, delete it.`,
+				);
+			}
+			await sleep(100);
 		}
-		await sleep(100);
+	} finally {
+		endWait?.();
 	}
+	// What runs under the lock, in an Activity of its own: a waiter shows
+	// it, never a call its holder makes beside it; the holder's request
+	// waits on it, so it shows it too.
+	const holder = new Activity();
+	lockHolders.set(path, holder);
 	const heartbeat = setInterval(() => {
 		const now = new Date();
 		readLock(lock).then((c) => {
@@ -141,8 +160,9 @@ export async function withRepoLock<T>(
 	}, heartbeatMs);
 	heartbeat.unref();
 	try {
-		return await fn();
+		return await waitOn(runIn(holder, fn), () => holder);
 	} finally {
+		if (lockHolders.get(path) === holder) lockHolders.delete(path);
 		clearInterval(heartbeat);
 		if ((await readLock(lock)) === mine) await rm(lock, { force: true });
 	}
@@ -199,7 +219,7 @@ async function asCloning(
 	const key = repoKey(owner, repo);
 	cloning.add(key);
 	try {
-		await run();
+		await phase("crb: clone", { repo: `${owner}/${repo}` }, run);
 	} finally {
 		cloning.delete(key);
 	}
@@ -392,54 +412,59 @@ export async function fetchPr(
 		throw new GhError(`gh returned an invalid base branch name: ${base}`);
 	}
 	const baseRef = `refs/remotes/origin/${base}`;
-	return withRepoLock(path, async () => {
-		// The head comes from refs/pull/<n>/head, never the head branch: it
-		// exists even when the branch or its fork has been deleted.
-		await runGit(
-			path,
-			[
-				...GH_CREDENTIALS,
-				"fetch",
-				"--quiet",
-				"--no-tags",
-				"origin",
-				`+refs/heads/${base}:${baseRef}`,
-				`refs/pull/${meta.number}/head`,
-			],
-			{ env: { GIT_TERMINAL_PROMPT: "0" }, signal },
-		);
-		const present = () =>
-			runGit(path, ["cat-file", "-e", `${head}^{commit}`]).then(
-				() => true,
-				() => false,
-			);
-		if ((asOf || pinned) && !(await present())) {
+	// The phase under the lock: what a waiter on the lock shows too.
+	return withRepoLock(path, () =>
+		phase("crb: fetch pr", {}, async () => {
+			// The head comes from refs/pull/<n>/head, never the head branch: it
+			// exists even when the branch or its fork has been deleted.
 			await runGit(
 				path,
-				[...GH_CREDENTIALS, "fetch", "--quiet", "--no-tags", "origin", head],
-				{ env: { GIT_TERMINAL_PROMPT: "0" }, allowFailure: true, signal },
+				[
+					...GH_CREDENTIALS,
+					"fetch",
+					"--quiet",
+					"--no-tags",
+					"origin",
+					`+refs/heads/${base}:${baseRef}`,
+					`refs/pull/${meta.number}/head`,
+				],
+				{ env: { GIT_TERMINAL_PROMPT: "0" }, signal },
 			);
-		}
-		if (!(await present())) {
-			throw new GhError(
-				pinned
-					? `Commit ${head} could not be fetched from GitHub`
-					: asOf
-						? `PR head ${head} as of ${asOf} could not be fetched from GitHub`
-						: `PR head ${head} is not on GitHub yet (the PR may have just been updated); try again`,
-			);
-		}
-		const baseTip = asOf
-			? await baseTipAt(path, baseRef, asOf)
-			: (await runGit(path, ["rev-parse", "--verify", baseRef])).trim();
-		const mergeBase = (
-			await runGit(path, ["merge-base", baseTip, head], { allowFailure: true })
-		).trim();
-		if (!mergeBase) {
-			throw new GhError(`PR head ${head} shares no history with ${base}`);
-		}
-		return { baseTip, head, mergeBase };
-	});
+			const present = () =>
+				runGit(path, ["cat-file", "-e", `${head}^{commit}`]).then(
+					() => true,
+					() => false,
+				);
+			if ((asOf || pinned) && !(await present())) {
+				await runGit(
+					path,
+					[...GH_CREDENTIALS, "fetch", "--quiet", "--no-tags", "origin", head],
+					{ env: { GIT_TERMINAL_PROMPT: "0" }, allowFailure: true, signal },
+				);
+			}
+			if (!(await present())) {
+				throw new GhError(
+					pinned
+						? `Commit ${head} could not be fetched from GitHub`
+						: asOf
+							? `PR head ${head} as of ${asOf} could not be fetched from GitHub`
+							: `PR head ${head} is not on GitHub yet (the PR may have just been updated); try again`,
+				);
+			}
+			const baseTip = asOf
+				? await baseTipAt(path, baseRef, asOf)
+				: (await runGit(path, ["rev-parse", "--verify", baseRef])).trim();
+			const mergeBase = (
+				await runGit(path, ["merge-base", baseTip, head], {
+					allowFailure: true,
+				})
+			).trim();
+			if (!mergeBase) {
+				throw new GhError(`PR head ${head} shares no history with ${base}`);
+			}
+			return { baseTip, head, mergeBase };
+		}),
+	);
 }
 
 /**
@@ -495,6 +520,8 @@ interface CommitBatch {
 	/** What it found so far, by commit. */
 	answers: Map<string, boolean>;
 	stop: AbortController;
+	/** What it does, once running (its asks show it). */
+	activity?: Activity;
 }
 
 const newBatch = (): CommitBatch => ({
@@ -519,7 +546,8 @@ class CommitBatcher {
 		const known = running?.answers.get(oid);
 		if (known !== undefined) return Promise.resolve(known);
 		const batch = running?.asks.has(oid) ? running : this.#nextBatch();
-		return new Promise<boolean>((resolve) => {
+		// Its batch's step while it waits; the running one's until then.
+		const answered = new Promise<boolean>((resolve) => {
 			let done = false;
 			const ask: CommitAsk = {
 				answer: (present) => {
@@ -546,6 +574,7 @@ class CommitBatcher {
 			batch.asks.set(oid, same);
 			if (batch === this.#next) this.#schedule();
 		});
+		return waitOn(answered, () => batch.activity ?? this.#running?.activity);
 	}
 
 	#nextBatch(): CommitBatch {
@@ -563,11 +592,14 @@ class CommitBatcher {
 			this.#next = null;
 			if (!batch) return this.idle();
 			this.#running = batch;
-			void answerBatch(this.path, batch).finally(() => {
-				this.#running = null;
-				if (this.#next) this.#schedule();
-				else this.idle();
-			});
+			batch.activity = new Activity();
+			void runIn(batch.activity, () => answerBatch(this.path, batch)).finally(
+				() => {
+					this.#running = null;
+					if (this.#next) this.#schedule();
+					else this.idle();
+				},
+			);
 		});
 	}
 }
@@ -590,10 +622,12 @@ async function answerBatch(path: string, batch: CommitBatch): Promise<void> {
 		await withRepoLock(path, async () => {
 			const missing = asked().filter((oid) => !have.has(oid));
 			const now = await presentCommits(path, missing, signal);
-			await fetchCommits(
-				path,
-				missing.filter((oid) => !now.has(oid)),
-				signal,
+			await phase("crb: fetch commits", {}, () =>
+				fetchCommits(
+					path,
+					missing.filter((oid) => !now.has(oid)),
+					signal,
+				),
 			);
 		});
 		const after = await presentCommits(path, asked(), signal);

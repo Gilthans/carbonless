@@ -9,6 +9,7 @@ import {
 	type ThreadsView,
 	type TimelineView,
 } from "../shared/types.js";
+import { WorkParts, waitOn } from "./activity.js";
 import { GhError } from "./errors.js";
 import {
 	fetchOverview,
@@ -34,6 +35,23 @@ export interface ReadSources {
 	/** The thread code's diff base, once known (a Refresh moves the snapshot). */
 	base: () => Promise<DiffBase>;
 }
+
+/** The parts of a read that run side by side (OverviewRead.parts). */
+export type ReadPart = "overview" | "summary" | "text" | "code" | "timeline";
+
+/** The parts each wait on a read waits for, the nearest first. */
+export const READ_PARTS: Record<
+	ThreadsStage | "overview" | "timeline" | "comments",
+	readonly ReadPart[]
+> = {
+	overview: ["overview"],
+	summary: ["summary", "overview"],
+	first: ["text", "summary", "overview"],
+	firstCode: ["code", "text", "summary", "overview"],
+	full: ["code", "text", "summary", "overview"],
+	timeline: ["timeline", "summary", "overview"],
+	comments: ["text", "summary", "overview"],
+};
 
 /** A read's overview: the session adds what isn't GitHub's read (commentLeft). */
 export type ReadOverview = Omit<PrOverview, "servedAt" | "commentLeft">;
@@ -130,6 +148,11 @@ export class OverviewRead {
 	readonly #stop = new AbortController();
 	/** Once every part has come in or failed: nothing of it runs any more. */
 	readonly settled: Promise<void>;
+	/**
+	 * Its parts' Activities (activity.ts): a request waiting on the
+	 * threads' code shows the code's step, never the timeline's call.
+	 */
+	readonly parts = new WorkParts<ReadPart>();
 
 	constructor(sources: ReadSources) {
 		this.#sources = sources;
@@ -137,30 +160,29 @@ export class OverviewRead {
 		this.#viewer = sources.viewer;
 		this.#writes = sources.writes === "on";
 		const read = { signal: this.#stop.signal };
-		this.#overview = fetchOverview(
-			sources.ref,
-			sources.viewer,
-			sources.asOf,
-			read,
-		).then((fields) => {
-			this.ended = Date.now();
-			return {
-				...fields,
-				writes: sources.writes,
-				readId: this.id,
-				fetchedAt: new Date(this.ended).toISOString(),
-			};
-		});
+		this.#overview = this.parts
+			.run("overview", () =>
+				fetchOverview(sources.ref, sources.viewer, sources.asOf, read),
+			)
+			.then((fields) => {
+				this.ended = Date.now();
+				return {
+					...fields,
+					writes: sources.writes,
+					readId: this.id,
+					fetchedAt: new Date(this.ended).toISOString(),
+				};
+			});
 		// The attention sets need the PR author: the overview is the faster read.
 		const summary = Promise.all([
-			fetchThreadSummaries(sources.ref, read),
+			this.parts.run("summary", () => fetchThreadSummaries(sources.ref, read)),
 			this.overview,
 		]).then(([nodes, overview]) => {
 			this.#nodes = nodes;
 			this.#prAuthor = overview.author;
 		});
 		this.timeline = Promise.all([
-			fetchTimeline(sources.ref, read),
+			this.parts.run("timeline", () => fetchTimeline(sources.ref, read)),
 			// Without the threads, review comments just aren't tied to them.
 			summary.then(
 				() => true,
@@ -190,10 +212,12 @@ export class OverviewRead {
 			};
 		});
 		const readText = (ids: string[]): Promise<void> => {
-			const reading = fetchThreadContents(ids, read).then((found) => {
-				// Not returned, or null: GitHub no longer has the thread.
-				for (const id of ids) this.#contents.set(id, found.get(id) ?? GONE);
-			});
+			const reading = this.parts
+				.run("text", () => fetchThreadContents(ids, read))
+				.then((found) => {
+					// Not returned, or null: GitHub no longer has the thread.
+					for (const id of ids) this.#contents.set(id, found.get(id) ?? GONE);
+				});
 			for (const id of ids) this.#reading.set(id, reading);
 			const over = () => {
 				for (const id of ids) {
@@ -212,33 +236,36 @@ export class OverviewRead {
 		const firstText = texts.then((t) => t.first);
 		const restText = texts.then((t) => t.rest);
 		// Each thread's code, a few at a time, listed-first ones ahead.
-		const codes = plan.then((p) => {
-			// Every commit the threads sit on, asked for together: the ones a
-			// force-push dropped come in one fetch, not one per build slot.
-			sources.code.prefetch(
-				p.coded.flatMap((t) => (t.code ? [t.code.anchor] : [])),
-			);
-			const limit = limiter(CODE_CONCURRENCY);
-			const firstIds = new Set(p.first);
-			const textOf = (id: string) =>
-				(firstIds.has(id) ? firstText : restText).then(() =>
-					this.#contents.get(id),
+		// Chained in the code's part: every clone read it starts is the code's.
+		const codes = this.parts.run("code", () =>
+			plan.then((p) => {
+				// Every commit the threads sit on, asked for together: the ones a
+				// force-push dropped come in one fetch, not one per build slot.
+				sources.code.prefetch(
+					p.coded.flatMap((t) => (t.code ? [t.code.anchor] : [])),
 				);
-			// Every clone read a few at a time: the build, then (once the text,
-			// with GitHub's hunk to check against, is in) the check and any
-			// fallback. Waiting for the text holds no slot. A text that fails
-			// counts as no hunk (ThreadCodeSource.code).
-			const tasks = p.coded.map((t) => ({
-				first: firstIds.has(t.id),
-				done: limit(() => this.#warm(sources, t))
-					.then(() => textOf(t.id).catch(() => {}))
-					.then(() => limit(() => this.#code(sources, t, textOf))),
-			}));
-			return {
-				first: Promise.all(tasks.filter((t) => t.first).map((t) => t.done)),
-				all: Promise.all(tasks.map((t) => t.done)),
-			};
-		});
+				const limit = limiter(CODE_CONCURRENCY);
+				const firstIds = new Set(p.first);
+				const textOf = (id: string) =>
+					(firstIds.has(id) ? firstText : restText).then(() =>
+						this.#contents.get(id),
+					);
+				// Every clone read a few at a time: the build, then (once the text,
+				// with GitHub's hunk to check against, is in) the check and any
+				// fallback. Waiting for the text holds no slot. A text that fails
+				// counts as no hunk (ThreadCodeSource.code).
+				const tasks = p.coded.map((t) => ({
+					first: firstIds.has(t.id),
+					done: limit(() => this.#warm(sources, t))
+						.then(() => textOf(t.id).catch(() => {}))
+						.then(() => limit(() => this.#code(sources, t, textOf))),
+				}));
+				return {
+					first: Promise.all(tasks.filter((t) => t.first).map((t) => t.done)),
+					all: Promise.all(tasks.map((t) => t.done)),
+				};
+			}),
+		);
 		const done = () => {};
 		this.#stages = {
 			summary,
@@ -269,9 +296,20 @@ export class OverviewRead {
 	}
 
 	/** The threads once `stage` is in, with all that is in by then. */
-	async threads(stage: ThreadsStage): Promise<ThreadsView> {
-		await this.#stages[stage];
-		return this.#view();
+	threads(stage: ThreadsStage): Promise<ThreadsView> {
+		return this.waitFor(
+			stage,
+			this.#stages[stage].then(() => this.#view()),
+		);
+	}
+
+	/**
+	 * Awaits `answer`, what this read gives once `what` is in, showing the
+	 * step of the parts it waits on (READ_PARTS) in the caller's request
+	 * meanwhile (activity.ts).
+	 */
+	waitFor<T>(what: keyof typeof READ_PARTS, answer: Promise<T>): Promise<T> {
+		return waitOn(answer, () => this.parts.stepOf(READ_PARTS[what]));
 	}
 
 	/**
@@ -481,7 +519,11 @@ export class OverviewRead {
 	 * (GhError) rather than give a thread fewer comments than it has. An id
 	 * this read's summary doesn't list is "unreadable".
 	 */
-	async comments(ids: string[]): Promise<CommentsView> {
+	comments(ids: string[]): Promise<CommentsView> {
+		return this.waitFor("comments", this.#comments(ids));
+	}
+
+	async #comments(ids: string[]): Promise<CommentsView> {
 		await this.#stages.summary;
 		await this.#textsStarted.catch(() => {});
 		const summaries = new Map<string, unknown>();

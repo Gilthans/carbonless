@@ -14,6 +14,7 @@ import { release } from "../test/fake-gh/scenario";
 import { createPrFixture, type PrFixture } from "../test/pr-fixture";
 import { fakeDelay } from "../test/sleep";
 import { ClientError, ensureServer, runClient, trimLog } from "./client";
+import { activityOf } from "./server/activity";
 import { type StartedServer, startServer } from "./server/serve";
 import { readLiveServerState, writeServerState } from "./server/serverState";
 import { BUILD } from "./server/version";
@@ -86,6 +87,8 @@ describe("the client", () => {
 			{
 				out: (l) => out.push(l),
 				clonePollMs: 5,
+				// Only the clone's line here (the steps: CAR-296's test).
+				stepAfterMs: 600_000,
 				err: (line) => {
 					err.push(line);
 					release(scenarioFile, "clone");
@@ -105,20 +108,108 @@ describe("the client", () => {
 		const again: string[] = [];
 		const second = runClient(
 			{ pr: pr.arg, cwd: process.cwd(), viewer: "someone-else" },
-			{ out: () => {}, clonePollMs: 5, err: (l) => again.push(l) },
+			{
+				out: () => {},
+				clonePollMs: 5,
+				stepAfterMs: 600_000,
+				err: (l) => again.push(l),
+			},
 		);
-		await vi.waitFor(
-			() =>
-				expect(
-					polls.mock.calls.filter(([u]) => String(u).includes("/api/clones/"))
-						.length,
-				).toBeGreaterThanOrEqual(3),
-			{ timeout: 10_000 },
-		);
-		release(scenarioFile, "prView");
+		const openId = await vi.waitFor(() => {
+			const call = polls.mock.calls.find(([u]) =>
+				String(u).endsWith("/api/reviews"),
+			);
+			const id = new Headers(call?.[1]?.headers).get("x-crb-req");
+			expect(id).toMatch(/^[\w-]{8,32}$/);
+			return id as string;
+		});
+		try {
+			await vi.waitFor(
+				() =>
+					expect(activityOf([openId])[openId]?.label).toBe("GitHub: pr view"),
+				{ timeout: 10_000 },
+			);
+		} finally {
+			release(scenarioFile, "prView");
+		}
 		await second;
 		polls.mockRestore();
 		expect(again).toEqual([]);
+	});
+
+	it("a slow open prints the step it waits on, once per change, on stderr; none before the threshold (CAR-296)", async () => {
+		const server = await startServer({ port: 0 });
+		servers.push(server);
+		const scenarioFile = process.env.CRB_FAKE_GH as string;
+		// GitHub's PR view is held until the client has printed its step.
+		pr.scenario({ hold: ["prView"] });
+		const err: string[] = [];
+		const open = runClient(
+			{ pr: pr.arg, cwd: process.cwd() },
+			{
+				out: () => {},
+				stepAfterMs: 0,
+				stepPollMs: 5,
+				err: (line) => err.push(line),
+			},
+		);
+		try {
+			// Fails here, not at the test's timeout, when no step is printed.
+			await vi.waitFor(() => expect(err).toContain("GitHub: pr view"), {
+				timeout: 10_000,
+			});
+		} finally {
+			release(scenarioFile, "prView");
+		}
+		const url = await open;
+		expect(url).toMatch(/\/r\//);
+		expect(err).toContain("GitHub: pr view");
+		// One line per step: never the same twice in a row.
+		expect(err.filter((l, i) => l === err[i - 1])).toEqual([]);
+		// No paths, OIDs or args: crb's own words only.
+		for (const line of err) {
+			expect(line).toMatch(
+				/^(GitHub: |git |Fetching|Reading|Carrying|Working)/,
+			);
+		}
+
+		// Before the threshold: nothing, though the server has a step to
+		// say (asked directly, by the open's own id, until it says it).
+		pr.scenario({ hold: ["prView"] });
+		const quiet: string[] = [];
+		const polls = vi.spyOn(globalThis, "fetch");
+		const second = runClient(
+			{ pr: pr.arg, cwd: process.cwd(), viewer: "someone-else" },
+			{
+				out: () => {},
+				stepAfterMs: 600_000,
+				stepPollMs: 5,
+				err: (l) => quiet.push(l),
+			},
+		);
+		const openId = await vi.waitFor(() => {
+			const call = polls.mock.calls.find(([u]) =>
+				String(u).endsWith("/api/reviews"),
+			);
+			const id = new Headers(call?.[1]?.headers).get("x-crb-req");
+			expect(id).toMatch(/^[\w-]{8,32}$/);
+			return id as string;
+		});
+		try {
+			await vi.waitFor(
+				() =>
+					expect(activityOf([openId])[openId]?.label).toBe("GitHub: pr view"),
+				{ timeout: 10_000 },
+			);
+		} finally {
+			release(scenarioFile, "prView");
+		}
+		await second;
+		expect(
+			polls.mock.calls.filter(([u]) => String(u).includes("/api/activity")),
+		).toEqual([]);
+		polls.mockRestore();
+		expect(quiet).toEqual([]);
 	});
 
 	it("behind a public URL: reaches the keyed loopback server, prints the public link", async () => {

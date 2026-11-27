@@ -1,5 +1,6 @@
 import { type ChildProcess, spawn } from "node:child_process";
 import type { PrOverview } from "../shared/types.js";
+import { beginCall } from "./activity.js";
 import { headAsOf } from "./asOf.js";
 import { GhError, UnresolvedError, WriteRefusedError } from "./errors.js";
 import { mapOverview } from "./overview.js";
@@ -113,9 +114,12 @@ function spawnGh(args: string[], run: GhRun = {}): Promise<GhResult> {
 			reject(new GhAbortedError(`Stopped reading ${what}`));
 			return;
 		}
+		const name = `gh ${ghCommand(args)}`;
+		// What a request waiting on it says (activity.ts), always.
+		const endStep = beginCall(name);
 		const span = traced.enabled
 			? traced.start(
-					`gh ${ghCommand(args)}`,
+					name,
 					{ args: argsSummary(args) },
 					{
 						kind: "client",
@@ -139,6 +143,7 @@ function spawnGh(args: string[], run: GhRun = {}): Promise<GhResult> {
 		const out: Buffer[] = [];
 		const err: Buffer[] = [];
 		const stop = (error: GhError) => {
+			endStep();
 			span?.end({ exit: "killed" }, error.message);
 			child.kill("SIGKILL");
 			child.stdout.destroy();
@@ -167,6 +172,7 @@ function spawnGh(args: string[], run: GhRun = {}): Promise<GhResult> {
 		child.stdout.on("data", (c: Buffer) => out.push(c));
 		child.stderr.on("data", (c: Buffer) => err.push(c));
 		child.on("error", (error: NodeJS.ErrnoException) => {
+			endStep();
 			span?.end(undefined, error.message);
 			done();
 			reject(
@@ -174,6 +180,7 @@ function spawnGh(args: string[], run: GhRun = {}): Promise<GhResult> {
 			);
 		});
 		child.on("close", (code) => {
+			endStep();
 			span?.end({ exit: code ?? -1 });
 			done();
 			resolve({

@@ -19,6 +19,7 @@ import { useEffect, useState } from "react";
 import type { RepoHome } from "../../shared/home";
 import { composeSections } from "../../shared/homeSections";
 import { Logo } from "../brand/Brand";
+import { useLoadingStep } from "../loadingStep";
 import { RelativeTime } from "../RelativeTime";
 import { Settings } from "../Settings";
 import { useOpenShortcutsHelp } from "../shortcuts";
@@ -124,6 +125,15 @@ function RepoChip(props: {
 	const client = useQueryClient();
 	const failed = failureOf(query);
 	const retry = useMutation({ mutationFn: () => refetchRepo(client, name) });
+	// Once its read is slow: what it waits on (CAR-296), in the spinner's
+	// name and tooltip (the chip has no room for a line). Every repo's in
+	// one ask (the key), each chip its own requests' step.
+	const repoPath = `/api/home/repos/${name.split("/").map(encodeURIComponent).join("/")}`;
+	const { step } = useLoadingStep(
+		"home-repos",
+		(r) => r.path === repoPath || r.path.startsWith(`${repoPath}?`),
+		state === "loading",
+	);
 	// Pressed: accent; a failure keeps its red, on the pressed fill.
 	const tone = `${failed ? "border-bad/50 text-bad" : pressed ? "border-accent text-ink" : "border-edge text-ink-soft"} ${pressed ? "bg-accent/15" : "bg-raised"}`;
 	return (
@@ -142,7 +152,14 @@ function RepoChip(props: {
 						<AlertIcon size={12} aria-hidden />
 					</Sign>
 				) : state === "loading" ? (
-					<Sign label={`Loading ${name}`} className="text-faint">
+					<Sign
+						label={step ? `Loading ${name}: ${step.text}` : `Loading ${name}`}
+						// With a step: a 40px target around the 12px icon (laid
+						// over the chip's start), so a tap opens its tooltip.
+						className={`text-faint ${step ? "after:absolute after:-inset-[14px] after:content-['']" : ""}`}
+						testId="repo-loading"
+						focusable={step !== null}
+					>
 						<SyncIcon size={12} aria-hidden className={spin} />
 					</Sign>
 				) : state === "saving" ? (
