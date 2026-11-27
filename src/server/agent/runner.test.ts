@@ -258,10 +258,16 @@ afterEach(async () => {
 		else process.env[k] = v;
 	}
 	// Ref reads keep the clone's cat-file up, and Windows won't remove a
-	// directory a process runs in: gone first.
-	await closeCatFiles();
-	origin.cleanup();
-	cache.cleanup();
+	// directory a process runs in: closed first, and again until removing
+	// works (a read the closed agent still had out starts one anew).
+	await vi.waitFor(
+		async () => {
+			await closeCatFiles();
+			origin.cleanup();
+			cache.cleanup();
+		},
+		{ timeout: 10_000, interval: 100 },
+	);
 	rmSync(tmp, { recursive: true, force: true });
 	rmSync(agentsDir(), { recursive: true, force: true });
 });
