@@ -22,7 +22,7 @@ const REVIEW_ID = /^[0-9a-hjkmnp-tv-z]{26}$/;
 /** Tries per ref: each lost compare-and-swap race reads the new tip and builds again. */
 const MAX_TRIES = 5;
 
-export interface CompactedRef {
+interface CompactedRef {
 	ref: string;
 	/** The tip before. */
 	from: string;
