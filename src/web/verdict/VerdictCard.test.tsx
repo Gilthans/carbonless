@@ -193,6 +193,8 @@ function renderTab(
 		head?: Promise<Response>;
 		overview?: Promise<Response>;
 		reviewOf?: (patchset: number | null) => ReviewView;
+		/** GET /api/session's answer (each call), else `info`. */
+		session?: () => SessionInfo | Promise<Response>;
 	} = {},
 ) {
 	posted = [];
@@ -201,8 +203,10 @@ function renderTab(
 			const json = (body: unknown) =>
 				new Response(JSON.stringify(body), { status: 200 });
 			switch (local(input)) {
-				case "/api/session":
-					return json(info);
+				case "/api/session": {
+					const answer = more.session?.() ?? info;
+					return answer instanceof Promise ? answer : json(answer);
+				}
 				case "/api/overview":
 					return more.overview ?? json(overview);
 				case "/api/head":
@@ -573,6 +577,126 @@ describe("the verdict card since your verdict", () => {
 		);
 		expect(asked).toEqual([PS2, NEW]);
 	});
+	it("a first verdict that starts PS1: the buttons go live once and stay so, no comparing row, while the session and the verdict are read again (CAR-309)", async () => {
+		// A fresh review, no patch set yet: the verdict on the head starts
+		// PS1. The rereads the landing starts come back session first, under
+		// a new key (`oid:1`), while the verdict's is still out. Nothing can
+		// have changed since a verdict on the head itself (the server says
+		// since: null): no "Comparing", no row pushing the buttons down, no
+		// live button going dead under the finger (principles 5, 8).
+		const fresh = session({
+			snapshotHead: PS1,
+			currentHead: PS1,
+			patchset: null,
+			patchsets: [],
+			head: {
+				oid: PS1,
+				mergeBase: "e".repeat(40),
+				baseBranch: "main",
+				commits: 1,
+			},
+		});
+		const started = session({
+			snapshotHead: PS1,
+			currentHead: PS1,
+			patchset: 1,
+			patchsets: [patchset(1, PS1)],
+			head: fresh.head,
+		});
+		const before = { ...facts(null), head: PS1 };
+		// Held answers a fetch may ask for more than once (a Response reads once).
+		const hold = <T,>() => {
+			let release: (body: T) => void = () => {};
+			const body = new Promise<T>((r) => {
+				release = r;
+			});
+			const response = () =>
+				body.then((b) => new Response(JSON.stringify(b), { status: 200 }));
+			return { response, release };
+		};
+		const sessionAgain = hold<SessionInfo>();
+		const verdictAgain = hold<VerdictFacts>();
+		const { client } = renderTab(
+			() => (posted.length === 0 ? before : verdictAgain.response()),
+			fresh,
+			() => null,
+			{
+				session: () => (posted.length === 0 ? fresh : sessionAgain.response()),
+			},
+		);
+		const c = await card();
+		const verdictButtons = () =>
+			within(c).getAllByTestId(/^verdict-(approve|comment|request_changes)$/);
+		await userEvent.click(
+			await within(c).findByRole("button", { name: "Approve" }),
+		);
+		await waitFor(() => expect(posted).toHaveLength(1));
+		// Landed: "Sending" gone, the buttons live.
+		await waitFor(() =>
+			expect(within(c).getByTestId("your-verdict")).toHaveTextContent(
+				/^You approved/,
+			),
+		);
+		for (const b of verdictButtons())
+			expect(b).not.toHaveAttribute("aria-disabled");
+		// From here on, nothing in the card goes dead or busy, and no row comes.
+		const seen: string[] = [];
+		const note = (records: MutationRecord[]) => {
+			for (const r of records) {
+				const el = r.target as HTMLElement;
+				if (r.type === "attributes" && el.getAttribute("aria-disabled"))
+					seen.push(`${el.dataset.testid} went dead`);
+				for (const n of r.addedNodes) {
+					if (!(n instanceof HTMLElement)) continue;
+					if (n.matches('[data-testid="verdict-since"], [aria-busy="true"]'))
+						seen.push(`${n.dataset.testid ?? n.tagName} came`);
+					for (const busy of n.querySelectorAll('[aria-busy="true"]'))
+						seen.push(`${(busy as HTMLElement).dataset.testid} came`);
+				}
+			}
+		};
+		const watch = new MutationObserver(note);
+		watch.observe(c, {
+			subtree: true,
+			childList: true,
+			attributes: true,
+			attributeFilter: ["aria-disabled"],
+		});
+		const landed = (pred: () => boolean) =>
+			new Promise<void>((r) => {
+				if (pred()) return r();
+				const stop = client.getQueryCache().subscribe(() => {
+					if (pred()) {
+						stop();
+						r();
+					}
+				});
+			});
+		sessionAgain.release(started);
+		await landed(
+			() => client.getQueryData<SessionInfo>(["session"])?.patchset === 1,
+		);
+		// A render past the session's landing.
+		await act(async () => {});
+		// The server's answer: your verdict on the head, nothing since it.
+		verdictAgain.release({
+			...facts(given({ head: PS1 })),
+			head: PS1,
+			since: null,
+		});
+		await landed(
+			() => client.getQueryState(["verdict"])?.fetchStatus === "idle",
+		);
+		await act(async () => {});
+		// Any mutation still queued counts too.
+		note(watch.takeRecords());
+		watch.disconnect();
+		expect(seen).toEqual([]);
+		expect(within(c).queryByTestId("verdict-since")).toBeNull();
+		for (const b of verdictButtons())
+			expect(b).not.toHaveAttribute("aria-disabled");
+	});
+
 	it("the head moved back onto PS1's (S6): the buttons post on it, the card says the head moved back to PS1", async () => {
 		const info = session({
 			currentHead: PS1,

@@ -433,7 +433,15 @@ function useSinceFollowsHead(
 	const client = useQueryClient();
 	const key = sinceHeadKey(session);
 	const under = facts ? verdictHeadKey(client) : undefined;
-	const stale = under !== undefined && under !== key;
+	// Your verdict on the head itself, nothing since it on screen: so the
+	// server says too, whatever the patch set's number (a first verdict
+	// starts PS1, CAR-309). Asked again all the same, never pending: no
+	// "Comparing" between "Sending" and live, no row pushing the buttons.
+	const onHead =
+		facts?.since === null &&
+		session.head !== null &&
+		facts.yourVerdict?.commitId === session.head.oid;
+	const stale = under !== undefined && under !== key && !onHead;
 	// Again for each answer that lands under an old key (the head moved
 	// while it was asked).
 	useEffect(() => {
