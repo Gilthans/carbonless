@@ -41,8 +41,9 @@ import {
  * elsewhere in the file (`moved`); a partner that a line elsewhere
  * resembles as much is `rewritten`. 4: two look-alike lines swapped around
  * a kept line follow their text across (a crossing by less, `rewritten`).
+ * 5: and further apart in their block (CAR-294).
  */
-export const TRACER_VERSION = 4;
+export const TRACER_VERSION = 5;
 
 export interface Position {
 	side: DiffSide;
@@ -593,8 +594,78 @@ export const SWAP_MARGIN = 0.1;
  */
 export const SWAP_MIN_ALNUM = 14;
 
+/**
+ * How far apart, in old lines, two look-alike lines of one block may sit
+ * and still be checked for a swap past the few lines around a hunk
+ * (CAR-294), on SWAP_MARGIN and every other check of a swap nearby. The
+ * block (sameBlock) keeps coincidence down; this keeps the cost per line
+ * fixed: a whole-block window measured 4.3 ms a line on a 250-line
+ * function of look-alike edits and 15 ms at 1000 (quadratic), this one
+ * 0.6-0.7 ms at both. Thirty lines hold a function's or a list's swaps (the
+ * corpus has none further apart, and none of its placements changed
+ * either way).
+ */
+export const WIDE_SWAP_LINES = 30;
+
+const indentOf = (t: string) => t.length - t.trimStart().length;
+
+/** A Markdown heading, an INI/TOML table header: a section of its own. */
+const HEADING = /^(?:#{1,6}\s|\[[^\]]+\]\s*$)/u;
+
+/**
+ * The old lines a swap of `line` (text `own`) may be with past the lines
+ * around its hunk: removed lines within WIDE_SWAP_LINES at its indentation,
+ * in its block. A line between them less indented closes the block (a
+ * function's `}`, a YAML parent key, a Python `def` of the class); at the
+ * left margin, a lone closer, a line opening a block or a Markdown heading
+ * ends a top-level piece of code or text, as does a Markdown heading or an
+ * INI table header. Both lines of a pair see each other, or neither does.
+ */
+function sameBlock(line: number, own: string, diffs: TraceDiffs): number[] {
+	const depth = indentOf(own);
+	const out: number[] = [];
+	for (const step of [-1, 1]) {
+		for (let k = 1; k <= WIDE_SWAP_LINES; k++) {
+			const n = line + step * k;
+			if (n < 1) break;
+			const t = read(diffs.oldLineText, n);
+			if (t === null) break;
+			if (t.trim() === "") continue;
+			const d = indentOf(t);
+			if (d === depth && diffs.bd.hunkRemovingOld(n)) out.push(n);
+			if (d < depth) break;
+			if (
+				d === 0 &&
+				depth === 0 &&
+				(TOP_CLOSER.test(t) || OPENS_BLOCK.test(t) || HEADING.test(t))
+			) {
+				break;
+			}
+		}
+	}
+	return out;
+}
+
 /** A line's words (letters, digits, `_`), for what tells two lines apart. */
 const words = (t: string) => new Set(t.match(/[\p{L}\p{N}_]+/gu) ?? []);
+
+/** Whether `a` and `b` differ, and every word only one of them has is a number. */
+function onlyNumbersApart(a: string, b: string): boolean {
+	const x = words(a);
+	const y = words(b);
+	let any = false;
+	for (const [p, q] of [
+		[x, y],
+		[y, x],
+	] as const) {
+		for (const w of p) {
+			if (q.has(w)) continue;
+			if (!/^\p{N}+$/u.test(w)) return false;
+			any = true;
+		}
+	}
+	return any;
+}
 
 /**
  * Whether replacement `mine` kept a word that told old `own` apart from its
@@ -618,15 +689,16 @@ function keepsOwn(
 /**
  * Whether `line`, edited in place onto `local` by its own hunk's pairing,
  * swapped with a look-alike: another removed line nearby (in a hunk of its
- * joined run, or within TUNING.contextLines) whose own replacement it
+ * joined run, or within TUNING.contextLines), or further in its block at
+ * its indentation (sameBlock, WIDE_SWAP_LINES; not one told apart from it
+ * only by a number), whose own replacement it
  * resembles more, while that line resembles `line`'s replacement more than
  * its own. Both crossed by SWAP_MARGIN: the look-alike's replacement, the
  * new line it went to, and the look-alike's old line. Crossed one way
  * only, by less, with more than one look-alike, between generic lines, or
  * with only one of the two keeping what told it apart: "unknown". null:
  * nothing crossed, or both kept their key and only values swapped: it
- * stayed. A window of a few lines: no
- * whole-file work.
+ * stayed. A window of WIDE_SWAP_LINES each way: no whole-file work.
  */
 function swappedWith(
 	hunk: MapHunk,
@@ -644,13 +716,30 @@ function swappedWith(
 	let unsure = false;
 	// A run joins hunks at most REGION_GAP old lines apart.
 	const reach = REGION_GAP + 1;
+	const near = (n: number) => {
+		if (Math.abs(n - line) <= TUNING.contextLines) return true;
+		if (Math.abs(n - line) > reach) return false;
+		const i = index?.get(diffs.bd.hunkRemovingOld(n) as MapHunk);
+		return i !== undefined && i >= run.first && i <= run.last;
+	};
+	const candidates: number[] = [];
 	for (let n = Math.max(1, line - reach); n <= line + reach; n++) {
+		if (near(n)) candidates.push(n);
+	}
+	// Further apart, lines told apart only by a number (a status code, a
+	// timeout) are look-alikes by chance more often than swapped: no
+	// evidence either way, so the edit in place stands.
+	const far = new Set(
+		sameBlock(line, own, diffs).filter((n) => {
+			if (near(n)) return false;
+			const other = read(diffs.oldLineText, n);
+			return other !== null && !onlyNumbersApart(own, other);
+		}),
+	);
+	for (const n of [...candidates, ...far]) {
 		if (n === line) continue;
 		const theirs = diffs.bd.hunkRemovingOld(n);
 		if (!theirs || theirs === hunk) continue;
-		const i = index?.get(theirs);
-		const inRun = i !== undefined && i >= run.first && i <= run.last;
-		if (!inRun && Math.abs(n - line) > TUNING.contextLines) continue;
 		const other = read(diffs.oldLineText, n);
 		if (other === null || !HAS_WORD.test(other)) continue;
 		const p = localPartner(theirs, n, diffs);

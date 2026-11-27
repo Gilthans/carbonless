@@ -177,7 +177,11 @@ alike (a version bumped with the old value copied into a new section, an
 assertion changed with the old one in a new test, a function copied and
 the original edited, even with a neighbour deleted). Unless it swapped
 with a look-alike (CAR-279): two edited lines a few lines apart (their
-hunks joined, or within three lines), each resembling the other's
+hunks joined, or within three lines), or further apart in one block
+(CAR-294: up to 30 lines, at the same indentation, with no less indented
+line between them, such as a function's `}`, a YAML parent key or a
+Python `def`; at the left margin no `}`, block opener, Markdown heading
+or INI `[section]` either), each resembling the other's
 replacement more than its own. Crossed both ways by 0.1 or more (about
 one word in ten), each thread follows its own text to the
 other line ("moved since"); crossed one way only, or by less, it is
@@ -187,7 +191,11 @@ the word that told them apart (a key, `primary_host:`; a subject,
 `expect(primary)`) and only their values swapped: each stays on its own
 line; only one kept it: `rewritten`. Generic lines, either one under 14
 letters and digits (`return err`, `return false`, `return nil, err`),
-never move on a crossing: `rewritten`. Nor does a swap when either line's
+never move on a crossing: `rewritten`. Further than three lines apart,
+two lines told apart only by a number (`toBe(200)`, `timeout = 3000`)
+are look-alikes by chance more often than swapped: each stays on its edit.
+Look-alikes in two functions or sections never swap: they stay as edited
+in place. Nor does a swap when either line's
 block was found moved elsewhere (or the crossed line is where another
 block moved): `rewritten`. The check is made before anything else on the
 line's partner nearby, so both lines of a pair decide alike, even when a
