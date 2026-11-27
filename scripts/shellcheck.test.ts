@@ -28,6 +28,7 @@ import {
 	remapGcc,
 	shellcheckArgs,
 	shellScripts,
+	windowsJobLines,
 	workflowRunBlocks,
 } from "./shellcheck.mjs";
 
@@ -249,25 +250,32 @@ describe("workflowRunBlocks", () => {
 
 	it("reads every step of our own workflows, leaving out only the known non-steps", () => {
 		const dir = join(import.meta.dirname, "..", ".github", "workflows");
+		let windowsRuns = 0;
 		const uncovered = readdirSync(dir).flatMap((f) => {
-			const lines = readFileSync(join(dir, f), "utf8").split("\n");
+			const text = readFileSync(join(dir, f), "utf8");
+			const lines = text.split("\n");
 			// A block's script starts on the line after its `run:`.
 			const covered = new Set(
-				workflowRunBlocks(lines.join("\n"), f).map((b) =>
+				workflowRunBlocks(text, f).map((b) =>
 					/^\s*(?:- )?run:/.test(lines[b.line - 1] ?? "") ? b.line : b.line - 1,
 				),
 			);
-			return lines.flatMap((l, n) =>
-				/^\s*(?:- )?run:/.test(l) && !covered.has(n + 1)
-					? [`${f}: ${l.trim()}`]
-					: [],
-			);
+			// The Windows job's steps are PowerShell: left out by where they
+			// are, whatever their command says.
+			const windows = windowsJobLines(text);
+			return lines.flatMap((l, n) => {
+				if (!/^\s*(?:- )?run:/.test(l) || covered.has(n + 1)) return [];
+				if (windows.has(n + 1)) {
+					windowsRuns++;
+					return [];
+				}
+				return [`${f}: ${l.trim()}`];
+			});
 		});
+		// The Windows job is there and has steps: the range isn't empty.
+		expect(windowsRuns).toBeGreaterThan(0);
 		expect(uncovered.sort()).toEqual(
 			[
-				// The Windows job's PowerShell steps.
-				"ci.yml: run: pnpm install --frozen-lockfile",
-				"ci.yml: run: pnpm exec vitest run src/server/agent/acp.test.ts src/server/agent/runner.test.ts src/server/update/updateHelper.test.ts src/server/update/install.test.ts",
 				// workflow_dispatch's `inputs: run:`.
 				"release-finish.yml: run:",
 				// Top-level `defaults: run:`.
@@ -275,6 +283,30 @@ describe("workflowRunBlocks", () => {
 				"release.yml: run:",
 			].sort(),
 		);
+	});
+
+	it("windowsJobLines spans the Windows job only, ending at the next job", () => {
+		const text = [
+			"on:",
+			"  push:",
+			"jobs:",
+			"  lin:",
+			"    runs-on: ubuntu-latest",
+			"    steps:",
+			"      - run: echo a",
+			"  win:",
+			"    runs-on: windows-latest",
+			"    steps:",
+			"      - run: Get-ChildItem",
+			"      - run: pnpm test",
+			"  lin2:",
+			"    runs-on: ubuntu-latest",
+			"    steps:",
+			"      - run: echo b",
+		].join("\n");
+		expect([...windowsJobLines(text)]).toEqual([8, 9, 10, 11, 12]);
+		// The same range is what workflowRunBlocks leaves out.
+		expect(workflowRunBlocks(text).map((b) => b.line)).toEqual([7, 16]);
 	});
 
 	it("a job key with a comment ends the Windows job before it", () => {
