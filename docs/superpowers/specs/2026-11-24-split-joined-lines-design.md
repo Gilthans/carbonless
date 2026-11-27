@@ -1,6 +1,6 @@
 # A line split into several, or several joined into one (CAR-130)
 
-Status: draft for the owner. Ticket: CAR-130 (test case: CAR-221).
+Status: approved 2026-11-27, implemented. Ticket: CAR-130 (test case: CAR-221).
 Mockups (approved by the owner 2026-11-24, "It looks good, go ahead"):
 https://claude.ai/artifact/1QSM1xcQDKgy93tX1RPosx
 
@@ -104,6 +104,11 @@ A candidate is a group when all of these hold:
   call:* 20), the joined text under `WORD_DIFF_MAX` (1,024 characters,
   as for a pair).
 
+  *Decided while building:* a line whose run would pass a cap (a 21st
+  line, or joined text of 1,024 characters or more) gets no group,
+  provided the walk had scored; the veto covers only candidates that
+  overlap that walk.
+
 ### Choosing groups and pairs
 
 Groups join step 2's non-crossing choice as one more kind of item: each
@@ -112,6 +117,10 @@ similarity. A group replaces the pairs it would cover only when it holds
 more of the line's text than they do (the weighting is the builder's,
 tuned on the fixtures and the real-PR comparison). Ties go to today's
 layout.
+
+*Decided while building:* a pair weighs its similarity, a group its
+similarity x 0.9 (`GROUP_WEIGHT`). Weighing a group by `g x run.length`
+turned step 2's case 6 into a join.
 
 *My call:* equal stretches keep step 1's i-th-with-i-th pairs; groups are
 only looked for in unequal ones. A split alone always makes a stretch
@@ -147,7 +156,10 @@ is:
   break only when the one line and that continuation line are both
   comments with the same leader (`//`, `///`, `#`, `--`, `;`, `%`, `*`
   inside a block comment), and the file is not Markdown. So CAR-221's
-  second `//` stays plain, as in the mockups. *My call:* Markdown bullets
+  second `//` stays plain, as in the mockups. *Decided while building:*
+  a leader counts only when a space, a tab or the line's end follows it,
+  so `/*` is not a leader and a continuation ` * ` in a block comment that
+  starts with `/*` is marked (the safe side). *My call:* Markdown bullets
   and headings are never absorbed: a new `*` or `#` there is a new item
   and is marked ("Any added text should be visible", owner 2026-11-24).
 - Trailing spaces before a break are not part of it: added ones are
@@ -218,6 +230,15 @@ late or moves code.
   split into 12–16", "Lines 7–9 joined into 7") is the accessible name of
   each group row and a tooltip on hover; on a phone it is reached through
   the line-number cell (a 40px target), not the 14px bracket.
+  *Decided while building:* the label is in the line-number button's
+  accessible description and the shared Tooltip (hover, focus, long-press
+  on a phone), not a native `title` where there is a pick button. Labels
+  for orphan lines use `baseNo`, and "A line" / "N lines" when there is no
+  number.
+- *Decided while building:* a thread card inside a group stays full width
+  on a phone, so the bracket breaks under it (insetting the card there
+  squeezes it to about half of 360px). On desktop the card is inset and the
+  bracket runs past it.
 
 ### Loading
 
@@ -230,9 +251,14 @@ plain; a failure shows failed on every line (principle 8).
 Groups come from `hunkView`, so the since view gets them on the
 interdiff's hunks, cut at its pieces, exactly as the full diff gets them
 on its own (principle 9: interdiffs are first-class). Example: patch set
-1 adds `def load(path, retries=3, timeout=30):`, patch set 2 splits it.
-Since patch set 1, the old line and its run are one group; against the
-base, all five lines are plain additions.
+1 rewrites a base line into `def load(path, retries=3, timeout=30):`,
+patch set 2 splits it: one piece, so one group.
+
+*Decided while building:* a line added in patch set 1 and split in patch
+set 2 forms no group. The since view shows the old line in a gone piece
+and the new lines in a new piece, and a group never spans two pieces; it
+shows as today. Grouping across pieces is a possible follow-up, pending
+the owner.
 
 Find in PR reads `hunkView`'s rows (`findInPr.ts`), so its order of hits
 follows the group layout with no new work. It draws its own hit marks,
@@ -256,6 +282,9 @@ group scoring has the same guard on its own estimate. Hint: for a fixed
 one line and run start, the bit-parallel LCS can stream the run's lines
 over the one line's masks, so every run length costs about one LCS over
 the longest run.
+
+*Decided while building:* the agent's `diff` read
+(`src/server/agent/reads.ts`) still reports pairs only.
 
 ### Known limit
 
@@ -320,7 +349,7 @@ change.
   bracket spans (also across a thread inside the group), the rows'
   accessible name, the marked text, a thread on a group line staying
   with it; group lines pending while their marks are held, then marked;
-  the since view's split from patch set 2; Find stepping through a
+  the since view's split of a rewritten base line in patch set 2; Find stepping through a
   group's rows in shown order; `expectEveryUnitMarkable` on a file with
   groups. Groups add no new row kind.
 - **Real-PR comparison** (before merge, not CI, part of the owner's QA):
@@ -334,8 +363,8 @@ code: the pure split, the trailing-comma split, the wrapped comment
 (CAR-221's shape), the join, a split next to a pair, a CRLF file, a
 Markdown bullet split, a split cut by a whitespace twin, and the near
 misses (list item added, `}` after a changed line, extract method); then
-a second push that splits a line the first push added, for the since
-view. A README row and a description of what to look at. (Mockup 1 holds
+a second push that splits a line the first push rewrote, for the since
+view (a line the first push added would not group, see the since view). A README row and a description of what to look at. (Mockup 1 holds
 both the pure split and the comma; the gallery keeps them apart.)
 
 ## Left to the builder

@@ -833,6 +833,44 @@ shows a whole list (the server restarted, or forgot the repo) asks with
 `whole` and gets only a whole answer: a list never shrinks to a batch;
 if that read fails, the list stays with the failure on it.
 
+## A line split or joined pairs as a group
+
+One line against an adjacent run of 2 to 20 lines on the other side (a
+line split into several, or several joined into one; CAR-130, spec
+`docs/superpowers/specs/2026-11-24-split-joined-lines-design.md`) is a
+group. It is found where step 2 pairs lines (`hunkItems`,
+`src/shared/hunkPairs.ts`): in an unequal stretch, inside one run of the
+view, after the pairs, from what the pairs left of the budget. In doubt
+there is no group and the lines pair as before.
+
+- **Marks.** The one line is word-diffed against the run joined, and the
+  marks are painted back on each line. The break is not a change:
+  indentation, a trailing `\r` (CRLF files) and a comment leader (`//`,
+  `#`, `--`, `;`, `%`, `*` in a block comment, followed by a space, a tab or
+  the line's end; both lines comments with the same leader) are never marked.
+  A leader in a Markdown file never counts: a new bullet or heading is
+  marked. A pure split marks nothing; any other added text is marked.
+- **The bracket.** In the gutter, in unified and side by side, on desktop and
+  phone; it runs on past rows inserted inside the group (a thread, a
+  comment box). It is not interactive. Its label ("Line 12 split into
+  12-16", "Lines 7-9 joined into 7"; "A line" / "N lines" for a line without
+  a number) is in the line-number button's accessible description and the
+  shared Tooltip (hover, focus, long-press).
+- **Cuts end a group.** Whitespace-only lines are their own clusters, so a
+  run stops at a lone `)` or `}` that has a whitespace twin; the one line's
+  text beyond it is marked removed (over-marks, the safe way).
+- **Coverage is untouched.** Every line of a group is a changed line and
+  stays unreviewed until marked; clusters, keys and counts are the same
+  with or without groups. A group never hides a change (principle 2).
+- **The since view.** Groups are cut at the pieces: a line added in one patch
+  set and split in the next shows as today (the old line in a gone piece, the
+  new lines in a new piece). A base line rewritten in patch set 1 and split
+  in patch set 2 is one piece, and groups.
+- **Loading.** Every line of a group shows pending while its marks are
+  computed, failed on all of them if the work fails.
+- Known limit: a split that changes behaviour by its break alone (`return` /
+  `x`) is a pure split and marks nothing.
+
 ## "Side by side" is a view
 
 Settings' "Side by side" (`src/web/files/sideBySide.ts`) lays the same

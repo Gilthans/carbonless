@@ -45,7 +45,9 @@ maximal value with minimal changes."
   milestone ("a different beast", 2026-11-04).
 - **One line drawing on two** (the owner's extract-method example, where one
   new line takes a variable from one old line and a constructor call from
-  another). Each line has at most one partner here.
+  another). Each line has at most one partner here. A line split into
+  several, or several joined into one, is CAR-130's groups
+  (`2026-11-24-split-joined-lines-design.md`); extract method stays out.
 - **Equal clusters.** They keep step 1's i-th-with-i-th pairing, even when a
   similarity pairing would differ.
 - Any change to what the server sends, to clusters, counts, keys or review

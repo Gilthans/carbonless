@@ -38,7 +38,7 @@ const { buildSnapshot, loadFileHunks } = await load(
 const { hunkView } = await load("../src/web/files/whitespace.ts");
 const { layoutRows } = await load("../src/web/files/sideBySide.ts");
 const { lineSimilarity } = await load("../src/shared/linePairing.ts");
-const { wordMarks } = await load("../src/web/files/wordDiff.ts");
+const { wordMarks, groupMarks } = await load("../src/web/files/wordDiff.ts");
 const lib = await load("./pairing-compare-lib.ts");
 const { esc, markup } = lib;
 
@@ -75,6 +75,8 @@ const stats = {
 	skipped: 0,
 };
 const cases = [];
+const groupCases = [];
+const gstats = { stretches: 0, groups: 0 };
 const hash = (s) => {
 	let h = 2166136261;
 	for (const c of s) h = Math.imul(h ^ c.charCodeAt(0), 16777619);
@@ -150,6 +152,54 @@ for (const lang of readdirSync(corpus, { withFileTypes: true })) {
 									: [],
 						};
 						if (unequal) stats.unequal++;
+						const groups = lib.groupIndexes(
+							view.items.groups.filter((g) => at.has(g.one)),
+							at,
+						);
+						if (lib.hasGroups(groups)) {
+							gstats.stretches++;
+							gstats.groups += groups.length;
+							const gScores = groups.map((g) =>
+								lineSimilarity(
+									gitLines[g.one].text,
+									g.run.map((i) => gitLines[i].text).join(" "),
+								),
+							);
+							const gMarks = new Map();
+							const markdown = /\.(md|markdown|mdx)$/i.test(file.path);
+							for (const g of groups) {
+								const oneIsOld = gitLines[g.one].kind === "del";
+								const m = groupMarks({
+									one: gitLines[g.one].text,
+									run: g.run.map((i) => gitLines[i].text),
+									oneIsOld,
+									markdown,
+								});
+								gMarks.set(g.one, m.one);
+								g.run.forEach((i, k) => {
+									gMarks.set(i, m.run[k]);
+								});
+							}
+							const gFirst =
+								gitLines.find((l) => l.kind === "add") ?? gitLines[0];
+							const gSource = `${meta.repo}#${meta.number} ${file.path}`;
+							const gWhere = `L${gFirst.newNo ?? gFirst.oldNo}`;
+							groupCases.push({
+								id: `G${hash(`${gSource}:${gWhere}`)}`,
+								source: gSource,
+								where: gWhere,
+								size: gitLines.length,
+								dels: dels.length,
+								adds: adds.length,
+								groups,
+								gScores,
+								minScore: Math.min(...gScores),
+								runLength: Math.max(...groups.map((g) => g.run.length)),
+								layouts,
+								gitLines,
+								marks: gMarks,
+							});
+						}
 						if (!lib.changedByStep2(layouts)) continue;
 						if (!unequal) {
 							stats.equalChanged++;
@@ -200,6 +250,8 @@ for (const lang of readdirSync(corpus, { withFileTypes: true })) {
 
 cases.sort(lib.byWorst);
 const shown = cases.slice(0, CAP);
+groupCases.sort(lib.byWorstGroups);
+const gShown = groupCases.slice(0, CAP);
 
 const cell = (c, i, side, score) => {
 	if (i === null) return `<td class="n"></td><td class="c empty"></td>`;
@@ -230,6 +282,39 @@ const unified = (c) =>
 			return `<tr><td class="n">${l.kind === "del" ? (l.oldNo ?? "") : (l.newNo ?? "")}</td><td class="c ${l.kind === "del" ? "old" : "new"}"><div class="x"><code>${markup(l.text, c.marks.get(i)) || "&nbsp;"}</code></div></td></tr>`;
 		})
 		.join("")}</table></div>`;
+
+const inGroup = (c) => {
+	const set = new Set();
+	for (const g of c.groups) {
+		set.add(g.one);
+		for (const i of g.run) set.add(i);
+	}
+	return set;
+};
+const groupTable = (c, rows) => {
+	const members = inGroup(c);
+	return `<div class="tbl"><table>${rows
+		.map(([d, a]) => {
+			const cellOf = (i, side) => {
+				if (i === null) return `<td class="n"></td><td class="c empty"></td>`;
+				const l = c.gitLines[i];
+				const on = members.has(i);
+				const text = on ? markup(l.text, c.marks.get(i)) : esc(l.text);
+				const word = on && c.marks.get(i)?.length ? " w" : "";
+				const no = side === "old" ? l.oldNo : l.newNo;
+				return `<td class="n">${no ?? ""}</td><td class="c ${side}${word}"><div class="x"><code>${text || "&nbsp;"}</code></div></td>`;
+			};
+			const g = c.groups.find((x) => x.one === d || x.one === a);
+			const mark = g && (g.one === d || g.one === a) ? "&#9135;" : "";
+			return `<tr>${cellOf(d, "old")}<td class="s">${mark}</td>${cellOf(a, "new")}</tr>`;
+		})
+		.join("")}</table></div>`;
+};
+const groupCard = (c, n) => `<article id="${c.id}">
+<header><b class="id">${c.id}</b><span class="src">${esc(c.source)} <i>${c.where}</i></span>
+<span class="facts" title="lowest group similarity, longest run, lines removed/added">min ${c.minScore.toFixed(2)} · run ${c.runLength} · −${c.dels}/+${c.adds}</span><span class="rank">#${n + 1}</span></header>
+<div class="cols"><section><h3>Today</h3>${table(c, c.layouts.today, false)}</section>
+<section><h3>With groups</h3>${groupTable(c, c.layouts.step2)}</section></div></article>`;
 
 const card = (c, n) => `<article id="${c.id}">
 <header><b class="id">${c.id}</b><span class="src">${esc(c.source)} <i>${c.where}</i></span>
@@ -271,9 +356,19 @@ details{margin-top:8px}summary{cursor:pointer;color:var(--muted);font-size:13px;
 <div><b>${stats.changed}</b><span>changed by step 2</span></div></div>
 <p class="note">${shown.length < cases.length ? `Showing the worst ${shown.length} of ${cases.length} cases; ${cases.length - shown.length} cut. ` : `All ${cases.length} cases shown. `}Worst first: lowest pair score, then farthest row move, then cluster size. Files were picked for having both removed and added lines, so unequal clusters are over-represented. Equal clusters changed by step 2: ${stats.equalChanged}.</p>
 ${shown.map(card).join("\n")}
+<h1>Groups (CAR-130): lines split or joined</h1>
+<div class="counts"><div><b>${gstats.stretches}</b><span>stretches with a group</span></div><div><b>${gstats.groups}</b><span>groups</span></div></div>
+<p class="note">${gShown.length < groupCases.length ? `Showing the worst ${gShown.length} of ${groupCases.length}. ` : `All ${groupCases.length} stretches shown. `}Every stretch whose layout has a group, worst first: lowest similarity of the one line to its run, then longest run, then size. Mark each fine or bad by its id.</p>
+${gShown.map(groupCard).join("\n")}
 </body></html>`;
 mkdirSync(dirname(outFile), { recursive: true });
 writeFileSync(outFile, html);
 console.error(
-	JSON.stringify({ ...stats, cases: cases.length, shown: shown.length }),
+	JSON.stringify({
+		...stats,
+		groupStretches: gstats.stretches,
+		groups: gstats.groups,
+		cases: cases.length,
+		shown: shown.length,
+	}),
 );
