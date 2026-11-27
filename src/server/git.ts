@@ -1,4 +1,5 @@
-import { type ChildProcess, spawn } from "node:child_process";
+import { type ChildProcess, spawn, spawnSync } from "node:child_process";
+import { setPriority } from "node:os";
 import { beginCall } from "./activity.js";
 import { noteSpawn } from "./spawnWatch.js";
 import { argsSummary, tracer } from "./trace.js";
@@ -17,6 +18,17 @@ export interface RunGitOptions {
 	 * aborted, git isn't started.
 	 */
 	signal?: AbortSignal;
+	/**
+	 * Runs git (and what it starts) at the lowest CPU priority: background
+	 * work no request waits on (clone maintenance).
+	 */
+	lowPriority?: boolean;
+	/**
+	 * On a timeout or an abort, settle only once git has exited: for a
+	 * holder of the repo lock, which must not hand it over while its git
+	 * still runs.
+	 */
+	waitForExit?: boolean;
 }
 
 /**
@@ -70,6 +82,21 @@ export function inheritedEnv(): NodeJS.ProcessEnv {
 
 /** Kills a detached child's whole process group (the child alone if that fails). */
 function killGroup(child: ChildProcess): void {
+	if (process.platform === "win32") {
+		// No process groups: the tree goes (a repack's pack-objects, an
+		// alias's shell), else they outlive git holding the clone's files.
+		if (child.pid === undefined || child.exitCode !== null) return;
+		const kill = spawnSync(
+			"taskkill",
+			["/pid", String(child.pid), "/t", "/f"],
+			{
+				stdio: "ignore",
+				windowsHide: true,
+			},
+		);
+		if (kill.error) child.kill("SIGKILL");
+		return;
+	}
 	try {
 		if (child.pid === undefined) throw new Error("not started");
 		process.kill(-child.pid, "SIGKILL");
@@ -231,6 +258,17 @@ export function runGitFull(
 			detached: opts.timeoutMs !== undefined,
 		});
 		if (opts.timeoutMs !== undefined) trackDetached(child);
+		if (opts.lowPriority && child.pid !== undefined) {
+			try {
+				// Its children (pack-objects) inherit it. CPU only: no I/O
+				// priority. On Windows, git on PATH is often a launcher that
+				// starts the real git at once, which may then keep normal
+				// priority (a race): gentler, never wrong.
+				setPriority(child.pid, 19);
+			} catch {
+				// Not allowed here: it runs at normal priority.
+			}
+		}
 		running.set(child, args);
 		child.on("close", () => running.delete(child));
 		child.on("error", () => running.delete(child));
@@ -247,7 +285,10 @@ export function runGitFull(
 			else child.kill("SIGKILL");
 			child.stdout.destroy();
 			child.stderr.destroy();
-			fail(message);
+			if (opts.waitForExit && child.exitCode === null) {
+				child.once("close", () => fail(message));
+				child.once("error", () => fail(message));
+			} else fail(message);
 		};
 		const timer =
 			opts.timeoutMs === undefined

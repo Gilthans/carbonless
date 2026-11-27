@@ -362,6 +362,8 @@ export async function readObject(
 	) {
 		return readAlone(repo, name, signal);
 	}
+	// Paused (clone maintenance): no process held open beside a repack.
+	if (paused.has(repo)) return readAlone(repo, name, signal);
 	return processOf(repo).read(name, signal);
 }
 
@@ -392,6 +394,51 @@ export async function closeCatFiles(): Promise<void> {
 	processes.clear();
 	for (const p of all) p.close();
 	await Promise.all([...ending]);
+}
+
+/** Clones whose reads each run a `cat-file` of their own for now, and by how many pausers. */
+const paused = new Map<string, number>();
+
+/**
+ * Keeps `repo` without a long-running process until the returned resume is
+ * called (clone maintenance: on Windows an open reader keeps a repack from
+ * deleting the packs it rolled up). From the call on, every read of the
+ * clone runs a `cat-file` of its own that exits when answered, so no read
+ * can start a long one meanwhile. The process up now answers every read
+ * it has (never failed for the pause), then closes; this settles once it
+ * has exited, or at once when `signal` aborts (the pause stays until
+ * resumed; the process closes itself once idle).
+ */
+export async function pauseCatFile(
+	repo: string,
+	signal?: AbortSignal,
+): Promise<() => void> {
+	paused.set(repo, (paused.get(repo) ?? 0) + 1);
+	let resumed = false;
+	const resume = () => {
+		if (resumed) return;
+		resumed = true;
+		const left = (paused.get(repo) ?? 1) - 1;
+		if (left > 0) paused.set(repo, left);
+		else paused.delete(repo);
+	};
+	const up = processes.get(repo);
+	if (up) {
+		processes.delete(repo);
+		while (!up.dead && !up.idle && !signal?.aborted) {
+			await new Promise((r) => setTimeout(r, 10));
+		}
+		if (up.idle) {
+			up.close();
+			await Promise.race([
+				up.exited,
+				new Promise<void>((r) =>
+					signal?.addEventListener("abort", () => r(), { once: true }),
+				),
+			]);
+		}
+	}
+	return resume;
 }
 
 /** How many clones have a process up (tests). */

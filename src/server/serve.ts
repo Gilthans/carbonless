@@ -3,6 +3,7 @@ import { setServerMcp, setServerPort } from "./agent/host.js";
 import { buildApp } from "./app.js";
 import { readConfig, updateConfig } from "./config.js";
 import { configAccess, HomeService } from "./home/homeService.js";
+import { maintenanceOn, startMaintenance } from "./maintenance.js";
 import { SessionRegistry } from "./registry.js";
 import {
 	accessKey,
@@ -140,6 +141,11 @@ export async function startServer(opts: {
 
 	// Asks npm in the background: never delays or fails a start.
 	void updater.start().catch(() => {});
+	// Packs each clone once a day while it is idle (maintenance.ts). Not
+	// under the test harness: its gits would be a test's leftovers.
+	const maintenance = maintenanceOn(testHooks)
+		? startMaintenance({ log })
+		: null;
 
 	let closed: Promise<void> | null = null;
 	return {
@@ -149,6 +155,7 @@ export async function startServer(opts: {
 		close: () => {
 			closed ??= (async () => {
 				updater.stop();
+				await maintenance?.stop();
 				await removeServerState();
 				await app.close();
 				// Their background reads of GitHub and the clones stop with them.

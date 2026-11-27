@@ -14,6 +14,7 @@ import {
 	closeCatFiles,
 	IDLE_MS,
 	MAX_PROCESSES,
+	pauseCatFile,
 	readBlob,
 	readObject,
 } from "./catFile";
@@ -184,6 +185,49 @@ describe("catFile", () => {
 		expect((await readBlob(fx.path, `${commit}:dir/b.txt`)).toString()).toBe(
 			"bee\n",
 		);
+	});
+
+	it("a pause closes the clone's process once its reads out are answered; reads meanwhile run their own", async () => {
+		await readBlob(fx.path, `${commit}:a.txt`);
+		expect(catFileCount()).toBe(1);
+		// A read out when the pause comes is answered, not failed.
+		const out = readBlob(fx.path, `${commit}:big.bin`);
+		const resume = await pauseCatFile(fx.path);
+		const spawns = countSpawns();
+		try {
+			expect((await out).equals(big)).toBe(true);
+			expect(catFileCount()).toBe(0);
+			expect((await readBlob(fx.path, `${commit}:dir/b.txt`)).toString()).toBe(
+				"bee\n",
+			);
+			// Its own cat-file, which has exited: no process kept up.
+			expect(spawns.shapes).toEqual(["git cat-file --batch"]);
+			expect(catFileCount()).toBe(0);
+		} finally {
+			spawns.stop();
+			resume();
+		}
+		await readBlob(fx.path, `${commit}:a.txt`);
+		expect(catFileCount()).toBe(1);
+	});
+
+	it("a pause never fails the reads queued on the clone's process, however many or slow", async () => {
+		await readBlob(fx.path, `${commit}:a.txt`);
+		// A burst of big reads queued just before the pause.
+		const out = Array.from({ length: 40 }, () =>
+			readBlob(fx.path, `${commit}:big.bin`),
+		);
+		// On the clone's process, not reads of their own.
+		expect(catFileCount()).toBe(1);
+		const resume = await pauseCatFile(fx.path);
+		try {
+			for (const blob of await Promise.all(out)) {
+				expect(blob.equals(big)).toBe(true);
+			}
+			expect(catFileCount()).toBe(0);
+		} finally {
+			resume();
+		}
 	});
 
 	it("closes its process once idle", async () => {

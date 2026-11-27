@@ -92,6 +92,9 @@ const E2E_MAP = [
 		/^src\/shared\/(linePairing|tokenize|hunkPairs)\.ts$/,
 		["linePairing", "inlineDiff", "rereview", "agent"],
 	],
+	// Clone maintenance (CAR-325): off under the test harness, so no spec
+	// reaches it; its unit tests are the coverage.
+	[/^src\/server\/maintenance\.ts$/, []],
 	// Release notes' formats and text rule (CAR-192): pure, its unit tests
 	// and the release scripts' are the coverage.
 	[/^src\/shared\/releaseNotes\.ts$/, []],
