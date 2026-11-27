@@ -965,9 +965,12 @@ test("the since view: a re-indent of markup nobody marked in PS1, whitespace onl
 	await ignoreWhitespace(page, true);
 	// On: the card is whitespace only against the base (depth 2 to 6), so
 	// the full diff has nothing to read there, and neither does the since
-	// view: its pieces, read in PS1 or not, and the orphans are all left
-	// out (the card's one cluster: the `~` says one). Only the note counts.
-	await expect(bar).toContainText("0 / 1 cluster reviewed");
+	// view: its re-indent pieces, read in PS1 or not, and the orphans are
+	// left out (the card's one cluster: the `~` says one). PS1's
+	// `<Title />`, cut off as a removal of its own, has no whitespace twin
+	// left (an orphan row took it), so it still counts (fails closed), with
+	// the note.
+	await expect(bar).toContainText("0 / 2 clusters reviewed");
 	await expect(
 		page
 			.locator("[data-page-bar]")
@@ -975,15 +978,12 @@ test("the since view: a re-indent of markup nobody marked in PS1, whitespace onl
 				'[data-testid="ws-left-out"][aria-label="1 whitespace-only cluster not counted"]',
 			),
 	).toBeVisible();
-	// The card reads quiet: whitespace-only rows, no added or removed rows.
+	// The card's re-indents read quiet: whitespace-only rows; no added row.
 	const cardSection = fileSection(page, CARD);
 	await opened(cardSection);
 	await expect(cardSection.getByTestId("ws-cluster").first()).toBeVisible();
 	await expect(
 		cardSection.locator('[data-testid="diff-line"][data-kind="add"]'),
-	).toHaveCount(0);
-	await expect(
-		cardSection.locator('[data-testid="diff-line"][data-kind="del"]'),
 	).toHaveCount(0);
 	// Off: everything counts.
 	await ignoreWhitespace(page, false);
@@ -1053,7 +1053,14 @@ test("the since view: a .txt line PS1 only re-indented, nobody marked, re-indent
 	await ignoreWhitespace(page, true);
 	await expect(bar).toContainText("0 / 1 cluster reviewed");
 	await expect(page.getByTestId("to-read")).toHaveText(/(^|\s)1 to read$/);
-	await expect(leftOut(page)).toBeVisible();
+	// The `~` says what is left out (the removal since, which owns no
+	// line of PS2's cluster, counts on its own).
+	await expect(
+		page.locator("[data-page-bar]").getByTestId("ws-left-out"),
+	).toHaveAttribute(
+		"aria-label",
+		/^\d+ whitespace-only clusters? not counted$/,
+	);
 	const notesSection = fileSection(page, notes);
 	await opened(notesSection);
 	await expect(notesSection.getByTestId("ws-cluster").first()).toBeVisible();
