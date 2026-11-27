@@ -786,7 +786,7 @@ function nestOf(b: MdBlock, own: readonly string[], quotes: number): number {
  * numbered one, so the tail stays in that list (CAR-318); undefined for
  * any other block. One forward pass: the last item opened at each depth.
  */
-export function tailLists(
+function tailLists(
 	lines: readonly string[],
 	blocks: readonly MdBlock[],
 ): ("ol" | "ul" | undefined)[] {
