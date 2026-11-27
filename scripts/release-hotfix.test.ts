@@ -220,15 +220,20 @@ describe("pnpm release hotfix: where it starts", () => {
 	});
 
 	it("refused unless master's next release is after the hotfix", async () => {
-		for (const next of ["0.4.1", "0.4.0"]) {
+		for (const [next, error] of [
+			[
+				"0.4.1",
+				/master's next release is 0\.4\.1, not after the hotfix 0\.4\.1: move master on first/,
+			],
+			[
+				"0.4.0",
+				/master's next release is 0\.4\.0, not after the hotfix 0\.4\.1: move master on first/,
+			],
+		] as const) {
 			const { io, calls } = startIo({
 				"gh api repos/owner/repo/contents/package.json": `${contents(next)}\n`,
 			});
-			await expect(hotfixStart(io)).rejects.toThrow(
-				new RegExp(
-					`master's next release is ${next.replace(/\./g, "\\.")}, not after the hotfix 0\\.4\\.1: move master on first`,
-				),
-			);
+			await expect(hotfixStart(io)).rejects.toThrow(error);
 			expect(writes(calls)).toEqual([]);
 		}
 	});
