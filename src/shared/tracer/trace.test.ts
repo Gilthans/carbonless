@@ -7,6 +7,7 @@
 
 import fc from "fast-check";
 import { describe, expect, it } from "vitest";
+import { bestCpuRatio, repeat } from "../../../test/cpu";
 import { lineSimilarity } from "../linePairing";
 import type { DiffSide } from "../types";
 import * as tracer from "./index";
@@ -20,6 +21,7 @@ import {
 	tracePosition,
 	traceRange,
 	traceSpan,
+	WIDE_SWAP_LINES,
 } from "./trace";
 
 const R = (line: number): Position => ({ side: "RIGHT", line });
@@ -57,9 +59,9 @@ const rows = (from: number, lines: string[], side: DiffSide = "RIGHT") =>
 	Object.fromEntries(lines.map((t, i) => [`${side}:${from + i}`, t]));
 
 describe("tracePosition", () => {
-	it("exports TRACER_VERSION 4 from the index", () => {
-		expect(TRACER_VERSION).toBe(4);
-		expect(tracer.TRACER_VERSION).toBe(4);
+	it("exports TRACER_VERSION 5 from the index", () => {
+		expect(TRACER_VERSION).toBe(5);
+		expect(tracer.TRACER_VERSION).toBe(5);
 		expect(tracer.createLineMapper).toBe(createLineMapper);
 		expect(tracer.tracePosition).toBe(tracePosition);
 	});
@@ -779,6 +781,439 @@ describe("tracePosition: look-alike lines swapped around a kept line (CAR-279)",
 		);
 		expect(landing(apart, 1)).toBe(1);
 		expect(landing(apart, 3)).toBe(3);
+	});
+});
+
+/** `n` kept lines between a swap's two lines. */
+const kept = (n: number) =>
+	Array.from({ length: n }, (_, i) => `step${i + 1}()`);
+
+describe("tracePosition: look-alike lines swapped across a wider gap (CAR-294)", () => {
+	const A = "value = computeTotal(alpha)";
+	const B = "value = computeTotal(beta)";
+
+	for (const gap of [3, 10]) {
+		it(`swapped as they were, ${gap} kept lines apart, follow their text`, () => {
+			const d = inPlace([A, ...kept(gap), B], [B, ...kept(gap), A]);
+			expect(tracePosition(R(1), d)).toStrictEqual({
+				kind: "changed",
+				side: "RIGHT",
+				line: gap + 2,
+				oldText: A,
+				moved: true,
+			});
+			expect(landing(d, gap + 2)).toBe(1);
+		});
+
+		it(`swapped and edited, ${gap} kept lines apart, follow their text`, () => {
+			const d = inPlace(
+				[A, ...kept(gap), B],
+				[
+					"value = computeTotal(beta, 2)",
+					...kept(gap),
+					"value = computeTotal(alpha, 2)",
+				],
+			);
+			expect(landing(d, 1)).toBe(gap + 2);
+			expect(landing(d, gap + 2)).toBe(1);
+		});
+	}
+
+	it("Markdown items of one list swapped and edited four lines apart follow their text", () => {
+		// Crosses by 0.118 both ways, as CAR-279's Markdown case.
+		const d = inPlace(
+			[
+				"- Run the build script for the web package",
+				"- Lint",
+				"- Test",
+				"- Pack",
+				"- Sign",
+				"- Run the build script for the server package",
+			],
+			[
+				"- Run the build script for the server package twice",
+				"- Lint",
+				"- Test",
+				"- Pack",
+				"- Sign",
+				"- Run the build script for the web package twice",
+			],
+		);
+		expect(landing(d, 1)).toBe(6);
+		expect(landing(d, 6)).toBe(1);
+	});
+
+	it("a nested block between the two lines is still their block", () => {
+		const d = inPlace(
+			[
+				"func build() {",
+				'\tbuildPackage("web", opts)',
+				"\tif debug {",
+				"\t\tlog(opts)",
+				"\t}",
+				'\tbuildPackage("server", opts)',
+				"}",
+			],
+			[
+				"func build() {",
+				'\tbuildPackage("server", opts)',
+				"\tif debug {",
+				"\t\tlog(opts)",
+				"\t}",
+				'\tbuildPackage("web", opts)',
+				"}",
+			],
+		);
+		expect(landing(d, 2)).toBe(6);
+		expect(landing(d, 6)).toBe(2);
+	});
+
+	it("crossed by less than the margin far apart: can't tell", () => {
+		// CAR-279's near miss (0.087), five lines apart.
+		const d = inPlace(
+			[
+				"- Run the full build script for the main web package now",
+				...kept(4),
+				"- Run the full build script for the main server package now",
+			],
+			[
+				"- Run the full build script for the main server package now twice",
+				...kept(4),
+				"- Run the full build script for the main web package now twice",
+			],
+		);
+		expect(landing(d, 1)).toBe("rewritten");
+		expect(landing(d, 6)).toBe("rewritten");
+	});
+
+	it("three look-alikes rotated far apart: can't tell", () => {
+		const C = "value = computeTotal(gamma)";
+		const d = inPlace(
+			[A, ...kept(4), B, ...kept(4), C],
+			[C, ...kept(4), A, ...kept(4), B],
+		);
+		expect(landing(d, 1)).toBe("rewritten");
+		expect(landing(d, 6)).toBe("rewritten");
+		expect(landing(d, 11)).toBe("rewritten");
+	});
+
+	it("a far swap never overrides a block that moved elsewhere: can't tell", () => {
+		const d = withHunks(
+			[
+				"setupAlpha(pool)",
+				A,
+				"logAlphaTotals(value)",
+				...kept(5),
+				B,
+				...kept(2),
+			],
+			[
+				B,
+				...kept(5),
+				"value = computeTotal(alpha, 2)",
+				...kept(2),
+				"setupAlpha(pool)",
+				A,
+				"logAlphaTotals(value)",
+			],
+			[hunk(1, 3, 1, 1), hunk(9, 1, 7, 1), hunk(11, 0, 10, 3)],
+		);
+		expect(landing(d, 2)).toBe("rewritten");
+		expect(landing(d, 9)).toBe("rewritten");
+	});
+
+	it("past WIDE_SWAP_LINES nothing is compared: each stays on its edit, as before", () => {
+		const gap = WIDE_SWAP_LINES;
+		const d = inPlace([A, ...kept(gap), B], [B, ...kept(gap), A]);
+		expect(landing(d, 1)).toBe(1);
+		expect(landing(d, gap + 2)).toBe(gap + 2);
+	});
+
+	it("look-alikes in two functions never swap (Go, Python, a class's methods)", () => {
+		const users = 'rows := db.Query("SELECT id, name FROM users")';
+		const teams = 'rows := db.Query("SELECT id, name FROM teams")';
+		const go = (a: string, b: string) => [
+			"func loadUsers() {",
+			`\t${a}`,
+			"\tdefer rows.Close()",
+			"\treturn scan(rows)",
+			"}",
+			"",
+			"func loadTeams() {",
+			`\t${b}`,
+			"\tdefer rows.Close()",
+			"\treturn scan(rows)",
+			"}",
+		];
+		const goSwap = inPlace(go(users, teams), go(teams, users));
+		expect(landing(goSwap, 2)).toBe(2);
+		expect(landing(goSwap, 8)).toBe(8);
+		const py = (a: string, b: string) => [
+			"def load_users():",
+			`    rows = db.query("SELECT id, name FROM ${a}")`,
+			"    log(rows)",
+			"    return rows",
+			"",
+			"def load_teams():",
+			`    rows = db.query("SELECT id, name FROM ${b}")`,
+			"    log(rows)",
+			"    return rows",
+		];
+		const pySwap = inPlace(py("users", "teams"), py("teams", "users"));
+		expect(landing(pySwap, 2)).toBe(2);
+		expect(landing(pySwap, 7)).toBe(7);
+		const js = (a: string, b: string) => [
+			"class Repo {",
+			"  loadUsers() {",
+			`    return this.db.query("SELECT id, name FROM ${a}")`,
+			"  }",
+			"",
+			"  loadTeams() {",
+			`    return this.db.query("SELECT id, name FROM ${b}")`,
+			"  }",
+			"}",
+		];
+		const jsSwap = inPlace(js("users", "teams"), js("teams", "users"));
+		expect(landing(jsSwap, 3)).toBe(3);
+		expect(landing(jsSwap, 7)).toBe(7);
+	});
+
+	it("look-alikes in two sections never swap (YAML parents, INI tables, Markdown headings)", () => {
+		const yaml = (a: string, b: string) => [
+			"server:",
+			`  log_file: /var/log/${a}.log`,
+			"  host: alpha",
+			"  user: svc",
+			"client:",
+			`  log_file: /var/log/${b}.log`,
+			"  host: beta",
+		];
+		const y = inPlace(
+			yaml("server-main", "client-main"),
+			yaml("client-main", "server-main"),
+		);
+		expect(landing(y, 2)).toBe(2);
+		expect(landing(y, 6)).toBe(6);
+		const ini = (a: string, b: string) => [
+			"[server]",
+			`log_file = /var/log/${a}.log`,
+			"host = alpha",
+			"user = svc",
+			"[client]",
+			`log_file = /var/log/${b}.log`,
+			"host = beta",
+		];
+		const i = inPlace(
+			ini("server-main", "client-main"),
+			ini("client-main", "server-main"),
+		);
+		expect(landing(i, 2)).toBe(2);
+		expect(landing(i, 6)).toBe(6);
+		const md = (a: string, b: string) => [
+			"## Web",
+			`- Run the build script for the ${a} package`,
+			"- Check the output",
+			"",
+			"## Server",
+			`- Run the build script for the ${b} package`,
+			"- Check the logs",
+		];
+		const m = inPlace(md("web", "server"), md("server", "web"));
+		expect(landing(m, 2)).toBe(2);
+		expect(landing(m, 6)).toBe(6);
+	});
+
+	it("far look-alikes told apart only by a number stay on their edit", () => {
+		// 200→201 above, 201→404 below: the lower line's old text is the
+		// upper's new one, a crossing one way, by chance.
+		const chain = inPlace(
+			[
+				"expect(response.status).toBe(200)",
+				...kept(5),
+				"expect(response.status).toBe(201)",
+			],
+			[
+				"expect(response.status).toBe(201)",
+				...kept(5),
+				"expect(response.status).toBe(404)",
+			],
+		);
+		expect(landing(chain, 1)).toBe(1);
+		expect(landing(chain, 7)).toBe(7);
+		// Values swapped under one key: which moved can't be read from the
+		// text; the edits in place stand, as before.
+		const values = inPlace(
+			[
+				"connection_timeout_ms = 3000",
+				...kept(5),
+				"connection_timeout_ms = 5000",
+			],
+			[
+				"connection_timeout_ms = 5000",
+				...kept(5),
+				"connection_timeout_ms = 3000",
+			],
+		);
+		expect(landing(values, 1)).toBe(1);
+		expect(landing(values, 7)).toBe(7);
+	});
+
+	it("block headers whose names swapped far apart stay on their block (tests, methods, cases, arms)", () => {
+		// A mislabelled pair fixed by swapping the titles: the bodies, and
+		// what a thread on the header is about, stayed.
+		const tests = (a: string, b: string) => [
+			'describe("auth", () => {',
+			`\tit("${a}", async () => {`,
+			'\t\tconst res = await get("/x", guest)',
+			"\t\texpect(res.status).toBe(403)",
+			"\t})",
+			"",
+			`\tit("${b}", async () => {`,
+			'\t\tconst res = await get("/x", admin)',
+			"\t\texpect(res.status).toBe(200)",
+			"\t})",
+			"})",
+		];
+		const it2 = inPlace(
+			tests("returns 200 for admin users", "returns 403 for guest users"),
+			tests("returns 403 for guest users", "returns 200 for admin users"),
+		);
+		expect(landing(it2, 2)).toBe(2);
+		expect(landing(it2, 7)).toBe(7);
+		const py = (a: string, b: string) => [
+			"class TestAuth:",
+			`    def ${a}(self):`,
+			"        r = get(guest)",
+			"        assert r.status == 403",
+			"",
+			`    def ${b}(self):`,
+			"        r = get(admin)",
+			"        assert r.status == 200",
+		];
+		const methods = inPlace(
+			py("test_admin_gets_ok", "test_guest_is_forbidden"),
+			py("test_guest_is_forbidden", "test_admin_gets_ok"),
+		);
+		expect(landing(methods, 2)).toBe(2);
+		expect(landing(methods, 6)).toBe(6);
+		const go = (a: string, b: string) => [
+			"\tswitch event.kind {",
+			`\tcase ${a}:`,
+			"\t\tnotifyAdmins(event)",
+			'\t\tmetrics.inc("x")',
+			"\t\taudit(event)",
+			`\tcase ${b}:`,
+			"\t\tarchive(event)",
+			'\t\tmetrics.inc("y")',
+			"\t}",
+		];
+		const cases = inPlace(
+			go("EventKindUserCreated", "EventKindUserDeleted"),
+			go("EventKindUserDeleted", "EventKindUserCreated"),
+		);
+		expect(landing(cases, 2)).toBe(2);
+		expect(landing(cases, 6)).toBe(6);
+		const rust = (a: string, b: string) => [
+			"    match kind {",
+			`        Kind::${a} => {`,
+			"            notify_admins(&ev);",
+			"            audit(&ev);",
+			"        }",
+			`        Kind::${b} => {`,
+			"            archive(&ev);",
+			"        }",
+			"    }",
+		];
+		const arms = inPlace(
+			rust("UserCreated", "UserDeleted"),
+			rust("UserDeleted", "UserCreated"),
+		);
+		expect(landing(arms, 2)).toBe(2);
+		expect(landing(arms, 6)).toBe(6);
+	});
+
+	it("values swapped far apart under keys that stay put stay, even when the key's word is in the value", () => {
+		const d = inPlace(
+			[
+				'handlers["users"] = newHandler("/api/users", usersStore)',
+				"func init() { setup() }",
+				"a := 1",
+				"b := 2",
+				"c := 3",
+				'handlers["teams"] = newHandler("/api/teams", teamsStore)',
+			],
+			[
+				'handlers["users"] = newHandler("/api/teams", teamsStore)',
+				"func init() { setup() }",
+				"a := 1",
+				"b := 2",
+				"c := 3",
+				'handlers["teams"] = newHandler("/api/users", usersStore)',
+			],
+		);
+		expect(landing(d, 1)).toBe(1);
+		expect(landing(d, 6)).toBe(6);
+	});
+
+	it("far look-alikes edited in place, or keeping their keys, stay", () => {
+		const logs = inPlace(
+			[
+				'logger.info("Server started on port", port)',
+				...kept(8),
+				'logger.info("Worker started with id", id)',
+			],
+			[
+				'logger.info("HTTP server started on port", port)',
+				...kept(8),
+				'logger.info("Worker started with id and pool", id, pool)',
+			],
+		);
+		expect(landing(logs, 1)).toBe(1);
+		expect(landing(logs, 10)).toBe(10);
+		const renamed = inPlace(
+			[A, ...kept(5), B],
+			["value = computeSum(alpha)", ...kept(5), "value = computeSum(beta)"],
+		);
+		expect(landing(renamed, 1)).toBe(1);
+		expect(landing(renamed, 7)).toBe(7);
+		const rows = inPlace(
+			[
+				'{name: "empty input", want: errEmptyInput},',
+				...kept(4),
+				'{name: "nil input", want: errNilInput},',
+			],
+			[
+				'{name: "empty input", want: errNilInput},',
+				...kept(4),
+				'{name: "nil input", want: errEmptyInput},',
+			],
+		);
+		expect(landing(rows, 1)).toBe(1);
+		expect(landing(rows, 6)).toBe(6);
+	});
+
+	it("scales linearly: tracing 4x the changed look-alike lines costs about 4 runs of a quarter", () => {
+		// One function of look-alike calls, every other line edited: each
+		// line's swap check reads WIDE_SWAP_LINES around it, never the
+		// whole block. Measured on the dev machine: 1.0-1.2x; a whole-block
+		// window 4.1-4.5x.
+		const traceAll = (n: number) => () => {
+			const old = ["func f() {"];
+			const now = ["func f() {"];
+			for (let i = 0; i < n; i++) {
+				old.push(`\tvalue${i % 7} = computeTotal(item${i}, opts)`);
+				now.push(`\tvalue${i % 7} = computeTotal(item${i}, opts, 2)`);
+				old.push(`\tkept${i}()`);
+				now.push(`\tkept${i}()`);
+			}
+			old.push("}");
+			now.push("}");
+			const d = inPlace(old, now);
+			for (let i = 0; i < n; i++) tracePosition(R(2 + 2 * i), d);
+		};
+		const n = 30;
+		const { ratio } = bestCpuRatio(traceAll(4 * n), repeat(4, traceAll(n)));
+		expect(ratio).toBeLessThan(2);
 	});
 });
 
