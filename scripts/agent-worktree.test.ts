@@ -37,8 +37,15 @@ const commit = (cwd: string, file: string, message: string) => {
 	return git(cwd, "rev-parse", "HEAD");
 };
 
+// A sync child blocks the event loop, so Vitest's own timeout can't end a
+// hang: the spawn carries one.
 const run = (...args: string[]) =>
-	spawnSync("bash", [script, ...args], { cwd: clone, env, encoding: "utf8" });
+	spawnSync("bash", [script, ...args], {
+		cwd: clone,
+		env,
+		encoding: "utf8",
+		timeout: GIT_TEST_TIMEOUTS.testTimeout,
+	});
 
 const wtHead = (name: string) =>
 	git(join(clone, ".worktrees", name), "rev-parse", "HEAD");
@@ -59,6 +66,7 @@ beforeEach(() => {
 		GIT_AUTHOR_EMAIL: "t@example.com",
 		GIT_COMMITTER_NAME: "t",
 		GIT_COMMITTER_EMAIL: "t@example.com",
+		GIT_TERMINAL_PROMPT: "0",
 	});
 	git(tmp, "init", "-q", "--bare", "-b", "master", origin);
 	mkdirSync(join(clone, "scripts"), { recursive: true });
@@ -103,6 +111,18 @@ describe("agent-worktree.sh", () => {
 			{ cwd: clone, env },
 		);
 		expect(upstream.status).not.toBe(0);
+	});
+
+	it("ignores a local branch named origin/master", () => {
+		const stale = git(clone, "rev-parse", "master");
+		git(clone, "branch", "origin/master", stale);
+		const newest = commit(other, "m.txt", "newer master");
+		git(other, "push", "-q", "origin", "master");
+
+		const r = run("car-5-x");
+		expect(r.status, r.stderr).toBe(0);
+		expect(wtHead("car-5-x")).toBe(newest);
+		expect(r.stdout).toContain("Base: origin/master (");
 	});
 
 	it("takes an explicit base: a branch or a SHA", () => {
