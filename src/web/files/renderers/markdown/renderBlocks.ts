@@ -12,6 +12,7 @@ import {
 	newSide,
 	oldSide,
 	SENTINEL,
+	scrub,
 } from "./wordMarks";
 
 /**
@@ -663,8 +664,10 @@ function mergedBody(
 	};
 	try {
 		const merged = body(src);
-		const oldBody = body(opts.sources?.old ?? oldSide(src));
-		const newBody = body(opts.sources?.new ?? newSide(src));
+		// Each block's source as mergedSource read it (its own sentinel
+		// code points scrubbed), so such a block still matches.
+		const oldBody = body(opts.sources ? scrub(opts.sources.old) : oldSide(src));
+		const newBody = body(opts.sources ? scrub(opts.sources.new) : newSide(src));
 		if (!merged || !oldBody || !newBody) return null;
 		applyMarks(merged);
 		const html = merged.innerHTML;

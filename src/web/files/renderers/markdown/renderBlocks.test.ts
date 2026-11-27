@@ -547,6 +547,22 @@ describe("renderMerged checks each side against its block's own source (CAR-318)
 		).toBeNull();
 	});
 
+	it("a block holding the marks' own private-use code points still gets its words marked", () => {
+		const oldL = ["Ferry \uE000 at nine."];
+		const newL = ["Ferry \uE000 at ten."];
+		const pair = renderPair(
+			sideBlocks(oldL, markdownBlocks(oldL)),
+			0,
+			sideBlocks(newL, markdownBlocks(newL)),
+			0,
+			opts,
+		);
+		expect(pair).not.toBeNull();
+		const d = dom(pair?.merged ?? "");
+		expect(d.querySelector("del.md-del")).toHaveTextContent("nine");
+		expect(d.querySelector("ins.md-ins")).toHaveTextContent("ten");
+	});
+
 	it("a table cell whose URL runs up to its pipe gets its words marked, as GitHub ends the URL at the pipe", () => {
 		const oldL = ["| a | b |", "|---|---|", "|old|2|"];
 		const newL = ["| a | b |", "|---|---|", "|https://example.com/x|2|"];

@@ -31,7 +31,7 @@ const SENTINELS = /[\uE000-\uE003]/g;
 export const SENTINEL = /[\uE000-\uE003]/;
 
 /** Content's own sentinel code points, made harmless. */
-const scrub = (s: string): string => s.replace(SENTINELS, "\uFFFD");
+export const scrub = (s: string): string => s.replace(SENTINELS, "\uFFFD");
 
 /**
  * The longest side a block takes marks on. The line view cuts at

@@ -102,7 +102,8 @@ export function failedImageWhy(src: string, from: number | undefined): string {
 		const url = new URL(src, window.location.href);
 		const own =
 			url.origin === window.location.origin &&
-			/\/api\/files\/\d+\/blob$/.test(url.pathname);
+			// The blob route, bound to a review or not (reviewApiPath).
+			/\/api\/(?:r\/[^/]+\/)?files\/\d+\/blob$/.test(url.pathname);
 		if (own && url.searchParams.get("side") === "old") {
 			return "Not at this patch set";
 		}

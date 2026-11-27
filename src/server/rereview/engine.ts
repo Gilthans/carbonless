@@ -60,7 +60,7 @@ import {
 import { detectShape, type Shape } from "./shape.js";
 
 /** Bumped when the engine's cached, state-free result could change for the same inputs. */
-const ENGINE_VERSION = 9;
+const ENGINE_VERSION = 10;
 
 /**
  * A side's Markdown blocks, parsed once per side's lines (CAR-318): the
