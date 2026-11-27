@@ -123,10 +123,17 @@ export interface AcpLogEntry {
 	response?: unknown;
 }
 
-/** The log at `path` (CRB_FAKE_ACP_LOG), oldest first; [] before anything was logged. */
+/**
+ * The log at `path` (CRB_FAKE_ACP_LOG), oldest first; [] before anything was
+ * logged. Only whole lines: a read while the fake's append is under way can
+ * see part of its line (one write() isn't atomic to a reader; CAR-305), and
+ * that entry isn't logged until its newline is.
+ */
 export function acpLog(path: string): AcpLogEntry[] {
 	if (!existsSync(path)) return [];
-	return readFileSync(path, "utf8")
+	const text = readFileSync(path, "utf8");
+	return text
+		.slice(0, text.lastIndexOf("\n") + 1)
 		.split("\n")
 		.filter(Boolean)
 		.map((line) => JSON.parse(line) as AcpLogEntry);
