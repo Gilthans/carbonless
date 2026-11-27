@@ -8,6 +8,7 @@ import type { Cluster, Snapshot } from "../src/shared/types";
 import { homePr } from "../test/fake-gh/scenario";
 import {
 	expectNoPageOverflow,
+	fileProgress,
 	fileSection,
 	ignoreWhitespace,
 	marksReady,
@@ -1303,6 +1304,41 @@ test("an added file is one box per blank-line-ended block; ticking each finishes
 	await expect(bar).toContainText("3 / 3 clusters reviewed");
 	await expect(bar).toContainText("100%");
 	await expect(section.locator("header")).toHaveAttribute("data-finished");
+});
+
+test("an added machine-made file (by name, `.min.js`) is one box, next to an ordinary added file cut in three (CAR-322)", async ({
+	page,
+	pr,
+	startCrb,
+}) => {
+	const GENERATED = "dist/app.min.js";
+	const body = addedFixture.files?.[0]?.files[ADDED] as string;
+	await pr({
+		...addedFixture,
+		files: [
+			{
+				message: "Add a file and a minified one",
+				files: {
+					[ADDED]: body,
+					[GENERATED]: body,
+				},
+			},
+		],
+	});
+	const s = await startCrb();
+	await openFiles(page, s.url);
+	const bar = progress(page);
+	// 3 pieces of the ordinary file, 1 for the minified one.
+	await expect(bar).toContainText("0 / 4 clusters reviewed");
+	const generated = fileSection(page, GENERATED);
+	await generated.getByRole("button", { name: "Expand file" }).click();
+	await expect(generated.locator("table")).toBeVisible();
+	await expect(boxes(generated)).toHaveCount(1);
+	await boxes(generated).click();
+	await expect(bar).toContainText("1 / 4 clusters reviewed");
+	await expect(generated.locator("header")).toHaveAttribute("data-finished");
+	// The ordinary file's three boxes are the rest of the bar's.
+	await expect(fileProgress(fileSection(page, ADDED))).toContainText("0 / 3");
 });
 
 test("a seam marks where one cluster ends and the next starts, only between two of the same colour; it moves nothing (CAR-235)", async ({

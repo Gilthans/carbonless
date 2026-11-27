@@ -60,7 +60,7 @@ import {
 import { detectShape, type Shape } from "./shape.js";
 
 /** Bumped when the engine's cached, state-free result could change for the same inputs. */
-const ENGINE_VERSION = 8;
+const ENGINE_VERSION = 9;
 
 /** The patch set a comparison is from, with its snapshot and folded states. */
 export type SincePatchset = PatchsetRecord & {

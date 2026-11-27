@@ -24,10 +24,11 @@ import { closeCatFiles, readObject } from "../catFile.js";
 import { GitError, runGit } from "../git.js";
 import { BlobCache } from "./blobCache.js";
 import {
+	addedCut,
 	buildAllClusters,
-	cutsAtBlankLines,
 	splitAtBlankLines,
 	splitCluster,
+	WHOLE_SALT,
 } from "./clusters.js";
 import { readTabWidths } from "./editorconfig.js";
 import { type ChangedFile, changedPathsOf, listChangedFiles } from "./files.js";
@@ -360,9 +361,11 @@ async function summarize(
 		const hunks = unkeyed[index] ?? [];
 		const text = texts[index];
 		const hasLines = hunks.some((c) => c.kind === "lines");
+		const cut = file.status === "added" ? addedCut(file.path) : "blocks";
 		const keysOf = (clusters: Omit<Cluster, "key">[]) =>
 			clusterKeys(file.path, clusters, text?.newLines ?? [], {
 				encoding: text?.encoding ?? "utf8",
+				...(cut === "machine" ? { salt: WHOLE_SALT } : {}),
 				// Without lines, a binary, submodule or type change would otherwise
 				// look the same whatever the content.
 				contentOids:
@@ -384,7 +387,7 @@ async function summarize(
 				noNewlineAtEnd: text?.noNewlineAtEnd ?? false,
 			},
 			{
-				blankLines: file.status === "added" && cutsAtBlankLines(file.path),
+				blankLines: file.status === "added" && cut === "blocks",
 				markdown,
 			},
 		);

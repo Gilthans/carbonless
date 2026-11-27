@@ -998,8 +998,8 @@ first piece (`splitAtBlankLines` in `src/server/diff/clusters.ts`, called by
 way, nor are added lock files (`LOCK_FILES`, by name: `pnpm-lock.yaml`,
 `package-lock.json`, `Cargo.lock`, `go.sum` and the like), which stay one
 cluster, so a whole-file mark on one stays one event (see "Measurements").
-Files `.gitattributes` marks `linguist-generated` are cut like any other:
-nothing reads that attribute yet. The pieces carry `Cluster.split` like any other, so a review marked
+Nor, since CAR-322, are added machine-made files (see "Machine-made
+files", below). The pieces carry `Cluster.split` like any other, so a review marked
 before (the whole file one cluster) keeps its marks: the split carry puts a
 whole mark on every piece and line marks on the lines they marked. No new
 event and no new stored field. The since view needs nothing of its own: its
@@ -1011,6 +1011,28 @@ Since every added file is now cut, the two CAR-156 cases below are common
 rather than rare: an older crb unticking a split-carried file (see "Mixed
 versions") leaves the pieces marked, and a file carried whole into a later
 patch set counts as N carried clusters, one per piece, not one.
+
+**Machine-made files.** Since CAR-322 (2026-11-27; owner: "If they are
+generated they should stay one block", then "Let's go back to extension
+based exceptions") an added file whose name (any folder, case-sensitive)
+ends like a machine-made one stays one cluster, as a lock file does
+(`MACHINE_MADE` and `addedCut` in `src/server/diff/clusters.ts`):
+`*.min.js`, `*.min.css`, `*.map`, `*.snap`, `*.svg`, `*.pb.go`,
+`*_pb2.py`, `*.g.dart`, `*.designer.cs` and `*.Designer.cs`, `*.generated.*`. Never a
+Markdown file, whose Rendered view needs its block cut (CAR-167). By
+name, not by `.gitattributes`' `linguist-generated`: a name gives every
+machine the same clusters, with no git call and no git version to
+depend on. Its cluster's key is salted (`WHOLE_SALT`, the `salt` of
+`clusterKeys`), so it is not the key the whole file had before CAR-235:
+**nothing is carried**. Any mark on it from before CAR-322 (whole,
+before CAR-235; on its pieces, under CAR-235) reads unreviewed once,
+never more reviewed. The other way round, an older crb reads marks made
+on the salted key as unreviewed (it cuts the file and knows no such key),
+and the split carry is untouched (no new event, no new stored field).
+Lock files keep their key (never cut, nothing to drop). `ENGINE_VERSION`
+went to 9 so no cached comparison names the pieces' keys. A file that
+later joins or leaves the list changes key the same way: treat a change
+to the list as a key change, and say so in the release.
 
 **Mixed versions.** Once progress refs sync, an older crb that unticks the
 whole hunk (its key still a cluster there) leaves pieces already

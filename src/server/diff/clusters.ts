@@ -1,3 +1,4 @@
+import { isMarkdownPath } from "../../shared/markdownBlocks.js";
 import type { Cluster, HunkPart, LineCluster } from "../../shared/types.js";
 import { cutByLines, type HunkCut } from "../../shared/whitespace.js";
 import { GitError, runGitBuffer } from "../git.js";
@@ -169,9 +170,47 @@ const LOCK_FILES: ReadonlySet<string> = new Set([
 	"yarn.lock",
 ]);
 
-/** Whether an added file at `path` is cut at its blank lines (not a lock file). */
-export const cutsAtBlankLines = (path: string): boolean =>
-	!LOCK_FILES.has(path.slice(path.lastIndexOf("/") + 1));
+/**
+ * Files almost always machine-made, by the end of their name (any folder,
+ * case-sensitive): an added one stays one cluster, as a lock file (CAR-322,
+ * owner 2026-11-27: "Let's go back to extension based exceptions"). Never
+ * Markdown, whose Rendered view needs its block cut. Short and obvious on
+ * purpose: the owner amends it.
+ */
+const MACHINE_MADE: readonly RegExp[] = [
+	/\.min\.js$/,
+	/\.min\.css$/,
+	/\.map$/,
+	/\.snap$/,
+	/\.svg$/,
+	/\.pb\.go$/,
+	/_pb2\.py$/,
+	/\.g\.dart$/,
+	/\.designer\.cs$/,
+	// Visual Studio's own spelling (Form1.Designer.cs).
+	/\.Designer\.cs$/,
+	/\.generated\.[^/]+$/,
+];
+
+/**
+ * How an added file at `path` is cut (CAR-235, CAR-322): `"blocks"`, at its
+ * blank lines; `"lock"`, whole (a lock file, LOCK_FILES); `"machine"`,
+ * whole (a machine-made file, MACHINE_MADE), its key salted (`WHOLE_SALT`)
+ * so marks on the pieces CAR-235 cut it into never read on the whole.
+ */
+export function addedCut(path: string): "blocks" | "lock" | "machine" {
+	const name = path.slice(path.lastIndexOf("/") + 1);
+	if (LOCK_FILES.has(name)) return "lock";
+	if (isMarkdownPath(name)) return "blocks";
+	return MACHINE_MADE.some((r) => r.test(name)) ? "machine" : "blocks";
+}
+
+/**
+ * The key salt of an added machine-made file's cluster (CAR-322): a new
+ * key, so nothing marked on it before (whole before CAR-235, or its pieces
+ * under it) carries. Reads unreviewed once, never more reviewed.
+ */
+export const WHOLE_SALT = "whole:CAR-322";
 
 /**
  * A pure addition (an added file's hunk) cut at its blank lines (CAR-235,
