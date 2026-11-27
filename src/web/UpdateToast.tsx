@@ -416,7 +416,10 @@ function Toast(props: {
 		);
 	}
 
-	if (!data?.available || data.available === dismissed) return null;
+	// Running a withdrawn version: the Withdrawn banner offers it (one offer).
+	if (!data?.available || data.available === dismissed || data.withdrawn) {
+		return null;
+	}
 	const version = data.available;
 	return (
 		<ToastSlot>

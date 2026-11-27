@@ -127,3 +127,31 @@ export function useFitViewport(ref: { current: HTMLElement | null }, gap = 16) {
 		};
 	}, [ref, gap]);
 }
+
+let topSlot: HTMLElement | null = null;
+const topSlotListeners = new Set<() => void>();
+/**
+ * Where the Withdrawn banner goes (CAR-212): App's slot at the very top of
+ * its pinned stack, pushing the header down (counted in `--app-header`);
+ * null outside App (Home, settings): the banner pins itself at the top.
+ * The banner lives above the router's pages (Root), so App hands it the
+ * slot through this store rather than a context.
+ */
+export const bannerSlot = {
+	get: () => topSlot,
+	use: () =>
+		useSyncExternalStore(
+			(onChange: () => void) => {
+				topSlotListeners.add(onChange);
+				return () => {
+					topSlotListeners.delete(onChange);
+				};
+			},
+			() => topSlot,
+		),
+	set(node: HTMLElement | null) {
+		if (node === topSlot) return;
+		topSlot = node;
+		for (const listener of topSlotListeners) listener();
+	},
+};

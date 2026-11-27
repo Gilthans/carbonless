@@ -162,7 +162,7 @@ const unwrap = (data: unknown): Record<string, unknown> =>
  * Deprecations come from one `npm view` over every version by name (an
  * exact version matches a prerelease, which a range like `*` leaves out).
  */
-export async function registryState(io: Io): Promise<RegistryState> {
+async function registryState(io: Io): Promise<RegistryState> {
 	const view = async (spec: string, fields: string[]) => {
 		const r = await io.run("npm", [
 			"view",
@@ -204,7 +204,7 @@ export async function registryState(io: Io): Promise<RegistryState> {
 }
 
 /** The versions withdrawn on npm, with their reasons (printable), oldest first. */
-export function withdrawnVersions(
+function withdrawnVersions(
 	state: RegistryState,
 ): { version: string; reason: string }[] {
 	return newestFirst(Object.keys(state.deprecated))

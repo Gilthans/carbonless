@@ -51,7 +51,13 @@ import { Settings } from "./Settings";
 import { SkeletonBar, Spinner } from "./Spinner";
 import { useShortcutHelp } from "./shortcuts";
 import { useStackTop } from "./stackTop";
-import { AppHeaderHeight, FindSlot, MoveSlot, useHeight } from "./sticky";
+import {
+	AppHeaderHeight,
+	bannerSlot,
+	FindSlot,
+	MoveSlot,
+	useHeight,
+} from "./sticky";
 import { Tooltip } from "./Tooltip";
 import { EDITOR_KEYS } from "./threads/ReplyBox";
 import { useThreadWritesSetup } from "./threads/threadWrites";
@@ -390,7 +396,14 @@ export function App() {
 	// Move mode's bar (CAR-139), under the find bar's.
 	const [moveSlot, setMoveSlot] = useState<HTMLDivElement | null>(null);
 	const moveBar = useHeight(() => moveSlot, moveSlot);
-	const above = joinBar + (swapped ? findBar : 0) + moveBar;
+	// The Withdrawn banner (CAR-212), above everything: Root's, placed here.
+	const [topSlot, setTopSlot] = useState<HTMLDivElement | null>(null);
+	useLayoutEffect(() => {
+		bannerSlot.set(topSlot);
+		return () => bannerSlot.set(null);
+	}, [topSlot]);
+	const banner = useHeight(() => topSlot, topSlot);
+	const above = banner + joinBar + (swapped ? findBar : 0) + moveBar;
 	const id = useReviewId();
 	const navigate = useNavigate();
 	/** The toast's View: the Files page with the comparison target on the head. */
@@ -444,7 +457,7 @@ export function App() {
 					className="min-h-screen bg-canvas font-sans text-ink"
 				>
 					{/*
-					 * The top of the page, pinned: a session's join request, then
+					 * The top of the page, pinned: the Withdrawn banner, a session's join request, then
 					 * Files changed's open find bar (FindSlot). Both push the page
 					 * down; the header sticks under them (`above`).
 					 */}
@@ -453,6 +466,8 @@ export function App() {
 						className="sticky z-[35]"
 						style={{ top: "var(--vv-top, 0px)" }}
 					>
+						{/* The Withdrawn banner (WithdrawnBanner, from Root). */}
+						<div ref={setTopSlot} data-banner-slot />
 						{/* Like the chip, none without a PR: nothing to join. */}
 						<div ref={setJoinSlot}>{pr && <JoinBar />}</div>
 						<div ref={setSlot} data-find-slot />

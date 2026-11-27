@@ -374,8 +374,9 @@ export function ColumnHeader() {
 		<div
 			data-testid="home-columns"
 			aria-hidden
-			// Sticks at the top: whichever section is in view, its columns are named.
-			className={`sticky top-0 z-30 hidden items-center gap-x-3 border-b border-line bg-canvas px-[calc(0.75rem+1px)] py-1.5 text-xs font-bold tracking-[0.12em] text-faint uppercase lg:flex ${touch ? "pr-[calc(3rem+1px)]" : ""}`}
+			// Sticks at the top (under the Withdrawn banner: --top-bar): whichever
+			// section is in view, its columns are named.
+			className={`sticky top-[var(--top-bar,0px)] z-30 hidden items-center gap-x-3 border-b border-line bg-canvas px-[calc(0.75rem+1px)] py-1.5 text-xs font-bold tracking-[0.12em] text-faint uppercase lg:flex ${touch ? "pr-[calc(3rem+1px)]" : ""}`}
 		>
 			{(Object.keys(COLUMNS) as Column[]).map((c) => (
 				<span key={c} data-col={c} className={`flex ${COLUMNS[c]}`}>

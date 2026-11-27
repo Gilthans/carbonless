@@ -155,8 +155,16 @@ interface Registry {
 	/** Holds every manifest answer until `release()`. */
 	hold: () => void;
 	release: () => void;
-	/** Manifest requests so far. */
+	/** Manifest requests so far (the notes'; the check's are `checked`). */
 	asked: string[];
+	/**
+	 * Each version's deprecation, as the check reads it (CAR-212): its
+	 * request carries npm's accept (CHECK_ACCEPT), never held or failed by
+	 * `hold`/`failWith`, which are the notes'. Any version is found.
+	 */
+	deprecated: Record<string, string>;
+	/** The check's per-version requests so far. */
+	checked: string[];
 }
 
 /** A registry answering `tags` and `manifests` (the test may change them as it goes). */
@@ -167,6 +175,8 @@ async function fakeRegistry(tags: Record<string, string>): Promise<Registry> {
 		manifests: {} as Record<string, unknown>,
 		failWith: null as { status: number } | null,
 		asked: [] as string[],
+		deprecated: {} as Record<string, string>,
+		checked: [] as string[],
 	};
 	const server = createServer((req, res) => {
 		if (req.url === "/-/package/carbonless-review/dist-tags") {
@@ -181,6 +191,18 @@ async function fakeRegistry(tags: Record<string, string>): Promise<Registry> {
 			return;
 		}
 		const version = decodeURIComponent(m[1] ?? "");
+		if ((req.headers.accept ?? "").includes("application/vnd.npm.install-v1")) {
+			reg.checked.push(version);
+			const deprecated = reg.deprecated[version];
+			res.writeHead(200, { "content-type": "application/json" }).end(
+				JSON.stringify({
+					name: "carbonless-review",
+					version,
+					...(deprecated ? { deprecated } : {}),
+				}),
+			);
+			return;
+		}
 		reg.asked.push(version);
 		void (async () => {
 			if (gate !== null) await gate;
@@ -1458,4 +1480,265 @@ it("Global settings of a build without notes (a local build): nothing under Vers
 	expect(answered).toMatchObject({ file: false });
 	await expect(version.getByTestId("running-notes")).toHaveCount(0);
 	await expect(version.getByText("No user-facing changes")).toHaveCount(0);
+});
+
+// ---------------------------------------------------------------------------
+// Withdrawn (CAR-212): npm deprecated the running version with
+// `withdrawn: `; crb never offers a deprecated version.
+
+const REASON = "comments posted to the wrong PR";
+const banner = (page: Page) => page.getByTestId("withdrawn-banner");
+
+/** The banner's box against the header's and the page: pinned on top, pushing, hittable. */
+async function expectBannerOnTop(page: Page, header: Locator) {
+	const b = await banner(page).boundingBox();
+	const h = await header.boundingBox();
+	expect(b?.y ?? -1).toBeCloseTo(0, 0);
+	// Pushed down, never covered.
+	expect(h?.y ?? 0).toBeGreaterThanOrEqual((b?.y ?? 0) + (b?.height ?? 0) - 1);
+}
+
+/** The element at a locator's center is inside it (nothing laid over it). */
+async function expectHittable(target: Locator) {
+	const hit = await target.evaluate((el) => {
+		const r = el.getBoundingClientRect();
+		const at = document.elementFromPoint(
+			r.left + r.width / 2,
+			r.top + r.height / 2,
+		);
+		return at !== null && el.contains(at);
+	});
+	expect(hit).toBe(true);
+}
+
+it("Withdrawn with a fix: a red banner pinned above the header, pushing it down, with the reason and Update; the toast doesn't offer it too", async ({
+	page,
+	pr,
+	installed,
+	isMobile,
+}) => {
+	await pr();
+	if (isMobile) await page.setViewportSize({ width: 360, height: 740 });
+	installed.registry.deprecated[CURRENT] = `withdrawn: ${REASON}`;
+	const { url } = await installed.start();
+	const review = await openReview(url);
+	await page.goto(review);
+	await expect(banner(page)).toBeVisible();
+	await expect(banner(page)).toContainText("Withdrawn");
+	await expect(banner(page).getByTestId("withdrawn-reason")).toHaveText(
+		`${CURRENT}: ${REASON}`,
+	);
+	const icon = banner(page).getByRole("img", { name: "Withdrawn version" });
+	await expect(icon).toBeVisible();
+	const update = banner(page).getByRole("button", {
+		name: `Update to ${NEWER}`,
+	});
+	await expect(update).toBeVisible();
+	// One offer: the banner's.
+	await expect(toast(page)).toHaveCount(0);
+	// Never dismissed.
+	await expect(banner(page).getByRole("button")).toHaveCount(1);
+	// Red: the failing tokens.
+	expect(
+		await banner(page).evaluate((el) => getComputedStyle(el).backgroundColor),
+	).toBe(
+		await page.evaluate(() => {
+			const probe = document.createElement("div");
+			probe.className = "bg-del";
+			document.body.append(probe);
+			const color = getComputedStyle(probe).backgroundColor;
+			probe.remove();
+			return color;
+		}),
+	);
+	for (const t of [update, icon]) {
+		const box = await t.boundingBox();
+		expect(box?.height ?? 0).toBeGreaterThanOrEqual(40);
+		expect(box?.width ?? 0).toBeGreaterThanOrEqual(40);
+	}
+	const header = page.locator("[data-app-header]");
+	await expectBannerOnTop(page, header);
+	await expectHittable(page.getByTestId("home-link"));
+	await expectHittable(update);
+	await expectNoPageOverflow(page);
+	await shot(page, "withdrawn-review", isMobile);
+	// Scrolled: the banner stays on top, the header's stuck row under it.
+	// A long page: the review's own root (what the pinned stack sticks in).
+	await page.evaluate(() => {
+		const root = document.querySelector<HTMLElement>("[data-testid=app-root]");
+		if (root) root.style.minHeight = "4000px";
+		window.scrollTo(0, 1500);
+	});
+	await expect
+		.poll(() => page.evaluate(() => window.scrollY))
+		.toBeGreaterThan(1000);
+	await expect
+		.poll(async () => (await banner(page).boundingBox())?.y)
+		.toBeCloseTo(0, 0);
+	const row = page.getByTestId("app-header-row");
+	await expect
+		.poll(async () => {
+			const b = await banner(page).boundingBox();
+			const r = await row.boundingBox();
+			return (r?.y ?? 0) - ((b?.y ?? 0) + (b?.height ?? 0));
+		})
+		.toBeGreaterThanOrEqual(-1);
+	await expectHittable(page.getByRole("link", { name: "Overview" }));
+	// Home: pinned on top too.
+	await page.goto(`${url}/`);
+	await expect(banner(page)).toBeVisible();
+	expect((await banner(page).boundingBox())?.y ?? -1).toBeCloseTo(0, 0);
+	await expectNoPageOverflow(page);
+	await shot(page, "withdrawn-home", isMobile);
+	// Scrolled, still on top.
+	await page.evaluate(() => {
+		const root = document.getElementById("root");
+		if (root) root.style.minHeight = "4000px";
+		window.scrollTo(0, 1500);
+	});
+	await expect
+		.poll(() => page.evaluate(() => window.scrollY))
+		.toBeGreaterThan(1000);
+	await expect
+		.poll(async () => (await banner(page).boundingBox())?.y)
+		.toBeCloseTo(0, 0);
+	await page.evaluate(() => window.scrollTo(0, 0));
+	// Update opens What's new, the toast's flow.
+	await banner(page)
+		.getByRole("button", { name: `Update to ${NEWER}` })
+		.click();
+	await expect(modal(page)).toHaveAttribute("open", "");
+	await expect(
+		modal(page).getByRole("button", { name: `Update to v${NEWER}` }),
+	).toBeVisible();
+});
+
+it("Withdrawn: the banner's Update installs the fix, crb restarts on it and the banner is gone", async ({
+	page,
+	pr,
+	installed,
+	isMobile,
+	expectConsoleError,
+}) => {
+	test.skip(isMobile, "the layout is the test above's");
+	await pr();
+	installed.registry.deprecated[CURRENT] = `withdrawn: ${REASON}`;
+	const { url } = await installed.start();
+	await page.goto(`${url}/`);
+	await page.evaluate(() => {
+		(window as unknown as { beforeUpdate: boolean }).beforeUpdate = true;
+	});
+	const restarted = expectConsoleError(CRB_DOWN);
+	await banner(page)
+		.getByRole("button", { name: `Update to ${NEWER}` })
+		.click();
+	await modal(page)
+		.getByRole("button", { name: `Update to v${NEWER}` })
+		.click();
+	await expect(toast(page)).toHaveAttribute("data-state", "updating");
+	// While it installs: Update in the banner can't start another.
+	await expect(
+		banner(page).getByRole("button", { name: `Update to ${NEWER}` }),
+	).toBeDisabled();
+	// Installed, restarted, reloaded (as the toast's test): well past the
+	// default wait on a loaded machine.
+	await expect
+		.poll(
+			() =>
+				page
+					.evaluate(
+						() =>
+							(window as unknown as { beforeUpdate?: boolean }).beforeUpdate ??
+							false,
+					)
+					.catch(() => true),
+			{ timeout: 90_000 },
+		)
+		.toBe(false);
+	restarted();
+	const version = (await (await fetch(`${url}/api/version`)).json()) as {
+		version: string;
+	};
+	expect(version.version).toBe(NEWER);
+	// The new crb's check answered: not withdrawn.
+	await expect
+		.poll(async () => {
+			const info = (await (await fetch(`${url}/api/update`)).json()) as {
+				lastChecked: string | null;
+				withdrawn: unknown;
+			};
+			return info.lastChecked !== null && info.withdrawn === null;
+		})
+		.toBe(true);
+	const answered = page.waitForResponse(
+		(r) => new URL(r.url()).pathname === "/api/update",
+	);
+	await page.reload();
+	await answered;
+	// Rendered with that answer (a commit comes within two frames).
+	await page.evaluate(
+		() =>
+			new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))),
+	);
+	await expect(banner(page)).toHaveCount(0);
+	expect(readFileSync(installed.npmLog, "utf8")).toContain(
+		`carbonless-review@${NEWER}`,
+	);
+});
+
+it("Withdrawn without a fix: nothing until crb's check answers, then the banner with Fix coming; a deprecated newer version is never offered", async ({
+	page,
+	pr,
+	installed,
+	isMobile,
+}) => {
+	await pr();
+	if (isMobile) await page.setViewportSize({ width: 360, height: 740 });
+	// The newest on both tags is withdrawn too: nothing to offer.
+	installed.registry.deprecated[CURRENT] = `withdrawn: ${REASON}`;
+	installed.registry.deprecated[NEWER] = "withdrawn: same bug";
+	const { url } = await installed.start();
+	// Held: the page has no answer yet.
+	let release: () => void = () => {};
+	const gate = new Promise<void>((r) => {
+		release = r;
+	});
+	let seen: () => void = () => {};
+	const asked = new Promise<void>((r) => {
+		seen = r;
+	});
+	await page.route("**/api/update", async (route) => {
+		if (route.request().method() === "GET") {
+			seen();
+			await gate;
+		}
+		await route.continue();
+	});
+	await page.goto(`${url}/`);
+	await asked;
+	await page.evaluate(
+		() =>
+			new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))),
+	);
+	await expect(banner(page)).toHaveCount(0);
+	await expect(page.getByText("Fix coming")).toHaveCount(0);
+	release();
+	await expect(banner(page)).toBeVisible();
+	await expect(banner(page).getByTestId("withdrawn-fix-coming")).toHaveText(
+		"Fix coming",
+	);
+	await expect(banner(page).getByRole("button")).toHaveCount(0);
+	await expect(toast(page)).toHaveCount(0);
+	const info = (await (await fetch(`${url}/api/update`)).json()) as {
+		available: string | null;
+		withdrawn: { reason: string } | null;
+	};
+	expect(info).toMatchObject({
+		available: null,
+		withdrawn: { reason: REASON },
+	});
+	expect(installed.registry.checked).toContain(NEWER);
+	await expectNoPageOverflow(page);
+	await shot(page, "withdrawn-fix-coming", isMobile);
+	await page.unroute("**/api/update");
 });
