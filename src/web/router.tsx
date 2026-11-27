@@ -25,6 +25,7 @@ import { GlobalSettingsPage } from "./settings/GlobalSettingsPage";
 import { ShortcutsProvider } from "./shortcuts";
 import { ToastStack } from "./Toasts";
 import { UpdateToast } from "./UpdateToast";
+import { WithdrawnBanner } from "./WithdrawnBanner";
 
 /**
  * Why the server answered this address with its 404 page (a PR that can't
@@ -69,6 +70,7 @@ function Root() {
 		<ShortcutsProvider>
 			<ToastStack>
 				<UpdateToast>
+					<WithdrawnBanner />
 					<Outlet />
 				</UpdateToast>
 			</ToastStack>

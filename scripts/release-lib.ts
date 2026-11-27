@@ -232,30 +232,53 @@ export type NpmState = {
 	versions: string[];
 } | null;
 
-/** The package's dist-tags and versions on npm; null before its first publish. */
-async function npmState(io: Io): Promise<NpmState> {
+/**
+ * `npm view <spec> <fields...> --json`, fresh from the registry
+ * (`--prefer-online`, not npm's cache: a publish may have just happened),
+ * parsed; null on a 404 (nothing published). The one reader of `npm view`
+ * for status, publish and withdraw.
+ */
+export async function npmView(
+	io: Io,
+	spec: string,
+	fields: readonly string[],
+): Promise<unknown> {
 	const r = await io.run("npm", [
 		"view",
-		PACKAGE,
-		"dist-tags",
-		"versions",
+		spec,
+		...fields,
 		"--json",
-		// Fresh from the registry, not npm's cache: a publish may have just happened.
 		"--prefer-online",
 	]);
 	if (r.code !== 0) {
 		if (/E404|404 Not Found/.test(r.stderr + r.stdout)) return null;
-		throw new Error(`npm view ${PACKAGE} failed: ${r.stderr.trim()}`);
+		throw new Error(`npm view ${spec} failed: ${r.stderr.trim()}`);
 	}
-	const data = JSON.parse(r.stdout) as {
-		"dist-tags"?: Record<string, string>;
-		versions?: string[] | string;
-	};
-	const versions = data.versions ?? [];
-	return {
-		distTags: data["dist-tags"] ?? {},
-		versions: Array.isArray(versions) ? versions : [versions],
-	};
+	return r.stdout.trim() === "" ? undefined : (JSON.parse(r.stdout) as unknown);
+}
+
+/** The package's dist-tags and versions on npm; null before its first publish. */
+export async function npmState(io: Io): Promise<NpmState> {
+	const parsed = await npmView(io, PACKAGE, ["dist-tags", "versions"]);
+	if (parsed === null) return null;
+	// An object, or (npm 12, a package with a non-semver-ordered version
+	// such as 0.0.0-stage) an array of one.
+	const data = ((Array.isArray(parsed) ? parsed[0] : parsed) ?? {}) as Record<
+		string,
+		unknown
+	>;
+	const distTags: Record<string, string> = {};
+	const tags = data["dist-tags"];
+	if (typeof tags === "object" && tags !== null) {
+		for (const [k, v] of Object.entries(tags)) {
+			if (typeof v === "string") distTags[k] = v;
+		}
+	}
+	const raw = data.versions ?? [];
+	const versions = (Array.isArray(raw) ? raw : [raw]).filter(
+		(v): v is string => typeof v === "string",
+	);
+	return { distTags, versions };
 }
 
 /** master's package.json version on GitHub. */
@@ -1013,7 +1036,10 @@ export const MIN_NPM = "12.2.0";
  * Fails unless this machine's npm is MIN_NPM or newer: an older one answers
  * `npm stage` with "Unknown command" halfway through. Says the fix.
  */
-async function checkNpmVersion(io: Io): Promise<void> {
+export async function checkNpmVersion(
+	io: Io,
+	command = "pnpm release publish",
+): Promise<void> {
 	const r = await io.run("npm", ["--version"]);
 	const found = r.code === 0 ? r.stdout.trim() : "";
 	const have = /^\d+\.\d+\.\d+$/.test(found) ? parseVersion(found) : null;
@@ -1024,7 +1050,7 @@ async function checkNpmVersion(io: Io): Promise<void> {
 			? `npm --version failed (${r.code}): ${r.stderr.trim() || r.stdout.trim()}`
 			: `this npm is ${found || "(no version)"}`;
 	throw new Error(
-		`pnpm release publish needs npm >= ${MIN_NPM} (npm stage); ${what}. Fix: npm install -g npm@12 (npm 12 needs Node ^22.22.2 or ^24.15.0, or newer)`,
+		`${command} needs npm >= ${MIN_NPM} (npm stage); ${what}. Fix: npm install -g npm@12 (npm 12 needs Node ^22.22.2 or ^24.15.0, or newer)`,
 	);
 }
 

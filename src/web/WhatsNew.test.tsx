@@ -35,6 +35,7 @@ const OFFER: UpdateInfo = {
 	lastChecked: "2026-11-12T10:00:00.000Z",
 	checkError: null,
 	checksOff: null,
+	withdrawn: null,
 };
 
 const NOTES: UpdateNotes = {

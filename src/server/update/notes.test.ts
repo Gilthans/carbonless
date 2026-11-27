@@ -377,7 +377,7 @@ describe("/api/update/notes and /api/release-notes", () => {
 			build: { version: "0.3.0", commit: "a".repeat(40) },
 			enabled: true,
 			install: null,
-			check: async () => "0.5.0",
+			check: async () => ({ newer: "0.5.0", withdrawn: null, deprecated: [] }),
 			notes,
 			ownNotes: async () => parsed([v("0.3.0")]),
 			service: async () => null,

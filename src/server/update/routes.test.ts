@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { buildApp } from "../app";
 import { SessionRegistry } from "../registry";
 import { BOOT_ID, BUILD } from "../version";
+import type { RegistryAnswer } from "./registry";
 import { Updater } from "./updater";
 
 let host = "";
@@ -45,6 +46,7 @@ describe("/api/update", () => {
 			lastChecked: null,
 			checkError: null,
 			checksOff: "unavailable",
+			withdrawn: null,
 		});
 		const check = await a.inject({
 			method: "POST",
@@ -61,6 +63,34 @@ describe("/api/update", () => {
 		expect(post.statusCode).toBe(409);
 	});
 
+	it("/api/update says the running version is withdrawn, with the reason (CAR-212)", async () => {
+		const updater = new Updater({
+			build: { version: "0.2.0", commit: "a".repeat(40) },
+			enabled: true,
+			install: null,
+			check: async () => ({
+				newer: "0.2.1",
+				withdrawn: "<img src=x onerror=alert(1)>",
+				deprecated: [],
+			}),
+			service: async () => null,
+			exit: () => {},
+			port: () => 4747,
+		});
+		const a = await app(updater);
+		expect(
+			(await a.inject({ url: "/api/update", headers: { host } })).json(),
+		).toMatchObject({ withdrawn: null, lastChecked: null });
+		await updater.checkNow();
+		const info = await a.inject({ url: "/api/update", headers: { host } });
+		// JSON, never HTML: the page shows it as text.
+		expect(info.headers["content-type"]).toMatch(/^application\/json/);
+		expect(info.json()).toMatchObject({
+			available: "0.2.1",
+			withdrawn: { reason: "<img src=x onerror=alert(1)>" },
+		});
+	});
+
 	it("offers the updater's version; Update takes only that one", async () => {
 		const exits: number[] = [];
 		const updater = new Updater({
@@ -74,7 +104,7 @@ describe("/api/update", () => {
 				packages: [],
 				scan: [],
 			},
-			check: async () => "0.3.0",
+			check: async () => ({ newer: "0.3.0", withdrawn: null, deprecated: [] }),
 			service: async () => null,
 			exit: (c) => exits.push(c),
 			port: () => 4747,
@@ -114,7 +144,7 @@ describe("/api/update", () => {
 
 	it("check now: the fresh info, one check for concurrent asks; refused when checks are off", async () => {
 		let asked = 0;
-		let release: (v: string | null) => void = () => {};
+		let release: (v: RegistryAnswer) => void = () => {};
 		const updater = new Updater({
 			build: { version: "0.2.0", commit: "a".repeat(40) },
 			enabled: true,
@@ -135,7 +165,7 @@ describe("/api/update", () => {
 		const first = post();
 		const second = post();
 		await expect.poll(() => asked).toBe(1);
-		release("0.3.0");
+		release({ newer: "0.3.0", withdrawn: null, deprecated: [] });
 		const [one, two] = await Promise.all([first, second]);
 		expect(asked).toBe(1);
 		for (const res of [one, two]) {

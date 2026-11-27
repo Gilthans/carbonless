@@ -59,6 +59,13 @@ const specs = readdirSync("e2e")
 const E2E_MAP = [
 	// The Markdown renderer's Rendered view (CAR-167): its own spec.
 	[/^src\/web\/files\/renderers\/markdown\//, ["markdown-renderer"]],
+	// crb's self-update: the check, the toast, What's new, the Withdrawn
+	// banner (CAR-212). Where the banner mounts (router, App, sticky)
+	// stays unmapped: every page.
+	[
+		/^src\/server\/update\/|^src\/shared\/update\.ts$|^src\/web\/(UpdateToast|UpdateCommand|UpdateByHand|WhatsNew|WithdrawnBanner)\.tsx?$|^e2e\/update\.spec\.ts$/,
+		["update"],
+	],
 	// A message's long press and its menu (CAR-280).
 	[
 		/^src\/web\/(longPress|messageCopy)\.tsx?$|^e2e\/long-press-copy\.spec\.ts$/,

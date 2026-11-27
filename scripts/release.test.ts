@@ -45,6 +45,7 @@ import {
 	tarballDigests,
 	withVersion,
 } from "./release-lib.js";
+import { withdraw, withdrawnStatus } from "./release-withdraw.js";
 
 const v = (text: string) => {
 	const parsed = parseVersion(text);
@@ -2991,5 +2992,278 @@ esac
 			'import { execFileSync } from "node:child_process";',
 			'import { fileURLToPath } from "node:url";',
 		]);
+	});
+});
+
+describe("pnpm release withdraw (the owner's, with npm's OTP)", () => {
+	const VERSIONS = ["0.3.0", "0.4.0-rc.1", "0.4.0", "0.5.0-rc.1", "0.5.0-rc.2"];
+	function withdrawIo({
+		answer = true,
+		deprecated = [] as { version: string; deprecated?: string }[],
+		codes = [] as number[],
+		tags = "" as Parameters<typeof fakeIo>[0][string],
+	} = {}) {
+		const fake = fakeIo({
+			"git ls-remote": tags,
+			"npm --version": "12.2.1\n",
+			"npm view carbonless-review dist-tags versions": npmView(
+				{ latest: "0.4.0", rc: "0.5.0-rc.2" },
+				VERSIONS,
+			),
+			"npm view carbonless-review@": JSON.stringify(
+				deprecated.length
+					? VERSIONS.map((version) => ({
+							version,
+							...deprecated.find((d) => d.version === version),
+						}))
+					: VERSIONS,
+			),
+		});
+		const asked: string[] = [];
+		const ran: string[][] = [];
+		const io: PublishIo = {
+			...fake.io,
+			ask: async (q) => {
+				asked.push(q);
+				return answer;
+			},
+			interactive: async (cmd, args) => {
+				ran.push([cmd, ...args]);
+				return codes.shift() ?? 0;
+			},
+		};
+		return { ...fake, io, asked, ran };
+	}
+
+	it("reads npm, shows the later versions and the plan, asks, then deprecates and moves the tags", async () => {
+		const w = withdrawIo();
+		await withdraw(w.io, {
+			versions: ["0.4.0"],
+			why: "comments posted to the wrong PR",
+			deprecateOnly: false,
+		});
+		// Every version by name: an exact version matches a prerelease.
+		expect(w.calls).toContain(
+			"npm view carbonless-review@0.3.0 || 0.4.0-rc.1 || 0.4.0 || 0.5.0-rc.1 || 0.5.0-rc.2 deprecated version --json --prefer-online",
+		);
+		const out = w.lines.join("\n");
+		expect(out).toContain("0.5.0-rc.1, 0.5.0-rc.2");
+		expect(out).toContain("dist-tag latest: 0.4.0 -> 0.3.0");
+		expect(w.asked).toHaveLength(1);
+		expect(w.ran).toEqual([
+			[
+				"npm",
+				"deprecate",
+				"carbonless-review@0.4.0",
+				// One argv entry: never a shell string.
+				"withdrawn: comments posted to the wrong PR",
+			],
+			["npm", "dist-tag", "add", "carbonless-review@0.3.0", "latest"],
+		]);
+		expect(w.lines.at(-1)).toBe("Now ship a fix: pnpm release hotfix v0.4.0");
+	});
+
+	/**
+	 * `git ls-remote --tags origin <patterns>` as git prints it: a pattern
+	 * matches a tag's name exactly, or as a glob (which also takes the
+	 * peeled `^{}` line); an exact name never brings its `^{}` line.
+	 */
+	const lsRemoteOf =
+		(refs: [sha: string, name: string][]) => (args: string[]) => {
+			const patterns = args.slice(3);
+			const matches = (name: string) =>
+				patterns.some((p) =>
+					p.includes("*")
+						? new RegExp(
+								`^${p.replace(/[.^${}()|[\]\\+?]/g, "\\$&").replace(/\*/g, ".*")}$`,
+							).test(name)
+						: name === p,
+				);
+			return refs
+				.filter(([, name]) => matches(name))
+				.map(([sha, name]) => `${sha}\trefs/tags/${name}`)
+				.join("\n");
+		};
+	const A = "a".repeat(40);
+	// v0.4.0 annotated (its object, then the commit), rc.1 on its commit.
+	const TAGS: [string, string][] = [
+		["1".repeat(40), "v0.4.0"],
+		[A, "v0.4.0^{}"],
+		["2".repeat(40), "v0.4.0-rc.0"],
+		[A, "v0.4.0-rc.1"],
+	];
+
+	it("withdraws the RC a release was promoted from (its tag on the same commit, an annotated release tag peeled), under a Plan heading after the same-bug list", async () => {
+		const w = withdrawIo({ tags: lsRemoteOf(TAGS) });
+		await withdraw(w.io, {
+			versions: ["0.4.0"],
+			why: "x",
+			deprecateOnly: false,
+		});
+		expect(w.calls).toContain(
+			"git ls-remote --tags origin v0.4.0 v0.4.0^{} v0.4.0-rc.*",
+		);
+		const at = (line: string) => w.lines.indexOf(line);
+		expect(
+			at("May carry the same bug (name any that do too):"),
+		).toBeGreaterThan(-1);
+		expect(at("Plan:")).toBeGreaterThan(
+			at("May carry the same bug (name any that do too):"),
+		);
+		expect(
+			at("  0.4.0-rc.1: 0.4.0 was promoted from it, withdrawn with it"),
+		).toBeGreaterThan(at("Plan:"));
+		expect(w.ran).toEqual([
+			["npm", "deprecate", "carbonless-review@0.4.0", "withdrawn: x"],
+			["npm", "deprecate", "carbonless-review@0.4.0-rc.1", "withdrawn: x"],
+			["npm", "dist-tag", "add", "carbonless-review@0.3.0", "latest"],
+		]);
+	});
+
+	it("a release with no tag on origin: says its promoted RC wasn't found, and goes on", async () => {
+		const w = withdrawIo({ tags: lsRemoteOf([]) });
+		await withdraw(w.io, {
+			versions: ["0.4.0"],
+			why: "x",
+			deprecateOnly: false,
+		});
+		expect(w.lines).toContain(
+			"  0.4.0: no v0.4.0 tag on origin, so the RC it was promoted from wasn't found",
+		);
+		expect(w.ran.map((r) => r.slice(0, 3).join(" "))).toEqual([
+			"npm deprecate carbonless-review@0.4.0",
+			"npm dist-tag add",
+		]);
+	});
+
+	it("can't read the tags: says why, and stops before npm", async () => {
+		const w = withdrawIo({
+			tags: { code: 128, stderr: "fatal: unable to access origin" },
+		});
+		await expect(
+			withdraw(w.io, { versions: ["0.4.0"], why: "x", deprecateOnly: false }),
+		).rejects.toThrow(
+			/can't read release tags from origin to find the RC 0\.4\.0 was promoted from: .*unable to access origin/,
+		);
+		expect(w.calls.some((c) => c.startsWith("npm view"))).toBe(false);
+		expect(w.asked).toEqual([]);
+		expect(w.ran).toEqual([]);
+	});
+
+	it("checks the arguments before any call: a bad reason or version asks nothing of git or npm", async () => {
+		for (const [versions, why] of [
+			[["0.4.0"], " "],
+			[["0.4.0"], "0.5.0"],
+			[["latest"], "x"],
+		] as const) {
+			const w = withdrawIo();
+			await expect(
+				withdraw(w.io, { versions: [...versions], why, deprecateOnly: false }),
+			).rejects.toThrow(/not withdrawing/);
+			expect(w.calls).toEqual([]);
+		}
+	});
+
+	it("a reason with shell characters reaches npm as it is, as one argument", async () => {
+		const w = withdrawIo();
+		const why = `"; rm -rf ~ $(id) \`x\` <b>`;
+		await withdraw(w.io, { versions: ["0.4.0"], why, deprecateOnly: false });
+		expect(w.ran[0]).toEqual([
+			"npm",
+			"deprecate",
+			"carbonless-review@0.4.0",
+			`withdrawn: ${why}`,
+		]);
+	});
+
+	it("on no, runs nothing", async () => {
+		const w = withdrawIo({ answer: false });
+		await withdraw(w.io, {
+			versions: ["0.4.0"],
+			why: "x",
+			deprecateOnly: false,
+		});
+		expect(w.ran).toEqual([]);
+		expect(w.lines.at(-1)).toBe("Nothing done.");
+	});
+
+	it("a refused plan fails before asking: no reason, a version npm doesn't have, no good version left", async () => {
+		for (const [versions, why, msg] of [
+			[["0.4.0"], " ", /reason/],
+			[["0.9.0"], "x", /0\.9\.0 is not on npm/],
+			[["0.3.0", "0.4.0"], "x", /no good version is left for latest/],
+		] as const) {
+			const w = withdrawIo();
+			await expect(
+				withdraw(w.io, { versions: [...versions], why, deprecateOnly: false }),
+			).rejects.toThrow(msg);
+			expect(w.asked).toEqual([]);
+			expect(w.ran).toEqual([]);
+		}
+	});
+
+	it("a rerun finishes only what is left, and says what it skipped", async () => {
+		const w = withdrawIo({
+			deprecated: [{ version: "0.4.0", deprecated: "withdrawn: x" }],
+		});
+		await withdraw(w.io, {
+			versions: ["0.4.0"],
+			why: "x",
+			deprecateOnly: false,
+		});
+		expect(w.lines).toContain("  0.4.0: withdrawn already, skipped");
+		expect(w.ran).toEqual([
+			["npm", "dist-tag", "add", "carbonless-review@0.3.0", "latest"],
+		]);
+	});
+
+	it("a failed npm call stops, saying to run it again", async () => {
+		const w = withdrawIo({ codes: [1] });
+		await expect(
+			withdraw(w.io, { versions: ["0.4.0"], why: "x", deprecateOnly: false }),
+		).rejects.toThrow(/run the same command again/);
+		expect(w.ran).toHaveLength(1);
+	});
+
+	it("needs an npm new enough, like publish", async () => {
+		const w = withdrawIo();
+		const old: PublishIo = {
+			...w.io,
+			run: async (cmd, args, opts) =>
+				cmd === "npm" && args[0] === "--version"
+					? { code: 0, stdout: "10.0.0\n", stderr: "" }
+					: w.io.run(cmd, args, opts),
+		};
+		await expect(
+			withdraw(old, { versions: ["0.4.0"], why: "x", deprecateOnly: false }),
+		).rejects.toThrow(/pnpm release withdraw needs npm >= /);
+	});
+
+	it("status reads npm's answer as an array of one too (npm 12)", async () => {
+		const { io, lines } = fakeIo({
+			"gh api repos/owner/repo/contents/package.json?ref=master":
+				contents("0.5.0"),
+			"git ls-remote": lsRemote("v0.4.0", "v0.5.0-rc.2"),
+			"npm view": `[${npmView({ latest: "0.4.0", rc: "0.5.0-rc.2" }, ["0.4.0", "0.5.0-rc.2"])}]`,
+		});
+		await status(io);
+		expect(lines).toContain("latest:  npm 0.4.0, newest tag v0.4.0");
+	});
+
+	it("status lists withdrawn versions with their reasons", async () => {
+		const { io, lines } = fakeIo({
+			"npm view carbonless-review dist-tags versions": npmView(
+				{ latest: "0.3.0", rc: "0.5.0-rc.1" },
+				VERSIONS,
+			),
+			"npm view carbonless-review@": JSON.stringify([
+				{ version: "0.3.0" },
+				{ version: "0.4.0", deprecated: "withdrawn: bad\u202ething" },
+				{ version: "0.5.0-rc.2", deprecated: "use 0.5.0-rc.3" },
+			]),
+		});
+		await withdrawnStatus(io);
+		expect(lines).toEqual(["withdrawn: 0.4.0 (bad?thing)"]);
+		expect(lines.join("\n")).not.toContain("0.5.0-rc.2 (");
 	});
 });

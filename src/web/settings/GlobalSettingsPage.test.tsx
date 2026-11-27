@@ -48,6 +48,7 @@ const INFO: UpdateInfo = {
 	lastChecked: new Date(Date.now() - 3 * 60_000).toISOString(),
 	checkError: null,
 	checksOff: null,
+	withdrawn: null,
 };
 const OFFER: Partial<UpdateInfo> = {
 	available: "0.3.0-rc.7",

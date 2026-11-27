@@ -186,6 +186,7 @@ const noUpdate = (): UpdateInfo => ({
 	lastChecked: null,
 	checkError: null,
 	checksOff: "unavailable",
+	withdrawn: null,
 });
 
 /** A malformed request (HTTP 400). */

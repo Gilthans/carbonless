@@ -99,6 +99,21 @@ pushes master or tags by hand. `package.json`'s `version` on master is the
 `pnpm release status` shows master's next version, `rc` and `latest` on npm,
 the newest tags, what the next merge will publish and, during the freeze
 below, which PR must merge first (`frozen:  merge #N next: X.Y+1.0 first`).
+It also lists the withdrawn versions (`withdrawn: X.Y.Z (<reason>)`).
+
+**Withdrawing a bad version** (a vulnerability, a serious bug; CAR-212),
+the owner's alone, like publish: `pnpm release withdraw <version>...
+"<why>" [--deprecate-only]`. It lists every version published since the
+first one named and a named release's other RCs (to add any that carry
+the same bug), adds the RC a named release was promoted from (its tag on
+the same commit), shows the plan and asks y/N; then `npm deprecate
+carbonless-review@<v> "withdrawn: <why>"` for each (npm asks for the OTP)
+and `npm dist-tag add` moving `latest` to the newest good release below
+it and `rc` to the newest good version at or below it, never an RC of a
+release being withdrawn (usually the previous release). A rerun finishes only what is left. It refuses when a tag
+would have no good version left; `--deprecate-only` then deprecates and
+moves no tag. Never `npm unpublish`. What crb then shows: "Withdrawn
+versions" under "Updating an installed crb".
 
 ### The release freeze
 
@@ -554,6 +569,23 @@ on one click (CAR-108; never automatically). Code: `src/server/update`,
   A failure (offline, a 404 before the first publish, a bad answer) never
   shows a toast; crb keeps when it last checked and why that failed, for
   the Global settings page.
+- **Withdrawn versions** (CAR-212). The same check then asks for each
+  version's own document (`/carbonless-review/<version>`, one version, not
+  the whole packument; npm's accept header), all at once: the running
+  version, each candidate, and the update already on offer. Only its
+  `deprecated` field is read. A deprecated candidate (any message) is never
+  offered, on any channel: the other tag's candidate is, or nothing; a
+  candidate whose request failed isn't offered that time; an offer npm
+  deprecated since is dropped. The running version deprecated with the
+  `withdrawn: ` prefix (`pnpm release withdraw`) is withdrawn: `/api/update`
+  says so with the reason (one line, control and bidi characters as `?`,
+  at most 300 characters; untrusted, plain text), and every page shows the
+  red **Withdrawn** banner pinned above everything (it pushes the page
+  down, can't be dismissed): the version and reason, then Update to the
+  fix (opening What's new, the toast's flow; the toast itself stays quiet),
+  the command when updating is by hand, or "Fix coming" until there is
+  one. A 404 for the running version (a local build) is not withdrawn; a
+  failed request keeps the last answer.
 - **Global settings** (`/settings`, the gear's "Global settings" row on
   Home and on a review): the running version and commit (linked to it on
   GitHub), the channel, how crb was installed (npm global, pnpm global)

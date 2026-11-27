@@ -9,11 +9,17 @@ import type {
 	OwnNotes,
 	UpdateNotes,
 } from "../../shared/whatsNew.js";
-import { PACKAGE, RegistryError, readCapped, TIMEOUT_MS } from "./registry.js";
+import {
+	MAX_MANIFEST,
+	PACKAGE,
+	RegistryError,
+	readCapped,
+	TIMEOUT_MS,
+} from "./registry.js";
 import { compareVersions, parseVersion, type Version } from "./semver.js";
 
-/** The largest manifest read for its notes (spec section 6). */
-export const MAX_MANIFEST = 256 * 1024;
+/** The largest manifest read for its notes (spec section 6): registry.ts's. */
+export { MAX_MANIFEST };
 
 /** A package's notes, read and checked (parseShippedReleaseNotes). */
 export interface ParsedNotes {

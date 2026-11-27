@@ -1,7 +1,12 @@
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { afterEach, describe, expect, it } from "vitest";
-import { checkRegistry, newerOnRegistry, registryUrl } from "./registry";
+import {
+	CHECK_ACCEPT,
+	checkRegistry,
+	newerOnRegistry,
+	registryUrl,
+} from "./registry";
 
 /** A fake registry: dist-tags for carbonless-review, or a status. */
 async function fakeRegistry(
@@ -46,7 +51,13 @@ describe("newerOnRegistry", () => {
 			tags: { latest: "0.2.0", rc: "0.3.0-rc.1" },
 		});
 		expect(newer).toBe("0.2.0");
-		expect(asked).toEqual(["/-/package/carbonless-review/dist-tags"]);
+		// Then each version's own document (deprecated?): the running one
+		// and the candidate.
+		expect(asked).toEqual([
+			"/-/package/carbonless-review/dist-tags",
+			"/carbonless-review/0.1.0",
+			"/carbonless-review/0.2.0",
+		]);
 	});
 
 	it("a prerelease follows rc", async () => {
@@ -210,7 +221,9 @@ describe("newerOnRegistry", () => {
 		// Nothing newer is no failure.
 		const same = await fakeRegistry({ tags: { latest: "0.1.0" } });
 		servers.push(same.server);
-		expect(await checkRegistry("0.1.0", { registry: same.url })).toBe(null);
+		expect((await checkRegistry("0.1.0", { registry: same.url })).newer).toBe(
+			null,
+		);
 	});
 
 	it("registry: $CRB_NPM_REGISTRY, else npm's", () => {
@@ -218,5 +231,179 @@ describe("newerOnRegistry", () => {
 		expect(registryUrl({ CRB_NPM_REGISTRY: "http://localhost:1/" })).toBe(
 			"http://localhost:1",
 		);
+	});
+});
+
+/**
+ * A registry with dist-tags and per-version documents: `docs[v]` is the
+ * version's document, a status, or "hang" (never answers).
+ */
+async function versionRegistry(
+	tags: Record<string, string>,
+	docs: Record<string, Record<string, unknown> | number | "hang">,
+) {
+	const asked: { url: string; accept: string }[] = [];
+	const server = createServer((req, res) => {
+		asked.push({ url: req.url ?? "", accept: req.headers.accept ?? "" });
+		if (req.url === "/-/package/carbonless-review/dist-tags") {
+			res.writeHead(200).end(JSON.stringify(tags));
+			return;
+		}
+		const v = decodeURIComponent(
+			/^\/carbonless-review\/([^/]+)$/.exec(req.url ?? "")?.[1] ?? "",
+		);
+		const doc = docs[v] ?? { version: v };
+		if (doc === "hang") return;
+		if (typeof doc === "number") {
+			res.writeHead(doc).end("{}");
+			return;
+		}
+		res.writeHead(200).end(JSON.stringify(doc));
+	});
+	servers.push(server);
+	await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
+	const { port } = server.address() as AddressInfo;
+	return { url: `http://127.0.0.1:${port}`, asked, server };
+}
+
+describe("checkRegistry: withdrawn and deprecated versions (CAR-212)", () => {
+	it("a deprecated latest is never offered, even the newest", async () => {
+		const r = await versionRegistry(
+			{ latest: "0.3.0" },
+			{ "0.3.0": { deprecated: "withdrawn: bad" } },
+		);
+		expect(await checkRegistry("0.2.0", { registry: r.url })).toEqual({
+			newer: null,
+			withdrawn: null,
+			deprecated: ["0.3.0"],
+		});
+		// Any deprecation, not only a withdrawal.
+		const other = await versionRegistry(
+			{ latest: "0.3.0" },
+			{ "0.3.0": { deprecated: "use 0.3.1" } },
+		);
+		expect((await checkRegistry("0.2.0", { registry: other.url })).newer).toBe(
+			null,
+		);
+	});
+
+	it("on rc, a deprecated rc falls to a good newer latest", async () => {
+		const r = await versionRegistry(
+			{ latest: "0.4.1", rc: "0.5.0-rc.3" },
+			{ "0.5.0-rc.3": { deprecated: "withdrawn: bad" } },
+		);
+		expect((await checkRegistry("0.5.0-rc.1", { registry: r.url })).newer).toBe(
+			null,
+		);
+		const up = await versionRegistry(
+			{ latest: "0.5.0", rc: "0.5.0-rc.3" },
+			{ "0.5.0": { deprecated: "withdrawn: bad" } },
+		);
+		// latest newest but deprecated: the good rc instead.
+		expect(
+			(await checkRegistry("0.5.0-rc.1", { registry: up.url })).newer,
+		).toBe("0.5.0-rc.3");
+	});
+
+	it("the running version withdrawn: its reason; another deprecation, a non-string field or a 404: not withdrawn", async () => {
+		const answers: [Record<string, unknown> | number, string | null][] = [
+			[
+				{ deprecated: "withdrawn: comments posted to the wrong PR" },
+				"comments posted to the wrong PR",
+			],
+			[{ deprecated: "deprecated for other reasons" }, null],
+			[{ deprecated: 42 }, null],
+			[{ deprecated: { message: "withdrawn: x" } }, null],
+			[{}, null],
+			// A local or unpublished build.
+			[404, null],
+		];
+		for (const [doc, reason] of answers) {
+			const r = await versionRegistry({ latest: "0.2.0" }, { "0.2.0": doc });
+			expect(
+				(await checkRegistry("0.2.0", { registry: r.url })).withdrawn,
+			).toBe(reason);
+		}
+	});
+
+	it("the reason reaches /api/update sanitized: one line, bidi replaced, at most 300 characters", async () => {
+		const RLO = String.fromCharCode(0x202e);
+		const r = await versionRegistry(
+			{ latest: "0.2.0" },
+			{ "0.2.0": { deprecated: `withdrawn: a\n<b>${RLO}${"x".repeat(400)}` } },
+		);
+		const reason = (await checkRegistry("0.2.0", { registry: r.url }))
+			.withdrawn;
+		expect(reason).toBe(`a <b>?${"x".repeat(294)}`);
+		expect(Array.from(reason ?? "")).toHaveLength(300);
+		expect(reason).not.toContain("\n");
+		expect(reason).not.toContain(RLO);
+	});
+
+	it("a non-string deprecated on a candidate is no deprecation: offered", async () => {
+		const r = await versionRegistry(
+			{ latest: "0.3.0" },
+			{ "0.3.0": { deprecated: true } },
+		);
+		expect((await checkRegistry("0.2.0", { registry: r.url })).newer).toBe(
+			"0.3.0",
+		);
+	});
+
+	it("a version's request failing or timing out: never throws; the candidate isn't offered, the running one's withdrawal unknown", async () => {
+		const r = await versionRegistry(
+			{ latest: "0.3.0" },
+			{ "0.2.0": "hang", "0.3.0": 500 },
+		);
+		expect(
+			await checkRegistry("0.2.0", { registry: r.url, timeoutMs: 200 }),
+		).toEqual({ newer: null, withdrawn: undefined, deprecated: [] });
+		r.server.closeAllConnections();
+		const bad = await versionRegistry({ latest: "0.3.0" }, { "0.3.0": "hang" });
+		expect(
+			await checkRegistry("0.2.0", { registry: bad.url, timeoutMs: 200 }),
+		).toEqual({ newer: null, withdrawn: null, deprecated: [] });
+		bad.server.closeAllConnections();
+	});
+
+	it("an oversized or unparsable version document is a failed request", async () => {
+		const r = await versionRegistry(
+			{ latest: "0.3.0" },
+			{ "0.3.0": { pad: "x".repeat(300 * 1024) } },
+		);
+		expect((await checkRegistry("0.2.0", { registry: r.url })).newer).toBe(
+			null,
+		);
+		const odd = await checkRegistry("0.2.0", {
+			registry: r.url,
+			fetch: async (url) =>
+				String(url).endsWith("dist-tags")
+					? new Response(JSON.stringify({ latest: "0.3.0" }))
+					: new Response("not json"),
+		});
+		expect(odd).toEqual({ newer: null, withdrawn: undefined, deprecated: [] });
+	});
+
+	it("`also` (an earlier offer): reported when deprecated now", async () => {
+		const r = await versionRegistry(
+			{ latest: "0.2.0" },
+			{ "0.3.0": { deprecated: "withdrawn: bad" } },
+		);
+		const answer = await checkRegistry("0.2.0", {
+			registry: r.url,
+			also: ["0.3.0"],
+		});
+		expect(answer).toEqual({
+			newer: null,
+			withdrawn: null,
+			deprecated: ["0.3.0"],
+		});
+		// One request per version, with npm's accept.
+		expect(r.asked.map((a) => a.url)).toEqual([
+			"/-/package/carbonless-review/dist-tags",
+			"/carbonless-review/0.2.0",
+			"/carbonless-review/0.3.0",
+		]);
+		expect(r.asked[1]?.accept).toBe(CHECK_ACCEPT);
 	});
 });

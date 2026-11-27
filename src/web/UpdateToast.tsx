@@ -34,6 +34,8 @@ const UPDATE_POLL_MS = 10 * 60_000;
  * RESTART_GRACE_MS before it stops).
  */
 const UPDATE_WATCH_MS = 5_000;
+/** How often, while crb hasn't finished its first check (it just started). */
+const UPDATE_FIRST_CHECK_MS = 3_000;
 /** How often an updating page asks whether crb is back. */
 export const BACK_POLL_MS = 1_000;
 /** How long crb may take to install and come back before the page calls it failed. */
@@ -168,7 +170,13 @@ function Toast(props: {
 				? false
 				: q.state.data?.available
 					? UPDATE_WATCH_MS
-					: UPDATE_POLL_MS,
+					: // crb's first check still under way (just started): soon,
+						// so a Withdrawn banner doesn't wait for the usual poll.
+						q.state.data &&
+							q.state.data.checksOff === null &&
+							q.state.data.lastChecked === null
+						? UPDATE_FIRST_CHECK_MS
+						: UPDATE_POLL_MS,
 	});
 	const data = info.data;
 
@@ -416,7 +424,10 @@ function Toast(props: {
 		);
 	}
 
-	if (!data?.available || data.available === dismissed) return null;
+	// Running a withdrawn version: the Withdrawn banner offers it (one offer).
+	if (!data?.available || data.available === dismissed || data.withdrawn) {
+		return null;
+	}
 	const version = data.available;
 	return (
 		<ToastSlot>
