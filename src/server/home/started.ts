@@ -362,7 +362,27 @@ export class StartedReviews {
 						stale.flatMap((s) => [s.metaTip, s.progressTip]),
 					)
 				: new Map<string, CrbEvent[] | Error>();
+		// A scan beside this one may have stored these tips' memos while this
+		// one read: its memos (and their counts, done or under way) are kept,
+		// never replaced by fresh ones that would count again.
+		const current = this.#memos.get(memoKey);
 		for (const { id, metaTip, progressTip } of stale) {
+			const theirs = current?.get(id);
+			if (
+				theirs &&
+				theirs.metaTip === metaTip &&
+				theirs.progressTip === progressTip
+			) {
+				memos.set(id, theirs);
+				if (
+					theirs.review &&
+					theirs.coverage === undefined &&
+					this.#wants(theirs.review, withCoverage)
+				) {
+					toCover.push(theirs);
+				}
+				continue;
+			}
 			try {
 				const meta = eventsOf(read, metaTip);
 				const events = eventsOf(read, progressTip);
