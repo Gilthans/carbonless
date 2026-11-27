@@ -6,6 +6,8 @@ import {
 } from "../../../test/home-fixture";
 import type { HomeView, RepoHome, SectionId } from "../../shared/home.js";
 import { composeSections } from "../../shared/homeSections.js";
+import { clonePath } from "../clone.js";
+import { Compactions } from "../review/compact.js";
 import type { StartedReview } from "./facts.js";
 import {
 	configAccess,
@@ -529,6 +531,48 @@ describe("HomeService", () => {
 				lastActedAt: started[1]?.lastActedAt,
 				headMoved: false,
 			},
+		]);
+	});
+
+	it("compacts the started reviews of PRs GitHub says are merged or closed, once each (CAR-13)", async () => {
+		fx = createHomeFixture({ repos: { "acme/api": { prs: scenarioPrs() } } });
+		const startedOn = (number: number, asOf: string | null = null) => ({
+			owner: "acme",
+			repo: "api",
+			number,
+			id: `01jb${String(number).padStart(22, "a")}`,
+			pinnedHead: null,
+			head: "3".padStart(40, "0"),
+			asOf,
+			coverage: null,
+			lastActedAt: iso(T0 - H),
+		});
+		const calls: string[] = [];
+		const compactions = new Compactions(async (repoDir, id, actor) => {
+			calls.push(`${repoDir} ${id} ${actor}`);
+			return { compacted: [], skipped: [] };
+		});
+		const home = new HomeService({
+			config: memoryConfig(["acme/api"]).access,
+			started: {
+				list: async () => [
+					startedOn(3),
+					startedOn(5),
+					startedOn(6),
+					startedOn(7, iso(T0 - 10 * DAY)),
+				],
+			},
+			compactions,
+			now: () => T0,
+		});
+		await refresh(home);
+		await load(home);
+		await compactions.idle();
+		const clone = clonePath("acme", "api");
+		// 5 merged and 6 closed; never 3 (open), nor a review as of a cutoff.
+		expect(calls.sort()).toEqual([
+			`${clone} ${startedOn(5).id} octo`,
+			`${clone} ${startedOn(6).id} octo`,
 		]);
 	});
 

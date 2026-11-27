@@ -112,7 +112,8 @@ refs/crb/lookup/<source>/<key-hash>                               lookup: source
 refs/crb/inbox/<reviewer>                                         one per reviewer per repo: Home's annotations
 ```
 
-- **meta** holds review-level events: created, closed, compacted. Anyone may
+- **meta** holds review-level events: created, closed (parsed, not written:
+  GitHub's state is the truth), compacted. Anyone may
   append. Merging two copies is a plain union.
 - **patchsets/<n>** points at the head commit of the reviewer's patch set `n`,
   and **patchsets/<n>-base** at its merge base. An OID stored in an event
@@ -233,7 +234,7 @@ Initial event types:
 |---|---|---|
 | meta | `review-created` | source name and key; for `github-pr`: owner, repo, PR number and URL, base branch, head branch and head repository |
 | meta | `review-closed` | `merged` or `closed`, merge commit if any |
-| meta | `compacted` | see "Compaction" |
+| any event ref | `compacted` | `from` (the old tip), `commits` (how many it replaced); `by: "auto"`; see "Compaction" |
 | progress | `patchset-started` | patch set number, snapshot id (`revision`), merge base, head; optional, from re-review on: `since` (the patch set it follows, a smaller number), `shape` (`S1`, `S3`, `S4a`, `S4b`, `S4c`, `S5`, `S6`, `S7`), `baseBranch` (GitHub's base branch name then), `interdiff` (`available` or `unavailable`) |
 | progress | `cluster-state` | snapshot id (`patchset`), cluster identity hash, file path, state (`unreviewed`, `reviewed`, `crossed-off`), optional reason for crossed off |
 | progress | `carried` | `from` and `to` (patch set numbers, `from < to`), `rule` (`exact` or `rename`), `states`: a list of `{ key, fromKey, state }`, one per cluster carried under that rule, `state` being `reviewed` or `crossed-off`; `fromKey` is written only when it differs from `key` (absent means equal: the reader fills it in) |
@@ -584,7 +585,7 @@ compare-and-swap). Written by `src/server/home/inbox.ts`.
 - **Size**, measured 2026-10-29: 100 commits (125 events: snoozes, waits,
   notes, wakes over 30 PRs) took 404 KiB loose and 18 KiB packed after
   `git gc`; an append took 14 ms and a cold read of the fold 5 ms. No
-  compaction, as for review refs.
+  compaction: unlike a review, the inbox never ends.
 
 ## Agent threads ref
 
@@ -764,8 +765,9 @@ folded from the origins on read (`startedBy`), never stored.
 
   Well inside the bounds set for it (an append under 100 ms of CPU, a cold
   fold under 200 ms, under 300 KiB packed), so texts stay in commit
-  messages; moving long ones to tree blobs (GitDB 6) is the fallback. No
-  compaction, as for review refs. The 100 seen events add 100 commits' worth
+  messages; moving long ones to tree blobs (GitDB 6) is the fallback. The
+  ref is compacted with the rest of the review once its PR is over
+  ("Compaction"). The 100 seen events add 100 commits' worth
   of git objects (loose size) but little packed.
 
   The review conversation, measured 2026-11-15 (`pnpm tsx
@@ -1160,19 +1162,78 @@ compare-and-swap, no push. The format below stays ready for sync.
 
 ## Compaction
 
-When a review's PR is merged or closed, compaction can rewrite each of its refs
-to a single commit holding every event (deduplicated and sorted), so `git gc`
-can drop the old commits. Rules:
+Built 2026-11-27 (CAR-13). Once GitHub says a review's PR is merged or closed
+(its state, never history's shape: principle 7), crb rewrites each of the
+review's event refs that holds more than one commit (`meta`, and each
+reviewer's `progress` and `agent/threads`; never a patch set's pins, never
+the lookup ref) to a single root commit holding every event line of its
+history (`src/server/review/compact.ts`). The old commits become
+unreachable, so a later prune can drop them.
 
-- No event may be lost. A test compares the folded state and the set of event
-  IDs before and after.
-- A `compacted` event records that it happened. A client that sees a compacted
-  ref on the remote replaces its local copy instead of merging, otherwise the old
-  history comes back.
-- Pushing a compacted ref needs `--force-with-lease`.
+- **When.** On opening a started review of a PR that is over (`Session`,
+  in the background after the open's own writes; `close()` waits for it),
+  and when Home lists a started review of a merged or closed PR (once per
+  process per review, one review at a time, off the request path). A
+  compacted ref with nothing new is left alone (its tip has no parent: one
+  `for-each-ref` tells). A write after compaction (marks on a merged PR stay
+  possible) lands on top as usual and is compacted on the next trigger.
+- **No event lost, no fold changed.** The compacted commit carries the
+  event lines over verbatim, in the order readers read them now (`git log
+  --reverse`, the summary line of each message skipped, as `parseEventLines`
+  does), dropping only exact duplicate lines. Lines this version can't read
+  (a newer crb's type or version, a malformed line) are kept too, since a
+  later version may read them. *Departure from the first design* ("every
+  event, deduplicated and sorted"): sorting or deduplicating by id could
+  change which of two events with one id a reader keeps, and parsing would
+  drop the unknown ones; keeping the lines and their order makes every fold
+  (coverage, marks, carries, placements, agent threads, the review's
+  metadata) identical by construction. A test folds a review with every
+  kind of event before and after and gets the same state, the same lines
+  in the same order.
+- **Marked.** The commit's last line is a `compacted` event (`by: "auto"`,
+  `from`: the old tip, `commits`: how many it replaced), in every compacted
+  ref, not only `meta`: refs are fetched one by one, so each must say it was
+  rewritten. Readers fold nothing from it; older ones skip it as an unknown
+  type. Its summary line says `crb: compacted <n> commits`. The reviewer's
+  refs keep the reviewer as author; `meta`'s is the reviewer whose crb
+  compacted it.
+- **Concurrency.** Each ref is its own compare-and-swap (`update-ref <ref>
+  <new> <old>`): a write that lands while it builds (another tab marking a
+  line) makes it read the new tip and build again, up to 5 tries; a ref
+  that keeps moving is left as it was, never half done. Refs are compacted
+  one by one, not in one transaction: each is consistent on its own.
+- **Sync (CAR-12, not built).** A client that sees a remote ref whose tip
+  holds a `compacted` event replaces its copy of that ref instead of
+  merging (keeping only its own unpushed events, rebuilt on top), otherwise
+  the old history comes back. Pushing a compacted ref needs
+  `--force-with-lease`.
+- **Cost.** One `for-each-ref`, then per ref a `log`, a `commit-tree` and an
+  `update-ref`: the same at 4x the events and with 4x the other reviews in
+  the clone (`compact.test.ts`).
+- **When the old commits go.** Nothing crb runs deletes them: `gc.auto=0`
+  and clone maintenance never prunes (CAR-325). They go on a prune (`git gc
+  --prune=<date>`, `git prune`) or a full repack that drops unreachable
+  objects (`git repack -a -d` without `-k`/`-A`/`--cruft`). Until then
+  compaction saves what a pack holds reachable, not disk. A safe policy
+  (proposed, not built): prune unreachable objects older than two weeks,
+  under the repo lock, at most weekly; crb needs no unreachable object for
+  that long (a PR head read by OID is fetched again on every open, and the
+  `compacted` event's `from` is informational).
+
+Measured 2026-11-27 (git 2.53, a synthetic progress ref, one event per
+commit, random 64-hex cluster keys and snapshot ids):
+
+| Events | Commits | Reachable, packed (`repack -a -d`) | Loose before | After compaction + repack -a -d |
+|---|---|---|---|---|
+| 300 | 300 → 1 | 52.5 KiB → 19.6 KiB | 303 objects, 1.2 MiB | 1 pack, 20 KiB |
+| 1,200 | 1,200 → 1 | 205 KiB → 76 KiB | 1,203 objects, 4.7 MiB | 1 pack, 77 KiB |
+
+Right after compaction the old objects are still all there (one new loose
+commit is added); `git maintenance run --task=loose-objects
+--task=incremental-repack` packs them but keeps them (2 packs, 82 KiB at
+300 events); only the full repack or a prune drops them.
 
 Closed reviews are kept forever, compacted, along with their lookup refs.
-Tracked in `docs/todo.md`.
 
 ## Deferred
 

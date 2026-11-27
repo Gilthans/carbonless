@@ -7,6 +7,8 @@ import type {
 	RepoHome,
 } from "../../shared/home.js";
 import { join, shared, waitOn, workOf } from "../activity.js";
+import { clonePath } from "../clone.js";
+import { Compactions } from "../review/compact.js";
 import { slugify } from "../slug.js";
 import { ViewerCache } from "../viewerCache.js";
 import {
@@ -179,11 +181,14 @@ export interface HomeServiceOptions {
 	now?: () => number;
 	/** The server's gh login; none: one of its own. */
 	viewers?: ViewerCache;
+	/** Compacts the started reviews of merged or closed PRs (CAR-13). */
+	compactions?: Compactions;
 }
 
 export class HomeService {
 	readonly #config: ConfigAccess;
 	readonly #started: StartedSource;
+	readonly #compactions: Compactions;
 	readonly #inbox: InboxStore;
 	readonly #now: () => number;
 	/** The gh login (the server's, shared with every review's open). */
@@ -212,6 +217,7 @@ export class HomeService {
 		this.#config = options.config;
 		this.#viewers = options.viewers ?? new ViewerCache();
 		this.#started = options.started ?? new StartedReviews();
+		this.#compactions = options.compactions ?? new Compactions();
 		this.#now = options.now ?? Date.now;
 		this.#inbox = options.inbox ?? new InboxStore(this.#now);
 	}
@@ -266,6 +272,7 @@ export class HomeService {
 		this.#viewerError = null;
 		this.lastCost = newCost();
 		this.#started.reset?.();
+		this.#compactions.reset();
 		this.#inbox.reset();
 		for (const listener of this.#onReset) listener();
 	}
@@ -501,6 +508,7 @@ export class HomeService {
 		const rows: HomeRow[] = [];
 		for (const { facts } of state.facts.values()) {
 			const started = state.started.filter((s) => s.number === facts.number);
+			if (facts.state !== "OPEN") this.#compact(started, slug);
 			const row = this.#row(
 				facts,
 				viewer,
@@ -525,6 +533,22 @@ export class HomeService {
 			complete: !landing,
 			progress: state.progress,
 		};
+	}
+
+	/**
+	 * A merged or closed PR's started reviews (GitHub's state, principle 7)
+	 * get their refs compacted, in the background (docs/review-data-storage.md,
+	 * "Compaction"). Never one as of a cutoff: its PR was open then.
+	 */
+	#compact(started: readonly StartedReview[], slug: string): void {
+		for (const s of started) {
+			if (s.asOf !== null || !slug) continue;
+			try {
+				this.#compactions.schedule(clonePath(s.owner, s.repo), s.id, slug);
+			} catch {
+				// Not a clone crb could have made: nothing to compact.
+			}
+		}
 	}
 
 	/**
