@@ -104,7 +104,7 @@ const number = (v: string | undefined) => {
 };
 
 /** The boxes of the view shown in `section`, top to bottom. */
-export function lineBoxes(section: Element): LineBox[] {
+function lineBoxes(section: Element): LineBox[] {
 	const rows: Measured[] = [];
 	for (const el of section.querySelectorAll(
 		"[data-testid=diff-line], [data-new-lines]",
