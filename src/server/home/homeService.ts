@@ -36,7 +36,7 @@ import {
 	turnOf,
 	turnWithWaiting,
 } from "./sections.js";
-import { StartedReviews } from "./started.js";
+import { prKey, StartedReviews } from "./started.js";
 
 /**
  * Home's state: GitHub's PR facts per view repo (a PR started elsewhere
@@ -499,7 +499,9 @@ export class HomeService {
 					await this.#started.list(
 						slug,
 						new Set(
-							[...state.facts.keys()].map((n) => `${name}#${n}`.toLowerCase()),
+							[...state.facts.values()].map(({ facts: f }) =>
+								prKey(f.owner, f.repo, f.number),
+							),
 						),
 						name,
 					)
