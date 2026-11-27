@@ -122,22 +122,43 @@ function lineBoxes(section: Element): LineBox[] {
 	return boxesOf(rows);
 }
 
-/** What the reader does that ends the wait: theirs wins over a late restore. */
-const INPUTS = ["wheel", "touchstart", "keydown"] as const;
+/** What the reader does that ends the hold: theirs wins over a late restore. */
+const INPUTS = ["wheel", "touchstart", "keydown", "pointerdown"] as const;
+
+/** A region still loading (principle 8 puts `aria-busy` on each). */
+const BUSY = '[aria-busy="true"]';
+
+/** How the hold waits a frame: the page's, or a test's. */
+export interface Frames {
+	request: (run: () => void) => number;
+	cancel: (id: number) => void;
+}
+
+const pageFrames: Frames = {
+	request: (run) => requestAnimationFrame(run),
+	cancel: (id) => cancelAnimationFrame(id),
+};
 
 /**
- * Before a pick: where the reader is in `section`'s view, and once the
- * new view (`renderer`, on the section's `data-renderer`) shows its lines,
- * scrolls that place back where it was, and keeps it there for `settle`
- * ms while late rows land (marks, notes, an image's size). A view with no
- * lines (Image) puts its view bar back where it was pinned instead. Gives
- * up after `wait` ms, and stops at once when the reader scrolls or types
- * themselves. Returns null when there's no place to keep (the file's
- * start is in view).
+ * Before a pick: where the reader is in `section`'s view. Returns null
+ * when there's no place to keep (the file's start is in view); else a
+ * hold to start once the pick is made, for the new view (`renderer`, on
+ * the section's `data-renderer`).
+ *
+ * The hold puts that place back where it was once the new view shows its
+ * lines, and again whenever the section changes, until nothing in the
+ * section is busy any more (a pending region's `aria-busy`: lines, words,
+ * the Rendered document, since chips, threads being placed) and one more
+ * frame has passed. A view with no lines (Image) puts its view bar back
+ * where it was pinned instead. Never on a timer: the reader's own input
+ * (a wheel, a touch, a key, a pointer) or a scroll the hold didn't make
+ * (a scrollbar drag, a link that scrolls) ends it at once. While it holds,
+ * the browser's own scroll anchoring is off, so every scroll it sees is
+ * the hold's or someone else's.
  */
 export function keepPlace(
 	section: HTMLElement,
-	{ wait = 5000, settle = 1000 } = {},
+	frames: Frames = pageFrames,
 ): ((renderer: string) => () => void) | null {
 	const bar = section.querySelector<HTMLElement>("[data-view-bar]");
 	const stack = stickyBottom(bar ?? section);
@@ -147,53 +168,81 @@ export function keepPlace(
 	const { line, y: was } = place;
 	return (renderer) => {
 		let frame = 0;
-		let placed = false;
+		let stopped = false;
+		// The scroll position the hold last left: a scroll elsewhere is
+		// someone else's. None before its first write: the switch itself
+		// may move the page (a shorter view clamps the scroll).
+		let wrote: number | undefined;
+		// Nothing busy at the last frame: one more, then the hold ends.
+		let quiet = false;
+		const root = document.documentElement;
+		const anchor = root.style.overflowAnchor;
+		root.style.overflowAnchor = "none";
 		const schedule = () => {
-			if (!frame) frame = requestAnimationFrame(attempt);
+			if (!frame && !stopped) frame = frames.request(attempt);
 		};
-		const observer = new MutationObserver(schedule);
+		const observer = new MutationObserver(() => {
+			quiet = false;
+			schedule();
+		});
 		const resized =
 			typeof ResizeObserver === "undefined"
 				? null
-				: new ResizeObserver(schedule);
-		const stop = () => {
-			cancelAnimationFrame(frame);
+				: new ResizeObserver(() => {
+						quiet = false;
+						schedule();
+					});
+		const onScroll = () => {
+			if (wrote !== undefined && Math.abs(window.scrollY - wrote) >= 1) stop();
+		};
+		function stop() {
+			if (stopped) return;
+			stopped = true;
+			if (frame) frames.cancel(frame);
+			frame = 0;
 			observer.disconnect();
 			resized?.disconnect();
-			clearTimeout(timer);
+			root.style.overflowAnchor = anchor;
+			window.removeEventListener("scroll", onScroll, true);
 			for (const e of INPUTS) window.removeEventListener(e, stop, true);
-		};
-		let timer = setTimeout(stop, wait);
-		const done = () => {
-			if (placed) return;
-			placed = true;
-			clearTimeout(timer);
-			timer = setTimeout(stop, settle);
+		}
+		const scrollBy = (dy: number) => {
+			if (Math.abs(dy) >= 1) window.scrollBy({ top: dy, behavior: "instant" });
+			wrote = window.scrollY;
 		};
 		function attempt() {
 			frame = 0;
 			if (!section.isConnected) return stop();
 			if (section.getAttribute("data-renderer") !== renderer) return;
+			const busy = section.querySelector(BUSY) !== null;
 			const y = yOfLine(lineBoxes(section), line);
-			if (y !== null) {
-				if (Math.abs(y - was) >= 1) window.scrollBy(0, y - was);
-				return done();
-			}
-			// No lines: the image's view, its bar first in it. The bar goes
-			// back to where it was pinned, the image under it.
 			const image = section.querySelector("[data-testid=image-view]");
-			if (!image || barTop === undefined) return;
-			const top = image.getBoundingClientRect().top;
-			if (top < barTop - 1) window.scrollBy(0, top - barTop);
-			done();
+			if (y !== null) scrollBy(y - was);
+			else if (image && barTop !== undefined) {
+				// No lines: the image's view, its bar first in it. The bar
+				// goes back to where it was pinned, the image under it.
+				const top = image.getBoundingClientRect().top;
+				scrollBy(top < barTop ? top - barTop : 0);
+			} else if (!busy) return stop();
+			if (busy) {
+				quiet = false;
+				return;
+			}
+			if (quiet) return stop();
+			quiet = true;
+			schedule();
 		}
 		observer.observe(section, {
 			childList: true,
 			subtree: true,
 			attributes: true,
-			attributeFilter: ["data-renderer"],
+			attributeFilter: ["data-renderer", "aria-busy"],
 		});
 		resized?.observe(section);
+		window.addEventListener("scroll", onScroll, {
+			capture: true,
+			passive: true,
+		});
 		for (const e of INPUTS)
 			window.addEventListener(e, stop, { capture: true, passive: true });
 		schedule();

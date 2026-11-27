@@ -1,4 +1,4 @@
-import type { Locator, Page } from "@playwright/test";
+import type { Locator, Page, Route } from "@playwright/test";
 import {
 	expectNoPageOverflow,
 	fileSection,
@@ -6,7 +6,7 @@ import {
 	openFiles,
 	tapHeight,
 } from "./files-ui";
-import { expect, test } from "./fixtures";
+import { expect, reviewPage, test } from "./fixtures";
 import { GREEN, png as pngImage, RED } from "./images";
 
 /*
@@ -234,4 +234,196 @@ test("the image toolbar pins while a tall image scrolls; Fade from deep in it ke
 	).toBeVisible();
 	await pinned(section);
 	if (isMobile) await expectNoPageOverflow(page);
+});
+
+const TS = "src/long.ts";
+const SVG = "img/tall.svg";
+/** A .ts file changed on every line: its rows are what a stack without a view bar does. */
+const tsLines = (changed: boolean) =>
+	`${Array.from({ length: 200 }, (_, i) => `long ${i + 1}${changed ? " x" : ""}`).join("\n")}\n`;
+
+/** `row`'s top below `stack`'s bottom, once it settles. */
+async function below(row: Locator, stack: Locator) {
+	await expect(row).toBeInViewport();
+	let last = Number.NaN;
+	await expect
+		.poll(async () => {
+			const now = (await topOf(row)) - (await bottomOf(stack));
+			const steady = Math.abs(now - last) < 0.5;
+			last = now;
+			return steady;
+		})
+		.toBe(true);
+	return last;
+}
+
+test("a find step and a line landing put the row below the pinned view bar, as far as a file without one puts it below its header", async ({
+	page,
+	pr,
+	startCrb,
+	isMobile,
+}) => {
+	await pr({
+		base: { [DOC]: doc(false), [TS]: tsLines(false) },
+		files: [
+			{ message: "edit", files: { [DOC]: doc(true), [TS]: tsLines(true) } },
+		],
+	});
+	const s = await startCrb();
+
+	// A landing: on a .ts line, then on a .md line (Text for the view).
+	await page.goto(reviewPage(s.url, "files", `?path=${TS}&line=150`));
+	const ts = fileSection(page, TS);
+	const tsRow = ts.locator('[data-testid=diff-line][data-new-no="150"]');
+	const tsGap = await below(tsRow, header(ts));
+	await page.goto(reviewPage(s.url, "files", `?path=${DOC}&line=101`));
+	let md = fileSection(page, DOC);
+	await shownAs(md, "text");
+	await pinned(md);
+	const mdRow = md.locator('[data-testid=diff-line][data-new-no="101"]');
+	expect(Math.abs((await below(mdRow, bar(md))) - tsGap)).toBeLessThan(2);
+
+	// A find step into the .md file shown as Text.
+	await openFiles(page, s.url);
+	md = fileSection(page, DOC);
+	await md.getByRole("button", { name: "Expand file" }).click();
+	await viewButton(md, "Text").click();
+	await shownAs(md, "text");
+	if (isMobile)
+		await page.getByRole("button", { name: "Find in PR", exact: true }).click();
+	else await page.keyboard.press("ControlOrMeta+f");
+	const box = page.getByTestId("find-box");
+	await box.fill("long 150 x");
+	await expect(page.getByTestId("find-count")).toHaveText(/^(1 of 1|1\/1)$/, {
+		useInnerText: true,
+	});
+	await box.press("Enter");
+	const tsHit = fileSection(page, TS).locator("tr[data-find-current]");
+	const findGap = await below(tsHit, header(fileSection(page, TS)));
+	await box.fill("Para 80 stays");
+	await expect(page.getByTestId("find-count")).toHaveText(/^(1 of 1|1\/1)$/, {
+		useInnerText: true,
+	});
+	await box.press("Enter");
+	const mdHit = md.locator("tr[data-find-current]");
+	await pinned(md);
+	expect(Math.abs((await below(mdHit, bar(md))) - findGap)).toBeLessThan(2);
+});
+
+test("a click while the switch waits for its view ends the hold: the view lands where the reader left it, not snapped back", async ({
+	page,
+	pr,
+	startCrb,
+}) => {
+	const OTHER = "docs/other.md";
+	await pr({
+		base: { [DOC]: doc(false), [OTHER]: doc(false) },
+		files: [
+			{ message: "edit", files: { [DOC]: doc(true), [OTHER]: doc(true) } },
+		],
+	});
+	const s = await startCrb();
+	await openFiles(page, s.url);
+	// Both shown as Text (kept per path), so Rendered reads its document anew.
+	for (const path of [DOC, OTHER]) {
+		const section = fileSection(page, path);
+		await section.getByRole("button", { name: "Expand file" }).click();
+		await viewButton(section, "Text").click();
+		await shownAs(section, "text");
+	}
+	await page.reload();
+	const held: Route[] = [];
+	await page.route("**/files/*/context?*", (route) => {
+		held.push(route);
+	});
+	const release = async () => {
+		await expect.poll(() => held.length).toBeGreaterThanOrEqual(1);
+		for (const route of held.splice(0)) await route.continue();
+	};
+
+	/** Deep in Text, picks Rendered; its document is held until `release`. */
+	async function pickHeld(path: string) {
+		const section = fileSection(page, path);
+		await section.getByRole("button", { name: "Expand file" }).click();
+		await expect(textRow(section, "Para 71 stays")).toBeVisible();
+		await readAt(section, textRow(section, "Para 71 stays"));
+		const was = await topOf(textRow(section, "Para 71 stays"));
+		await viewButton(section, "Rendered").click();
+		await expect(section.getByTestId("md-loading")).toHaveAttribute(
+			"aria-busy",
+			"true",
+		);
+		return { section, was };
+	}
+
+	// Untouched, the hold waits out the load and keeps the place.
+	const kept = await pickHeld(DOC);
+	await release();
+	await expect(kept.section.getByTestId("md-doc")).toBeVisible();
+	await expect
+		.poll(async () =>
+			Math.abs(
+				(await topOf(renderedRow(kept.section, "Para 71 stays"))) - kept.was,
+			),
+		)
+		.toBeLessThan(2);
+	await kept.section.getByRole("button", { name: "Collapse file" }).click();
+
+	// A click meanwhile: the reader's, so the view stays where they are.
+	const left = await pickHeld(OTHER);
+	const box = await left.section.getByTestId("md-loading").boundingBox();
+	if (!box) throw new Error("no skeleton");
+	await page.mouse.click(box.x + 4, box.y + box.height / 2);
+	await release();
+	await expect(left.section.getByTestId("md-doc")).toBeVisible();
+	await expect(left.section.locator('[aria-busy="true"]')).toHaveCount(0);
+	expect(
+		Math.abs(
+			(await topOf(renderedRow(left.section, "Para 71 stays"))) - left.was,
+		),
+	).toBeGreaterThan(50);
+});
+
+test("Text to Image deep in a long SVG: the toolbar goes back to where it was pinned, the image's start under it", async ({
+	page,
+	pr,
+	startCrb,
+}) => {
+	const svg = (fill: string) =>
+		`${[
+			'<svg xmlns="http://www.w3.org/2000/svg" width="200" height="300">',
+			...Array.from(
+				{ length: 200 },
+				(_, i) =>
+					`<rect x="0" y="${i}" width="200" height="1" fill="${fill}" data-n="${i}"/>`,
+			),
+			"</svg>",
+		].join("\n")}\n`;
+	await pr({
+		base: { [SVG]: svg("red") },
+		files: [{ message: "recolor", files: { [SVG]: svg("green") } }],
+	});
+	const s = await startCrb();
+	await openFiles(page, s.url);
+	const section = fileSection(page, SVG);
+	await section.getByRole("button", { name: "Expand file" }).click();
+	await viewButton(section, "Text").click();
+	await shownAs(section, "text");
+	const deep = section
+		.getByTestId("diff-line")
+		.filter({ hasText: 'data-n="150"' })
+		.last();
+	await readAt(section, deep);
+	await pinned(section);
+	await viewButton(section, "Slider").click();
+	await shownAs(section, "image");
+	await expect(section.getByTestId("image-view")).toBeVisible();
+	await expect
+		.poll(async () =>
+			Math.abs(
+				(await topOf(section.getByTestId("image-view"))) -
+					(await bottomOf(header(section))),
+			),
+		)
+		.toBeLessThan(1.5);
 });

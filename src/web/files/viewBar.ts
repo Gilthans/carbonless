@@ -5,7 +5,7 @@
  */
 export function viewBarOver(el: Element): HTMLElement | null {
 	const bar = el
-		.closest("section")
+		.closest("[data-file-index]")
 		?.querySelector<HTMLElement>("[data-view-bar]");
 	return bar?.parentElement?.contains(el) ? bar : null;
 }
