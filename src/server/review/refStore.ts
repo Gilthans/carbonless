@@ -1,3 +1,4 @@
+import { readRef } from "../catFile.js";
 import { GitError, runGit } from "../git.js";
 import {
 	type CrbEvent,
@@ -6,7 +7,7 @@ import {
 	serializeCommitMessage,
 	validateForWrite,
 } from "./events.js";
-import { tipFromFiles } from "./refFiles.js";
+import { refsChanged } from "./refStamp.js";
 
 /**
  * Retry budget per append; each lost race re-reads the tip (see appendEvent).
@@ -91,19 +92,13 @@ export class RefStore {
 	}
 
 	/**
-	 * The ref's tip, null when it doesn't exist: off git's ref files when
-	 * they tell (refFiles.ts: no process), else `git rev-parse`.
+	 * The ref's tip, null when it doesn't exist: asked of the clone's shared
+	 * `git cat-file --batch` (catFile.ts), so a page's many tip reads start
+	 * no process each (CAR-320), and every read goes through git (CAR-326).
 	 */
 	async tip(ref: string): Promise<string | null> {
 		checkRef(ref);
-		const read = await tipFromFiles(this.repo, ref);
-		if (read !== undefined) return read;
-		const out = await runGit(
-			this.repo,
-			["rev-parse", "--verify", "--quiet", "--end-of-options", ref],
-			{ allowFailure: true },
-		);
-		return out.trim() || null;
+		return (await readRef(this.repo, ref))?.oid ?? null;
 	}
 
 	/** Every valid event reachable from the ref, oldest commit first. */
@@ -132,9 +127,13 @@ export class RefStore {
 	/**
 	 * The tip of every ref matching `patterns` (for-each-ref patterns under
 	 * refs/crb/), by ref name: one git call however many refs match, where a
-	 * `tip` per ref would start a git each. Empty when git can't list them.
+	 * `tip` per ref would start a git each. Empty when git can't list them,
+	 * unless `strict` (then a GitError: a caller that keeps the answer).
 	 */
-	async tips(patterns: readonly string[]): Promise<Map<string, string>> {
+	async tips(
+		patterns: readonly string[],
+		{ strict = false }: { strict?: boolean } = {},
+	): Promise<Map<string, string>> {
 		for (const p of patterns) {
 			if (!p.startsWith("refs/crb/") || p.startsWith("-")) {
 				throw new Error(`Not a crb ref pattern: ${p}`);
@@ -149,7 +148,7 @@ export class RefStore {
 				"--end-of-options",
 				...patterns,
 			],
-			{ allowFailure: true },
+			{ allowFailure: !strict },
 		);
 		const tips = new Map<string, string>();
 		for (const line of out.split("\n")) {
@@ -415,6 +414,9 @@ export class RefStore {
 			if (oldOid !== null) checkOid(oldOid);
 			return `update ${ref} ${newOid} ${oldOid ?? zero}\n`;
 		});
+		// Before the update too: crb killed between the update and the
+		// stamp after it still leaves a stamp no earlier listing saw.
+		await refsChanged(this.repo);
 		try {
 			await runGit(this.repo, ["update-ref", "--stdin"], {
 				input: `start\n${lines.join("")}commit\n`,
@@ -426,6 +428,10 @@ export class RefStore {
 				throw new RefConflictError(error.message);
 			}
 			throw error;
+		} finally {
+			// After the update, applied or not (refStamp.ts): Home's next
+			// scan of this clone lists its refs again.
+			await refsChanged(this.repo);
 		}
 	}
 

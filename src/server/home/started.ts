@@ -3,11 +3,13 @@ import { readdir } from "node:fs/promises";
 import { join } from "node:path";
 import type { Coverage } from "../../shared/home.js";
 import type { Snapshot } from "../../shared/types.js";
+import { clonePath } from "../clone.js";
 import { buildSnapshot } from "../diff/snapshot.js";
 import { cacheDir } from "../paths.js";
 import { buildReviewView } from "../review/coverage.js";
 import type { CrbEvent } from "../review/events.js";
 import { foldProgress } from "../review/fold.js";
+import { refStamp } from "../review/refStamp.js";
 import { RefStore } from "../review/refStore.js";
 import { reviewCreated } from "../review/reviews.js";
 import { withSplitCarries } from "../review/splitCarry.js";
@@ -25,6 +27,17 @@ const MAX_SNAPSHOTS = 64;
 
 /** `<cache>/carbonless/repos`, where every clone lives. */
 const reposDir = () => join(cacheDir(), "repos");
+
+/** The clone of `owner/repo`, or null when that names none. */
+function cloneOf(only: string): string | null {
+	const [owner = "", repo = "", ...rest] = only.split("/");
+	if (rest.length > 0) return null;
+	try {
+		return clonePath(owner, repo);
+	} catch {
+		return null;
+	}
+}
 
 /**
  * The share a row shows: reviewed out of what isn't crossed off, in lines.
@@ -67,6 +80,20 @@ interface Memo {
 	events?: CrbEvent[];
 }
 
+/**
+ * How long a clone's listing stands while its ref stamp hasn't changed
+ * (refStamp.ts): a ref write that never stamped (crb killed between the
+ * update and the stamp, a hand-run `git update-ref`) shows within this.
+ */
+export const TRUST_MS = 5 * 60_000;
+
+/** A clone's last listing of a viewer's refs, and the stamp it was read under. */
+interface Listing {
+	stamp: string;
+	at: number;
+	tips: Map<string, string>;
+}
+
 const PROGRESS_REF =
 	/^refs\/crb\/reviews\/([0-9a-z]{26})\/reviewers\/([^/]+)\/progress$/;
 const META_REF = /^refs\/crb\/reviews\/([0-9a-z]{26})\/meta$/;
@@ -80,9 +107,15 @@ export class StartedReviews {
 	 * last scan listed, so it is bounded by the started reviews that exist.
 	 */
 	readonly #memos = new Map<string, Map<string, Memo>>();
+	/** By clone and viewer: the refs' last listing (CAR-326). */
+	readonly #listings = new Map<string, Listing>();
+	readonly #now: () => number;
 
-	constructor(options: { build?: typeof buildSnapshot } = {}) {
+	constructor(
+		options: { build?: typeof buildSnapshot; now?: () => number } = {},
+	) {
 		this.#build = options.build ?? buildSnapshot;
+		this.#now = options.now ?? Date.now;
 	}
 
 	/** Forgets its ref stores, snapshots and summaries (the test hook's reset). */
@@ -90,6 +123,7 @@ export class StartedReviews {
 		this.#stores.clear();
 		this.#snapshots.clear();
 		this.#memos.clear();
+		this.#listings.clear();
 	}
 
 	#store(repo: string): RefStore {
@@ -126,8 +160,10 @@ export class StartedReviews {
 	 * Git processes per clone, however many reviews it holds (CAR-307): one
 	 * for-each-ref of the meta and progress refs' tips, plus, only when a tip
 	 * moved since the last scan (or coverage is newly wanted), one git log of
-	 * the moved tips. A review written by another tab, the crb CLI or a fetch
-	 * moves its tip, so the next scan sees it with no invalidation.
+	 * the moved tips. The for-each-ref only when the clone's ref stamp
+	 * changed since its last one (refStamp.ts, CAR-326), or TRUST_MS passed:
+	 * every crb ref write (this server, another tab, the crb CLI) stamps, so
+	 * a scan with nothing written starts no git at all.
 	 */
 	async list(
 		slug: string,
@@ -136,7 +172,7 @@ export class StartedReviews {
 	): Promise<StartedReview[]> {
 		const root = reposDir();
 		const repos = only
-			? [join(root, `${only.toLowerCase()}.git`)].filter((r) => existsSync(r))
+			? [cloneOf(only)].filter((r): r is string => r !== null && existsSync(r))
 			: (
 					await Promise.all(
 						(
@@ -170,11 +206,32 @@ export class StartedReviews {
 		withCoverage: ReadonlySet<string> | undefined,
 	): Promise<StartedReview[]> {
 		const store = this.#store(repo);
-		// The viewer's progress refs and every meta ref, tips only: one git.
-		const tips = await store.tips([
-			`refs/crb/reviews/*/reviewers/${slug}/progress`,
-			"refs/crb/reviews/*/meta",
-		]);
+		const memoKey = `${repo}\0${slug}`;
+		// Read before the listing it vouches for (refStamp.ts).
+		const stamp = await refStamp(repo);
+		const now = this.#now();
+		const listed = this.#listings.get(memoKey);
+		let tips: Map<string, string>;
+		if (
+			stamp !== null &&
+			listed?.stamp === stamp &&
+			now - listed.at >= 0 &&
+			now - listed.at < TRUST_MS
+		) {
+			tips = listed.tips;
+		} else {
+			// The viewer's progress refs and every meta ref, tips only: one git.
+			tips = await store.tips(
+				[
+					`refs/crb/reviews/*/reviewers/${slug}/progress`,
+					"refs/crb/reviews/*/meta",
+				],
+				// A listing that failed is never kept as an empty one.
+				{ strict: true },
+			);
+			if (stamp === null) this.#listings.delete(memoKey);
+			else this.#listings.set(memoKey, { stamp, at: now, tips });
+		}
 		const metas = new Map<string, string>();
 		const progresses = new Map<string, string>();
 		for (const [ref, tip] of tips) {
@@ -185,7 +242,6 @@ export class StartedReviews {
 				progresses.set(progress[1], tip);
 			}
 		}
-		const memoKey = `${repo}\0${slug}`;
 		const before = this.#memos.get(memoKey) ?? new Map<string, Memo>();
 		const memos = new Map<string, Memo>();
 		// Each review whose tips moved, and what it needs read.

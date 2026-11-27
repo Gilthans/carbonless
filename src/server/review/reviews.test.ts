@@ -1,6 +1,12 @@
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import {
+	mkdirSync,
+	mkdtempSync,
+	readFileSync,
+	rmSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { deflateSync } from "node:zlib";
@@ -21,8 +27,10 @@ import {
 	type GitFixture,
 	testGitEnv,
 } from "../../../test/git-fixture.js";
+import { countSpawns } from "../../../test/spawn-count.js";
 import { sinceMarkKey } from "../../shared/pieces.js";
 import type { Cluster, Snapshot, StateChange } from "../../shared/types.js";
+import { closeCatFiles } from "../catFile.js";
 import { buildSnapshot } from "../diff/snapshot.js";
 import { runGit } from "../git.js";
 import { buildReviewView } from "./coverage.js";
@@ -39,6 +47,7 @@ import {
 	ReadOnlyPatchsetError,
 	type ReviewPr,
 	ReviewService,
+	rememberReviewClone,
 	StaleSnapshotError,
 	subjectOf,
 	UnknownClusterError,
@@ -895,6 +904,119 @@ describe("listReviews and findReviewById", () => {
 		} finally {
 			rmSync(cache, { recursive: true, force: true });
 		}
+	});
+
+	describe("by its clone's hint (CAR-326)", () => {
+		let cache: string;
+		beforeEach(() => {
+			cache = mkdtempSync(join(tmpdir(), "crb-cache-"));
+		});
+		afterEach(async () => {
+			await closeCatFiles();
+			rmSync(cache, { recursive: true, force: true });
+		});
+		/** Clones acme/c<from>… holding nothing, and acme/widgets holding the review. */
+		const clones = async (from: number, n: number) => {
+			for (let i = from; i < from + n; i++) {
+				execFileSync(
+					"git",
+					[
+						"init",
+						"--quiet",
+						"--bare",
+						join(cache, "repos", "acme", `c${i}.git`),
+					],
+					{ env: testGitEnv() },
+				);
+			}
+		};
+		const holder = async () => {
+			const clone = join(cache, "repos", "acme", "widgets.git");
+			mkdirSync(join(cache, "repos", "acme"), { recursive: true });
+			execFileSync("git", ["clone", "--quiet", "--bare", repo, clone], {
+				env: testGitEnv(),
+			});
+			await runGit(clone, ["fetch", "--quiet", repo, "refs/crb/*:refs/crb/*"]);
+			return clone;
+		};
+		/** The processes a lookup starts, and what it found. */
+		const lookup = async () => {
+			await closeCatFiles();
+			const spawns = countSpawns();
+			try {
+				const found = await findReviewById(cache, id);
+				return { found, shapes: [...spawns.shapes] };
+			} finally {
+				spawns.stop();
+			}
+		};
+		const expected = (clone: string) => ({
+			repoDir: clone,
+			review: { id, key: "acme/widgets#42", pr },
+		});
+
+		it("a scan's hit leaves a hint: the next lookup starts the same processes with 4x the clones", async () => {
+			const clone = await holder();
+			await clones(0, 2);
+			const first = await lookup();
+			expect(first.found).toEqual(expected(clone));
+			// No hint yet: a for-each-ref per clone.
+			expect(first.shapes).toEqual(Array(3).fill("git for-each-ref"));
+			const few = await lookup();
+			await clones(2, 6);
+			const many = await lookup();
+			expect(few.found).toEqual(expected(clone));
+			expect(many.found).toEqual(expected(clone));
+			// The hinted clone's shared cat-file only (the open reuses it).
+			expect(few.shapes).toEqual(["git cat-file --batch"]);
+			expect(many.shapes).toEqual(few.shapes);
+		});
+
+		it("an opened review's hint (rememberReviewClone) finds it with no scan", async () => {
+			const clone = await holder();
+			await clones(0, 4);
+			await rememberReviewClone(cache, id, "Acme", "Widgets");
+			const { found, shapes } = await lookup();
+			expect(found).toEqual(expected(clone));
+			expect(shapes).toEqual(["git cat-file --batch"]);
+		});
+
+		it("a repo whose name starts with a dot (owner/.github) gets a hint like any", async () => {
+			const clone = join(cache, "repos", "acme", ".github.git");
+			mkdirSync(join(cache, "repos", "acme"), { recursive: true });
+			execFileSync("git", ["clone", "--quiet", "--bare", repo, clone], {
+				env: testGitEnv(),
+			});
+			await runGit(clone, ["fetch", "--quiet", repo, "refs/crb/*:refs/crb/*"]);
+			await clones(0, 4);
+			await rememberReviewClone(cache, id, "acme", ".github");
+			const { found, shapes } = await lookup();
+			expect(found?.repoDir).toBe(clone);
+			expect(shapes).toEqual(["git cat-file --batch"]);
+		});
+
+		it("a wrong or odd hint costs a scan, never a wrong answer", async () => {
+			const clone = await holder();
+			await clones(0, 1);
+			const hints = join(cache, "review-clones");
+			mkdirSync(hints, { recursive: true });
+			for (const bad of [
+				"acme/c0",
+				"../acme/widgets",
+				"acme/../acme/widgets",
+				"acme",
+				"",
+			]) {
+				writeFileSync(join(hints, id), bad);
+				expect(await findReviewById(cache, id), bad).toEqual(expected(clone));
+				// The scan put the right one back.
+				expect(readFileSync(join(hints, id), "utf8")).toBe("acme/widgets");
+			}
+			// A hint for a review no clone holds: none.
+			const other = "01zzzzzzzzzzzzzzzzzzzzzzzz";
+			writeFileSync(join(hints, other), "acme/widgets");
+			expect(await findReviewById(cache, other)).toBeNull();
+		});
 	});
 });
 

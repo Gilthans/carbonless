@@ -25,6 +25,7 @@ import {
 	type AgentStatus,
 	JOINED_PREAMBLE,
 } from "../../shared/agent.js";
+import { closeCatFiles } from "../catFile.js";
 import { registerMcp } from "../mcp/routes.js";
 import type { SessionRegistry } from "../registry.js";
 import { RefStore } from "../review/refStore.js";
@@ -256,8 +257,17 @@ afterEach(async () => {
 		if (v === undefined) delete process.env[k];
 		else process.env[k] = v;
 	}
-	origin.cleanup();
-	cache.cleanup();
+	// Ref reads keep the clone's cat-file up, and Windows won't remove a
+	// directory a process runs in: closed first, and again until removing
+	// works (a read the closed agent still had out starts one anew).
+	await vi.waitFor(
+		async () => {
+			await closeCatFiles();
+			origin.cleanup();
+			cache.cleanup();
+		},
+		{ timeout: 10_000, interval: 100 },
+	);
 	rmSync(tmp, { recursive: true, force: true });
 	rmSync(agentsDir(), { recursive: true, force: true });
 });

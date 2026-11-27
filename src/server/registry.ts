@@ -2,7 +2,7 @@ import { join, shared } from "./activity.js";
 import { GitError } from "./git.js";
 import { cacheDir } from "./paths.js";
 import type { HeadSpec } from "./pinnedHead.js";
-import { findReviewById } from "./review/reviews.js";
+import { findReviewById, rememberReviewClone } from "./review/reviews.js";
 import { Session, SessionClosedError } from "./session.js";
 import { ViewerCache } from "./viewerCache.js";
 
@@ -159,6 +159,9 @@ export class SessionRegistry {
 				throw new SessionClosedError("The server was reset");
 			}
 			const kept = this.#keep(session, req.viewer);
+			// A restart's /r/<id> then finds its clone with no scan (CAR-326).
+			const { owner, repo } = kept.prMeta();
+			void rememberReviewClone(cacheDir(), kept.id, owner, repo);
 			// The agent spawns after the open, never in its way (first open).
 			kept.agent?.start();
 			this.#idOf.set(key, kept.id);

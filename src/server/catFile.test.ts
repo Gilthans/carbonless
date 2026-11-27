@@ -16,6 +16,7 @@ import {
 	MAX_PROCESSES,
 	readBlob,
 	readObject,
+	readRef,
 } from "./catFile";
 import { GitError } from "./git";
 
@@ -198,5 +199,93 @@ describe("catFile", () => {
 		} finally {
 			vi.useRealTimers();
 		}
+	});
+	describe("readRef (CAR-326)", () => {
+		const bare = join(tmp, "refs.git");
+		const run = (...args: string[]) =>
+			execFileSync("git", args, {
+				cwd: bare,
+				encoding: "utf8",
+				env: {
+					...testGitEnv(),
+					GIT_AUTHOR_NAME: "t",
+					GIT_AUTHOR_EMAIL: "t@t",
+					GIT_COMMITTER_NAME: "t",
+					GIT_COMMITTER_EMAIL: "t@t",
+				},
+			}).trim();
+		/** What git itself says the ref's tip is: its OID, or null. */
+		const revParse = (ref: string) => {
+			try {
+				return run("rev-parse", "--verify", "--quiet", "--end-of-options", ref);
+			} catch {
+				return null;
+			}
+		};
+		const tipOf = async (ref: string) =>
+			(await readRef(bare, ref))?.oid ?? null;
+
+		it("agrees with git through a ref's life, each change by another process seen at once", async () => {
+			execFileSync("git", ["clone", "--quiet", "--bare", fx.path, bare], {
+				env: testGitEnv(),
+			});
+			const tree = run("rev-parse", `${commit}^{tree}`);
+			const next = run("commit-tree", tree, "-p", commit, "-m", "next");
+			const ref = "refs/crb/reviews/r1/reviewers/me/progress";
+			const other = "refs/crb/reviews/r1/meta";
+			const spawns = countSpawns();
+			const check = async () => {
+				for (const r of [ref, other, "refs/crb/reviews/r1"]) {
+					expect(await tipOf(r), r).toBe(revParse(r));
+				}
+			};
+			try {
+				await check();
+				expect(await tipOf(ref)).toBeNull();
+				run("update-ref", ref, commit);
+				await check();
+				expect(await tipOf(ref)).toBe(commit);
+				run("update-ref", other, next);
+				run("pack-refs", "--all");
+				await check();
+				// Loose again over the packed one.
+				run("update-ref", ref, next);
+				await check();
+				expect(await tipOf(ref)).toBe(next);
+				run("update-ref", "-d", ref);
+				await check();
+				expect(await tipOf(ref)).toBeNull();
+				run("pack-refs", "--all");
+				run("update-ref", "-d", other);
+				await check();
+				expect(await tipOf(other)).toBeNull();
+				// A symbolic ref answers as git resolves it.
+				run("symbolic-ref", "refs/crb/sym", "refs/crb/target");
+				run("update-ref", "refs/crb/target", commit);
+				expect(await tipOf("refs/crb/sym")).toBe(commit);
+			} finally {
+				spawns.stop();
+			}
+			// One cat-file for every read (the test's own gits aren't crb's).
+			expect(spawns.shapes).toEqual(["git cat-file --batch"]);
+			const read = await readRef(bare, "refs/crb/target");
+			expect(read?.type).toBe("commit");
+			expect(read?.content.toString()).toContain("base");
+		});
+
+		it("refuses what isn't a plain full ref name", async () => {
+			for (const bad of [
+				"HEAD",
+				"main",
+				"refs/crb/../../config",
+				"refs/crb//x",
+				"refs/crb/x:a.txt",
+				"refs/crb/x\nrefs/crb/y",
+				"refs/crb/x@{1}",
+				`${commit}`,
+			]) {
+				await expect(readRef(fx.path, bad), bad).rejects.toThrow(GitError);
+			}
+		});
 	});
 });

@@ -1062,13 +1062,16 @@ read forever, would spread the old cut through every reader of states.
 4. Cache the parsed events in memory, keyed by the ref and its tip OID
    (`RefStore.readEvents`, a bounded map). A commit's history never changes,
    so an unchanged tip skips `git log`; folding the cached events again is
-   cheap. The tip itself is read off git's ref files (the loose ref, else
-   its `packed-refs` line, `src/server/review/refFiles.ts`), no process:
-   a page reads its progress ref many times, and a `git rev-parse` each
-   cost ~90 ms on Windows (CAR-320). Anything it can't be sure of (a
-   reftable repository, a symbolic ref, an unknown layout) asks `git
-   rev-parse` as before. Nothing is cached, so a write by anyone shows at
-   once.
+   cheap. The tip itself is asked of the clone's shared `git cat-file
+   --batch` (`readRef`, `src/server/catFile.ts`), no process per read: a
+   page reads its progress ref many times, and a `git rev-parse` each cost
+   ~90 ms on Windows (CAR-320). crb reads git data only through git's CLI,
+   never git's own files (CAR-326; `src/server/gitFiles.test.ts` fails on
+   code that names them). git resolves a ref afresh on every line the
+   process reads (the loose ref, then `packed-refs`, rechecked by stat), so
+   nothing is cached and a write by anyone shows at once. A ref whose
+   object the clone lacks reads as no ref (git answers "missing" for both):
+   its review reads as empty, never as more coverage.
 5. A caller that reads many refs at once (Home's started-reviews scan,
    `StartedReviews.list`) never starts a git per ref: one `git for-each-ref`
    lists the tips it needs (`RefStore.tips`), and the tips that moved since
@@ -1078,10 +1081,37 @@ read forever, would spread the old cut through every reader of states.
    The scan keeps each review's summary and coverage keyed by its meta and
    progress tips (an unreadable review too, as not started), so a load where
    nothing moved costs one `for-each-ref` per clone, however many reviews
-   were started (CAR-307). A meta ref merged from two copies may hold two
+   were started (CAR-307). Not even that while no crb write touched the
+   clone (CAR-326): every ref update crb makes (`RefStore.transaction`, in
+   the server and the CLI alike) rewrites the clone's stamp, before the
+   update and after it, a file crb owns outside git
+   (`<cache>/carbonless/ref-stamps/`, `src/server/review/refStamp.ts`; a
+   write another program holds is tried again, a final failure logged), and
+   a scan lists a clone's refs again only when its stamp changed, or 5
+   minutes passed (a write that never stamped: a hand-run `git update-ref`).
+   The stamp also carries the process's own count of its writes to that
+   clone, so the server's own writes (an unmark included) show on its next
+   Home load even when no stamp file can be written: Home never reads
+   higher than the refs say. Stamps untouched for 30 days are dropped. A
+   warm Home load with nothing written starts no git at all, however many
+   clones; a cold one (after a restart) a `for-each-ref` and a `git log`
+   per clone. A meta ref merged from two copies may hold two
    `review-created` events; every reader takes the earliest by `(ts, id)`
-   (`reviewCreated`), whatever order it read the commits in. It needs no invalidation: a write by
-   another tab, the crb CLI or a fetch moves a tip, and the next scan sees it.
+   (`reviewCreated`), whatever order it read the commits in. A write by
+   another tab or the crb CLI stamps the clone and moves a tip, and the
+   next scan sees it; a future fetch of `refs/crb` (CAR-12) must stamp too.
+   It must also fetch every ref's commits: a ref whose commit the clone
+   lacks reads as no ref (a patch-set pin as no pin), not as an error.
+6. Opening a review by id when the server doesn't hold it (`/r/<id>` after
+   a restart, `findReviewById`) reads the clone its hint names
+   (`<cache>/carbonless/review-clones/<id>`, written when a review opens
+   and when a scan finds it): its meta ref through that clone's shared
+   `cat-file`, the one the open goes on to use, so no git per clone. A
+   missing or wrong hint costs the old scan, a `for-each-ref` per clone,
+   and leaves the right hint behind. Hints untouched for 30 days are
+   dropped (that review's next lookup scans once). crb's flows are checked
+   to open no file inside a git directory (`src/server/gitFilesSpy.test.ts`,
+   an fs spy; `gitFiles.test.ts` greps as a backstop).
 
 This is the same idea as git's `cat_sort_uniq` notes merge (concatenate, sort,
 drop duplicates), applied to the commit graph: the set of events is the union of

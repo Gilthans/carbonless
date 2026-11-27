@@ -1,6 +1,7 @@
 import { execFileSync } from "node:child_process";
-import { mkdirSync } from "node:fs";
+import { chmodSync, mkdirSync, rmSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { pathToFileURL } from "node:url";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { testGitEnv } from "../../../test/git-fixture";
 import { createPrFixture, type PrFixture } from "../../../test/pr-fixture";
@@ -8,9 +9,14 @@ import type { Snapshot } from "../../shared/types.js";
 import { ensureClone, ensureRepoInit, fetchPr } from "../clone.js";
 import { buildSnapshot } from "../diff/snapshot.js";
 import { runGit } from "../git.js";
+import { cacheDir } from "../paths.js";
+import { refsChanged } from "../review/refStamp.js";
 import { RefStore } from "../review/refStore.js";
 import { ReviewService } from "../review/reviews.js";
-import { StartedReviews } from "./started.js";
+import { StartedReviews, TRUST_MS } from "./started.js";
+
+/** src/server, for a child process that imports crb's own modules. */
+const SRC = join(import.meta.dirname, "..");
 
 // Each fake gh call is a node process, and the scaling test starts 32
 // reviews through them: give a loaded machine time.
@@ -244,10 +250,11 @@ describe("StartedReviews", () => {
 		const warm32 = await homeScan(many);
 		expect(cold32.list).toHaveLength(32);
 		expect(warm32.list).toHaveLength(32);
-		// One clone: a for-each-ref, and a git log only when tips moved.
+		// One clone: a for-each-ref, and a git log only when tips moved;
+		// nothing written since: no git at all (CAR-326).
 		expect(cold32.count).toBe(cold8.count);
 		expect(warm32.count).toBe(warm8.count);
-		expect(warm32.count).toBe(1);
+		expect(warm32.count).toBe(0);
 		expect(cold32.count).toBe(2);
 	});
 
@@ -258,7 +265,7 @@ describe("StartedReviews", () => {
 		expect(cold.every((r) => (r.coverage?.done ?? 0) > 0)).toBe(true);
 		gits.mockClear();
 		const warm = await s.list("octo", new Set(["acme/widget"]), "acme/widget");
-		expect(gits.mock.calls.length).toBe(1);
+		expect(gits.mock.calls.length).toBe(0);
 		expect(warm).toEqual(cold);
 	});
 
@@ -275,11 +282,12 @@ describe("StartedReviews", () => {
 		const repo = await s.list("octo", new Set(["acme/widget"]), "acme/widget");
 		expect(repo).toHaveLength(3);
 		expect(repo.every((r) => (r.coverage?.done ?? 0) > 0)).toBe(true);
-		// The for-each-ref, and one git log of the three progress tips.
-		expect(gits.mock.calls.length).toBe(2);
+		// No for-each-ref (nothing written since the view's), one git log of
+		// the three progress tips.
+		expect(gits.mock.calls.length).toBe(1);
 		gits.mockClear();
 		await s.list("octo", new Set(["acme/widget"]), "acme/widget");
-		expect(gits.mock.calls.length).toBe(1);
+		expect(gits.mock.calls.length).toBe(0);
 	});
 
 	it("coverage that couldn't be read is tried again from the kept events, no git log", async () => {
@@ -297,7 +305,7 @@ describe("StartedReviews", () => {
 		gits.mockClear();
 		const [again] = await s.list("octo");
 		expect(again?.coverage?.done).toBeGreaterThan(0);
-		expect(gits.mock.calls.length).toBe(1);
+		expect(gits.mock.calls.length).toBe(0);
 	});
 
 	it("a review with a broken history is skipped once, not read again while its tips stay", async () => {
@@ -330,7 +338,7 @@ describe("StartedReviews", () => {
 		expect(errors).toHaveBeenCalledTimes(1);
 		gits.mockClear();
 		expect(await s.list("octo", new Set())).toHaveLength(1);
-		expect(gits.mock.calls.length).toBe(1);
+		expect(gits.mock.calls.length).toBe(0);
 		expect(errors).toHaveBeenCalledTimes(1);
 		errors.mockRestore();
 	});
@@ -355,14 +363,141 @@ describe("StartedReviews", () => {
 		expect(Date.parse(next?.lastActedAt ?? "")).toBeGreaterThanOrEqual(
 			Date.parse(first?.lastActedAt ?? ""),
 		);
-		// Removed (its refs deleted): gone at once.
+		// Removed (its refs deleted, a write that says so): gone at once.
 		const repo = await ensureClone("acme", "widget");
 		execFileSync(
 			"git",
 			["update-ref", "-d", `refs/crb/reviews/${id}/reviewers/octo/progress`],
 			{ cwd: repo, env: testGitEnv() },
 		);
+		await refsChanged(repo);
 		expect(await s.list("octo")).toEqual([]);
+	});
+
+	it("a write by another process (the crb CLI) shows on the next scan, with no git while none came", async () => {
+		await startMany(100, 1);
+		const s = scanner();
+		const [before] = await s.list("octo", new Set());
+		gits.mockClear();
+		expect(await s.list("octo", new Set())).toHaveLength(1);
+		expect(gits.mock.calls.length).toBe(0);
+		// Another process, as the crb CLI writes: its own RefStore.
+		const repo = await ensureClone("acme", "widget");
+		const script = [
+			`import { RefStore } from ${JSON.stringify(pathToFileURL(join(SRC, "review/refStore.ts")).href)};`,
+			`import { ReviewService } from ${JSON.stringify(pathToFileURL(join(SRC, "review/reviews.ts")).href)};`,
+			// Its cat-file needs no closing: unreferenced, it ends with the process.
+			`const reviews = new ReviewService(new RefStore(${JSON.stringify(repo)}));`,
+			`const id = await reviews.findOrCreateReview(${JSON.stringify({ ...PR, number: 300, url: `${PR.url}300` })}, "octo");`,
+			`await reviews.recordStates(id, "octo", ${JSON.stringify(snap)}, [{ key: ${JSON.stringify(keys()[0])}, state: "reviewed" }]);`,
+		].join("\n");
+		execFileSync(
+			process.execPath,
+			["--import", "tsx", "--input-type=module", "-e", script],
+			{
+				env: { ...process.env, ...testGitEnv() },
+				stdio: "pipe",
+			},
+		);
+		const after = await s.list("octo", new Set());
+		expect(after.map((r) => r.number).sort()).toEqual([100, 300]);
+		expect(after.find((r) => r.number === 100)).toEqual(before);
+	});
+
+	it.skipIf(process.platform === "win32" || process.getuid?.() === 0)(
+		"an unmark this server made shows on the next scan even when no stamp file can be written: Home never reads higher than the truth",
+		async () => {
+			const id = await reviews.findOrCreateReview(PR, "octo");
+			const [a, b] = keys();
+			await reviews.recordStates(id, "octo", snap, [
+				{ key: a as string, state: "reviewed" },
+				{ key: b as string, state: "reviewed" },
+			]);
+			const s = scanner();
+			const [both] = await s.list("octo", new Set(["acme/widget"]));
+			const stamps = join(cacheDir(), "ref-stamps");
+			const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+			chmodSync(stamps, 0o555);
+			try {
+				await reviews.recordStates(id, "octo", snap, [
+					{ key: b as string, state: "unreviewed" },
+				]);
+				const [one] = await s.list("octo", new Set(["acme/widget"]));
+				expect(one?.coverage?.done).toBeLessThan(both?.coverage?.done ?? 0);
+				expect(errors).toHaveBeenCalled();
+			} finally {
+				chmodSync(stamps, 0o755);
+				errors.mockRestore();
+			}
+		},
+	);
+
+	it("a ref written past crb (no stamp) shows once TRUST_MS has passed", async () => {
+		await startMany(100, 1);
+		let now = 1_000_000;
+		const s = new StartedReviews({ build: buildSnapshot, now: () => now });
+		expect(await s.list("octo", new Set())).toHaveLength(1);
+		const repo = await ensureClone("acme", "widget");
+		const [only] = await s.list("octo", new Set());
+		execFileSync(
+			"git",
+			[
+				"update-ref",
+				"-d",
+				`refs/crb/reviews/${only?.id}/reviewers/octo/progress`,
+			],
+			{ cwd: repo, env: testGitEnv() },
+		);
+		now += TRUST_MS - 1;
+		expect(await s.list("octo", new Set())).toHaveLength(1);
+		now += 1;
+		expect(await s.list("octo", new Set())).toEqual([]);
+	});
+
+	it("Home's scan with nothing written starts no git, with 8 clones as with 2", async () => {
+		await startMany(100, 1);
+		const source = await ensureClone("acme", "widget");
+		/** `n` more clones, each holding the same started review. */
+		const clones = async (from: number, n: number) => {
+			for (let i = from; i < from + n; i++) {
+				const repo = await ensureRepoInit("acme", `clone${i}`);
+				execFileSync(
+					"git",
+					["fetch", "--quiet", source, "refs/crb/*:refs/crb/*", "HEAD"],
+					{ cwd: repo, env: testGitEnv() },
+				);
+			}
+		};
+		const measure = async () => {
+			const s = gitless();
+			const cold = await homeScan(s);
+			const warm = await homeScan(s);
+			return { cold, warm };
+		};
+		await clones(0, 1);
+		const few = await measure();
+		await clones(1, 6);
+		const many = await measure();
+		expect(few.cold.list).toHaveLength(2);
+		expect(many.cold.list).toHaveLength(8);
+		expect(many.warm.list).toEqual(many.cold.list);
+		// Cold: a for-each-ref and a git log per clone; warm: none.
+		expect(few.cold.count).toBe(4);
+		expect(many.cold.count).toBe(16);
+		expect(few.warm.count).toBe(0);
+		expect(many.warm.count).toBe(0);
+	});
+
+	it("a clone made again never passes for the one listed before", async () => {
+		await startMany(100, 1);
+		const s = gitless();
+		expect(await s.list("octo", new Set())).toHaveLength(1);
+		const repo = await ensureClone("acme", "widget");
+		rmSync(repo, { recursive: true, force: true });
+		execFileSync("git", ["init", "--quiet", "--bare", repo], {
+			env: testGitEnv(),
+		});
+		expect(await s.list("octo", new Set())).toEqual([]);
 	});
 
 	it("a reviewer who acted nowhere started nothing", async () => {
