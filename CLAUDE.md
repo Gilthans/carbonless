@@ -413,6 +413,26 @@ installs the global `crb`; then `systemctl --user restart crb`.
 After the first release (0.1.0) the owner adds the trusted publisher
 (`docs/releasing.md`, "Setup").
 
+**Withdraw and hotfix** (a vulnerability, a serious bug, a version we
+didn't build; `docs/releasing.md`, "Withdraw and hotfix", with the runbook):
+1. **The owner** runs `pnpm release withdraw <version>... "<why>"` (npm
+   OTP): crbs on it show a red Withdrawn banner; `latest`/`rc` move back.
+2. On the owner's word: `pnpm release hotfix` creates `hotfix/X.Y.Z+1` at
+   the newest release tag (the only start accepted; after a withdraw, the
+   withdrawn release).
+3. The fix goes in as a PR into `hotfix/X.Y.Z` (a ticket, a release note,
+   the branch's CI); the owner merges it, as into master.
+4. On the owner's word: `pnpm release promote --hotfix X.Y.Z` (CI passed on
+   the head, notes from Linear; no RC first). When green, **the owner**
+   runs `pnpm release publish`.
+5. release-finish tags it, moves `rc` only if older, opens no "next" PR
+   (no freeze) and opens the port PR (`hotfix-port/X.Y.Z`: the fix and the
+   changelog to master; PRs that don't apply are listed: port them by
+   hand). Merge it on the owner's approval; `pnpm release status` lists a
+   hotfix master still lacks.
+Agents never run `withdraw` or `publish`, never push to a `hotfix/*`
+branch (PRs only), and never create or move a `v*` tag.
+
 ## How we work
 
 - Work is split into briefs (`.superpowers/sdd/<plan>/*-brief.md`, git-ignored):
