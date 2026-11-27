@@ -12,10 +12,13 @@ const SCROLL_KEYS = new Set([
 	" ",
 ]);
 
-const editing = (target: EventTarget | null) =>
+/** Where those keys type, press or choose instead of scrolling. */
+const keysStayIn = (target: EventTarget | null) =>
 	target instanceof HTMLElement &&
 	(target.isContentEditable ||
-		target.closest("input, textarea, select") !== null);
+		target.closest(
+			"input, textarea, select, button, [role=radio], [role=tab], [role=switch], [role=slider], [role=menuitem], [role=option]",
+		) !== null);
 
 /**
  * A line that goes away on its own (no act of the reader's: a mark starting
@@ -26,9 +29,13 @@ const editing = (target: EventTarget | null) =>
  * back down and its buttons move under the finger (CAR-310).
  *
  * `ref` goes on the line while it shows; `kept` is the height to keep in
- * its place once it has gone, or null.
+ * its place once it has gone, or null. `vacant`: nothing else has taken
+ * the line's place (another line there instead needs no room kept).
  */
-export function useKeptSlot<T extends HTMLElement>(shown: boolean) {
+export function useKeptSlot<T extends HTMLElement>(
+	shown: boolean,
+	vacant = true,
+) {
 	const ref = useRef<T>(null);
 	const height = useRef(0);
 	const [released, setReleased] = useState(false);
@@ -41,7 +48,7 @@ export function useKeptSlot<T extends HTMLElement>(shown: boolean) {
 		setReleased(false);
 	});
 	const kept =
-		!shown && !released && height.current > 0 ? height.current : null;
+		!shown && vacant && !released && height.current > 0 ? height.current : null;
 	// Another page lets it go.
 	const lastPath = useRef(path);
 	useEffect(() => {
@@ -54,7 +61,7 @@ export function useKeptSlot<T extends HTMLElement>(shown: boolean) {
 		if (!keeping) return;
 		const release = () => setReleased(true);
 		const onKey = (event: KeyboardEvent) => {
-			if (SCROLL_KEYS.has(event.key) && !editing(event.target)) release();
+			if (SCROLL_KEYS.has(event.key) && !keysStayIn(event.target)) release();
 		};
 		window.addEventListener("wheel", release, { passive: true });
 		window.addEventListener("touchmove", release, { passive: true });

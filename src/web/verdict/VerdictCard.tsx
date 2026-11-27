@@ -568,8 +568,12 @@ export function VerdictCard(props: {
 		!since &&
 		session.snapshotHead !== "" &&
 		session.snapshotHead !== session.currentHead;
-	// Gone on its own (a mark starts a patch set): its room stays a while.
-	const olderSlot = useKeptSlot<HTMLParagraphElement>(older);
+	// Gone on its own (a mark starts a patch set): its room stays a while,
+	// unless a "Comparing" row or the since line took its place.
+	const olderSlot = useKeptSlot<HTMLParagraphElement>(
+		older,
+		!off && !stale && !since,
+	);
 	const early = () => performance.now() < (props.ignoreClicksUntil ?? 0);
 	const press = (event: VerdictEvent) => {
 		if (early() || reasonOf(event)) return;
