@@ -1058,6 +1058,103 @@ describe("tracePosition: look-alike lines swapped across a wider gap (CAR-294)",
 		expect(landing(values, 7)).toBe(7);
 	});
 
+	it("block headers whose names swapped far apart stay on their block (tests, methods, cases, arms)", () => {
+		// A mislabelled pair fixed by swapping the titles: the bodies, and
+		// what a thread on the header is about, stayed.
+		const tests = (a: string, b: string) => [
+			'describe("auth", () => {',
+			`\tit("${a}", async () => {`,
+			'\t\tconst res = await get("/x", guest)',
+			"\t\texpect(res.status).toBe(403)",
+			"\t})",
+			"",
+			`\tit("${b}", async () => {`,
+			'\t\tconst res = await get("/x", admin)',
+			"\t\texpect(res.status).toBe(200)",
+			"\t})",
+			"})",
+		];
+		const it2 = inPlace(
+			tests("returns 200 for admin users", "returns 403 for guest users"),
+			tests("returns 403 for guest users", "returns 200 for admin users"),
+		);
+		expect(landing(it2, 2)).toBe(2);
+		expect(landing(it2, 7)).toBe(7);
+		const py = (a: string, b: string) => [
+			"class TestAuth:",
+			`    def ${a}(self):`,
+			"        r = get(guest)",
+			"        assert r.status == 403",
+			"",
+			`    def ${b}(self):`,
+			"        r = get(admin)",
+			"        assert r.status == 200",
+		];
+		const methods = inPlace(
+			py("test_admin_gets_ok", "test_guest_is_forbidden"),
+			py("test_guest_is_forbidden", "test_admin_gets_ok"),
+		);
+		expect(landing(methods, 2)).toBe(2);
+		expect(landing(methods, 6)).toBe(6);
+		const go = (a: string, b: string) => [
+			"\tswitch event.kind {",
+			`\tcase ${a}:`,
+			"\t\tnotifyAdmins(event)",
+			'\t\tmetrics.inc("x")',
+			"\t\taudit(event)",
+			`\tcase ${b}:`,
+			"\t\tarchive(event)",
+			'\t\tmetrics.inc("y")',
+			"\t}",
+		];
+		const cases = inPlace(
+			go("EventKindUserCreated", "EventKindUserDeleted"),
+			go("EventKindUserDeleted", "EventKindUserCreated"),
+		);
+		expect(landing(cases, 2)).toBe(2);
+		expect(landing(cases, 6)).toBe(6);
+		const rust = (a: string, b: string) => [
+			"    match kind {",
+			`        Kind::${a} => {`,
+			"            notify_admins(&ev);",
+			"            audit(&ev);",
+			"        }",
+			`        Kind::${b} => {`,
+			"            archive(&ev);",
+			"        }",
+			"    }",
+		];
+		const arms = inPlace(
+			rust("UserCreated", "UserDeleted"),
+			rust("UserDeleted", "UserCreated"),
+		);
+		expect(landing(arms, 2)).toBe(2);
+		expect(landing(arms, 6)).toBe(6);
+	});
+
+	it("values swapped far apart under keys that stay put stay, even when the key's word is in the value", () => {
+		const d = inPlace(
+			[
+				'handlers["users"] = newHandler("/api/users", usersStore)',
+				"func init() { setup() }",
+				"a := 1",
+				"b := 2",
+				"c := 3",
+				'handlers["teams"] = newHandler("/api/teams", teamsStore)',
+			],
+			[
+				'handlers["users"] = newHandler("/api/teams", teamsStore)',
+				"func init() { setup() }",
+				"a := 1",
+				"b := 2",
+				"c := 3",
+				'handlers["teams"] = newHandler("/api/users", usersStore)',
+			],
+		);
+		expect(landing(d, 1)).toBe(1);
+		expect(landing(d, 6)).toBe(6);
+	});
+
 	it("far look-alikes edited in place, or keeping their keys, stay", () => {
 		const logs = inPlace(
 			[

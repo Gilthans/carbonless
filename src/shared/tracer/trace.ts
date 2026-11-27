@@ -646,6 +646,21 @@ function sameBlock(line: number, own: string, diffs: TraceDiffs): number[] {
 	return out;
 }
 
+/**
+ * Whether old line `line` (text `t`) heads a block: it ends opening one
+ * (`{`, `(`, `[`, `:`), or the next line with text is indented deeper.
+ */
+function opensBlock(line: number, t: string, diffs: TraceDiffs): boolean {
+	if (OPENS_BLOCK.test(t)) return true;
+	for (let n = line + 1; n <= line + WIDE_SWAP_LINES; n++) {
+		const next = read(diffs.oldLineText, n);
+		if (next === null) return false;
+		if (next.trim() === "") continue;
+		return indentOf(next) > indentOf(t);
+	}
+	return false;
+}
+
 /** A line's words (letters, digits, `_`), for what tells two lines apart. */
 const words = (t: string) => new Set(t.match(/[\p{L}\p{N}_]+/gu) ?? []);
 
@@ -684,6 +699,28 @@ function keepsOwn(
 	for (const w of words(own))
 		if (!o.has(w) && m.has(w) && !t.has(w)) return true;
 	return false;
+}
+
+/**
+ * A line's lead: its text before the first `=`, `:` or `(`, trimmed (a
+ * key, an assignment's target, a call); null without one.
+ */
+function leadOf(t: string): string | null {
+	const at = t.search(/[=:(]/u);
+	if (at <= 0) return null;
+	const lead = t.slice(0, at).trim();
+	return HAS_WORD.test(lead) ? lead : null;
+}
+
+/**
+ * Whether replacement `mine` kept old `own`'s lead, one that differs from
+ * its look-alike `other`'s (`handlers["users"]` against
+ * `handlers["teams"]`): a key that stayed, whatever words its value shares
+ * with the other key (CAR-294).
+ */
+function keepsLead(own: string, other: string, mine: string): boolean {
+	const lead = leadOf(own);
+	return lead !== null && lead !== leadOf(other) && leadOf(mine) === lead;
 }
 
 /**
@@ -727,14 +764,22 @@ function swappedWith(
 		if (near(n)) candidates.push(n);
 	}
 	// Further apart, lines told apart only by a number (a status code, a
-	// timeout) are look-alikes by chance more often than swapped: no
-	// evidence either way, so the edit in place stands.
+	// timeout) are look-alikes by chance more often than swapped, and a
+	// block's header renamed (a test's title, a `case` label fixed onto
+	// its body) leaves the block where it was: no evidence either way, so
+	// the edit in place stands.
 	const far = new Set(
-		sameBlock(line, own, diffs).filter((n) => {
-			if (near(n)) return false;
-			const other = read(diffs.oldLineText, n);
-			return other !== null && !onlyNumbersApart(own, other);
-		}),
+		opensBlock(line, own, diffs)
+			? []
+			: sameBlock(line, own, diffs).filter((n) => {
+					if (near(n)) return false;
+					const other = read(diffs.oldLineText, n);
+					return (
+						other !== null &&
+						!onlyNumbersApart(own, other) &&
+						!opensBlock(n, other, diffs)
+					);
+				}),
 	);
 	for (const n of [...candidates, ...far]) {
 		if (n === line) continue;
@@ -751,8 +796,10 @@ function swappedWith(
 		if (ahead <= EPS && back <= EPS) continue;
 		// Each kept what told it from the other (its key, its subject): the
 		// values swapped, the lines stayed. Only one did: can't tell.
-		const keptMine = keepsOwn(own, other, mine, their);
-		const keptTheirs = keepsOwn(other, own, their, mine);
+		const keptMine =
+			keepsOwn(own, other, mine, their) || keepsLead(own, other, mine);
+		const keptTheirs =
+			keepsOwn(other, own, their, mine) || keepsLead(other, own, their);
 		if (keptMine && keptTheirs) continue;
 		if (
 			found === null &&

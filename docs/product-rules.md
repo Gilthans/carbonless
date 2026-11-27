@@ -193,9 +193,13 @@ line; only one kept it: `rewritten`. Generic lines, either one under 14
 letters and digits (`return err`, `return false`, `return nil, err`),
 never move on a crossing: `rewritten`. Further than three lines apart,
 two lines told apart only by a number (`toBe(200)`, `timeout = 3000`)
-are look-alikes by chance more often than swapped: each stays on its edit.
-Look-alikes in two functions or sections never swap: they stay as edited
-in place. Nor does a swap when either line's
+are look-alikes by chance more often than swapped: each stays on its edit,
+and so does a block's header renamed (a test's title, a method's name, a
+`case` label fixed onto its body: the block stayed). Look-alikes in two
+functions or sections never swap: they stay as edited in place. A line
+that keeps its own key, the text before its first `=`, `:` or `(`
+(`handlers["users"] =`), stays, whatever words its new value shares with
+the other line's key. Nor does a swap when either line's
 block was found moved elsewhere (or the crossed line is where another
 block moved): `rewritten`. The check is made before anything else on the
 line's partner nearby, so both lines of a pair decide alike, even when a
