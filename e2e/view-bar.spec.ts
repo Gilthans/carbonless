@@ -293,21 +293,25 @@ test("a find step and a line landing put the row below the pinned view bar, as f
 		await page.getByRole("button", { name: "Find in PR", exact: true }).click();
 	else await page.keyboard.press("ControlOrMeta+f");
 	const box = page.getByTestId("find-box");
-	await box.fill("long 150 x");
-	await expect(page.getByTestId("find-count")).toHaveText(/^(1 of 1|1\/1)$/, {
-		useInnerText: true,
-	});
-	await box.press("Enter");
-	const tsHit = fileSection(page, TS).locator("tr[data-find-current]");
-	const findGap = await below(tsHit, header(fileSection(page, TS)));
-	await box.fill("Para 80 stays");
-	await expect(page.getByTestId("find-count")).toHaveText(/^(1 of 1|1\/1)$/, {
-		useInnerText: true,
-	});
-	await box.press("Enter");
+	const searched = page.getByRole("status", { name: "Searching files…" });
+	/** A fresh search for `term` (one hit), then a step onto it. */
+	async function step(term: string) {
+		await box.fill(term);
+		await expect(page.getByTestId("find-count")).toHaveText(/^(1 of 1|1\/1)$/, {
+			useInnerText: true,
+		});
+		await expect(searched).toHaveCount(0);
+		await box.press("Enter");
+	}
+	// Into the .md file first, its view bar pinned over the hit's row.
+	await step("Para 80 stays");
 	const mdHit = md.locator("tr[data-find-current]");
 	await pinned(md);
-	expect(Math.abs((await below(mdHit, bar(md))) - findGap)).toBeLessThan(2);
+	const mdGap = await below(mdHit, bar(md));
+	await step("long 150 x");
+	const tsHit = fileSection(page, TS).locator("tr[data-find-current]");
+	const tsFindGap = await below(tsHit, header(fileSection(page, TS)));
+	expect(Math.abs(mdGap - tsFindGap)).toBeLessThan(2);
 });
 
 test("a click while the switch waits for its view ends the hold: the view lands where the reader left it, not snapped back", async ({
