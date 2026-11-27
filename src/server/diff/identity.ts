@@ -37,6 +37,11 @@ export interface KeyOptions {
 	 * not visible as lines (binary, submodule, type change without lines).
 	 */
 	contentOids?: [string, string];
+	/**
+	 * Mixed into every key when set, so the same clusters get new keys:
+	 * nothing marked under the old ones carries (WHOLE_SALT, CAR-322).
+	 */
+	salt?: string;
 }
 
 /**
@@ -50,7 +55,7 @@ export function clusterKeys(
 	path: string,
 	clusters: Omit<Cluster, "key">[],
 	newLines: string[],
-	{ encoding = "utf8", contentOids }: KeyOptions = {},
+	{ encoding = "utf8", contentOids, salt }: KeyOptions = {},
 ): string[] {
 	const bytes = (lines: string[]) =>
 		lines.map((line) => byteString(line, encoding));
@@ -73,6 +78,8 @@ export function clusterKeys(
 					c.noNewlineOld === true,
 					c.noNewlineNew === true,
 					c.kind === "file" ? (contentOids ?? null) : null,
+					// Only when set: every other key stays as it was.
+					...(salt === undefined ? [] : [salt]),
 				]),
 			)
 			.digest("hex");

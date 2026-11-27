@@ -1,7 +1,7 @@
 import fc from "fast-check";
 import { describe, expect, it } from "vitest";
 import type { Cluster, Snapshot } from "../../shared/types.js";
-import { parseU0Patch } from "../diff/clusters.js";
+import { parseU0Patch, WHOLE_SALT } from "../diff/clusters.js";
 import { clusterKeys } from "../diff/identity.js";
 import { cutClusters } from "../diff/snapshot.js";
 import { buildReviewView } from "./coverage.js";
@@ -955,5 +955,52 @@ describe("an added file cut at blank lines (CAR-235): marks from before carry", 
 			{ state: "unreviewed", reviewedLines: [[0, 1]] },
 			{ state: "unreviewed" },
 		]);
+	});
+});
+
+describe("an added machine-made file kept whole (CAR-322): nothing marked before carries", () => {
+	const newLines = ["import x", "", "function a() {", "}", "", "const b = 1;"];
+	const patch = `@@ -0,0 +1,6 @@\n${newLines.map((l) => `+${l}\n`).join("")}`;
+	const hunks = parseU0Patch(patch).map((c) => ({
+		...c,
+		kind: "lines" as const,
+	}));
+	const keysOf = (salt?: string) => (cs: Omit<Cluster, "key">[]) =>
+		clusterKeys("src/a.ts", cs, newLines, salt ? { salt } : {});
+	const text = { oldLines: [], newLines, noNewlineAtEnd: false };
+	const asAdded = (clusters: Cluster[]): Snapshot => {
+		const snap = snapshot();
+		const file = snap.files[0] as Snapshot["files"][number];
+		file.status = "added";
+		file.additions = 6;
+		file.deletions = 0;
+		file.clusters = clusters;
+		return snap;
+	};
+	const [WHOLE] = keysOf()(hunks) as [string];
+	const pieces = cutClusters(hunks, keysOf(), text, { blankLines: true }).map(
+		(c) => c.key,
+	);
+	const whole = () => asAdded(cutClusters(hunks, keysOf(WHOLE_SALT), text));
+
+	it("reads unreviewed once, whatever was marked whole before CAR-235 or on its pieces under it", () => {
+		const [c] = whole().files[0]?.clusters ?? [];
+		expect(c?.key).not.toBe(WHOLE);
+		expect(pieces).not.toContain(c?.key);
+		for (const events of [
+			[started(), mark(WHOLE, "reviewed")],
+			[started(), ...pieces.map((p) => mark(p, "reviewed"))],
+			[started(), lines(WHOLE, "reviewed", [[0, 6]])],
+		]) {
+			const { view, entries } = carry(events, whole());
+			expect(entries).toEqual([]);
+			expect(states(view)).toEqual([{ state: "unreviewed" }]);
+		}
+	});
+
+	it("a mark made on it now reads as made", () => {
+		const key = whole().files[0]?.clusters[0]?.key as string;
+		const { view } = carry([started(), mark(key, "reviewed")], whole());
+		expect(states(view)).toEqual([{ state: "reviewed" }]);
 	});
 });

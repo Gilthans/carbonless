@@ -10,7 +10,7 @@ import {
 	testGitEnv,
 } from "../../../test/git-fixture.js";
 import type { Cluster, Snapshot } from "../../shared/types.js";
-import { parseU0Patch } from "./clusters.js";
+import { parseU0Patch, WHOLE_SALT } from "./clusters.js";
 import { listChangedFiles } from "./files.js";
 import { clusterKeys } from "./identity.js";
 import {
@@ -1345,6 +1345,10 @@ describe("added files cut at blank lines (CAR-235)", () => {
 					"new.ts": added,
 					"blank.txt": "\n \n",
 					"deps/pnpm-lock.yaml": "a:\n  b: 1\n\nc:\n  d: 2\n",
+					// CAR-322: machine-made by name.
+					"dist/app.min.js": added,
+					"src/__snapshots__/a.test.ts.snap": added,
+					"docs/api.generated.md": "# A\n\ntext\n\n# B\n",
 				},
 			},
 		]);
@@ -1411,6 +1415,42 @@ describe("added files cut at blank lines (CAR-235)", () => {
 		expect(lock.clusters).toHaveLength(1);
 		expect(lock.clusters[0]?.split).toBeUndefined();
 		expect(lock.clusters[0]?.lines).toBe(5);
+	});
+
+	it("leaves an added machine-made file whole, under a new (salted) key (CAR-322)", () => {
+		const lines = added.split("\n").slice(0, -1);
+		for (const path of [
+			"dist/app.min.js",
+			"src/__snapshots__/a.test.ts.snap",
+		]) {
+			const f = fileOf(path);
+			expect(f.clusters).toHaveLength(1);
+			const [whole] = f.clusters as [Cluster];
+			expect(whole.split).toBeUndefined();
+			expect(whole.lines).toBe(8);
+			expect(whole.added.join("\n")).toBe(added.slice(0, -1));
+			const { key: _, ...hunk } = whole;
+			// Not the key the whole file had before CAR-235, which its pieces'
+			// marks came from: nothing marked before carries.
+			const unsalted = clusterKeys(path, [hunk], lines)[0];
+			expect(whole.key).not.toBe(unsalted);
+			expect(whole.key).toBe(
+				clusterKeys(path, [hunk], lines, { salt: WHOLE_SALT })[0],
+			);
+		}
+	});
+
+	it("still cuts a Markdown file whatever its name, and keeps a lock file's key as it was", () => {
+		expect(fileOf("docs/api.generated.md").clusters.length).toBeGreaterThan(1);
+		const [lock] = fileOf("deps/pnpm-lock.yaml").clusters as [Cluster];
+		const { key: _, ...hunk } = lock;
+		expect(lock.key).toBe(
+			clusterKeys(
+				"deps/pnpm-lock.yaml",
+				[hunk],
+				["a:", "  b: 1", "", "c:", "  d: 2"],
+			)[0],
+		);
 	});
 
 	it("leaves an added file of only blank lines whole, and an edited file's hunks as git cuts them", () => {
