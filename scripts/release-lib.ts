@@ -282,7 +282,7 @@ export async function npmState(io: Io): Promise<NpmState> {
 }
 
 /** master's package.json version on GitHub. */
-async function masterVersion(io: Io): Promise<string> {
+export async function masterVersion(io: Io): Promise<string> {
 	const content = await must(io, "gh", [
 		"api",
 		`repos/${io.repo}/contents/package.json?ref=master`,
@@ -441,6 +441,29 @@ export async function promote(
 		throw new Error(`${release} is already released`);
 	}
 	const notes = await check(tag, formatVersion(releaseOf(version)));
+	return dispatchPromote(
+		io,
+		[
+			"-f",
+			`rc=${tag}`,
+			"-f",
+			`next=${next}`,
+			...(notes ? ["-f", `notes=${notes}`] : []),
+		],
+		`Promoting ${tag}: checks ${release}, packs and stages it on npm; then the owner approves it: pnpm release publish (npm OTP)`,
+	);
+}
+
+/**
+ * Starts release.yml's promote on master with `inputs` (gh's `-f k=v`
+ * pairs, each one argv entry), logs `what`, then the run's URL (found
+ * among the newest dispatched runs when gh doesn't print it).
+ */
+export async function dispatchPromote(
+	io: Io,
+	inputs: readonly string[],
+	what: string,
+): Promise<string> {
 	const started = io.now().getTime();
 	const out = await must(io, "gh", [
 		"workflow",
@@ -452,15 +475,9 @@ export async function promote(
 		"master",
 		"-f",
 		"mode=promote",
-		"-f",
-		`rc=${tag}`,
-		"-f",
-		`next=${next}`,
-		...(notes ? ["-f", `notes=${notes}`] : []),
+		...inputs,
 	]);
-	io.log(
-		`Promoting ${tag}: checks ${release}, packs and stages it on npm; then the owner approves it: pnpm release publish (npm OTP)`,
-	);
+	io.log(what);
 	let url = RUN_URL.exec(out)?.[0];
 	for (let i = 0; !url && i < 20; i++) {
 		await io.sleep(1500);
@@ -766,8 +783,11 @@ export async function resolvePromote(
 /** What promote's check job made: the tarball and what it must be. */
 export type Manifest = {
 	version: string; // X.Y.Z
-	tag: string; // the RC tag it was built from
-	sha: string; // that tag's commit
+	// The RC tag it was built from; a hotfix's: the release tag it starts from.
+	tag: string;
+	sha: string; // that tag's commit; a hotfix's: its branch's head
+	// A hotfix (`hotfix/X.Y.Z`, CAR-212): built from that branch's head.
+	hotfix?: string;
 	sha256: string; // hex, of the tarball
 	integrity: string; // sha512-<base64>, as npm records it
 	next: Kind; // the bump of the "next" PR
@@ -777,18 +797,35 @@ export type Manifest = {
 	stageId?: string;
 };
 
+/**
+ * A hotfix's start: the release tag `version`'s line it follows, one patch
+ * below it (`v0.4.0` for 0.4.1).
+ */
+export function hotfixStartOf(version: Version): string | null {
+	if (version.rc !== undefined || version.patch === 0) return null;
+	return tagOf({ ...releaseOf(version), patch: version.patch - 1 });
+}
+
 /** promote's manifest.json, checked field by field. */
 export function parseManifest(text: string): Manifest {
 	const m = JSON.parse(text) as Partial<Manifest>;
 	const version = parseVersion(m.version ?? "");
 	const tag = parseTag(m.tag ?? "");
+	// An RC's release, or a hotfix of the release tag one patch below.
+	const builtFrom =
+		m.hotfix === undefined
+			? tag?.rc !== undefined && formatVersion(releaseOf(tag)) === m.version
+			: m.hotfix === `hotfix/${m.version}` &&
+				version !== null &&
+				tag !== null &&
+				tag.rc === undefined &&
+				hotfixStartOf(version) === m.tag;
 	if (
 		!version ||
 		version.rc !== undefined ||
 		formatVersion(version) !== m.version ||
 		!tag ||
-		tag.rc === undefined ||
-		formatVersion(releaseOf(tag)) !== m.version ||
+		!builtFrom ||
 		!/^[0-9a-f]{40}$/.test(m.sha ?? "") ||
 		!/^[0-9a-f]{64}$/.test(m.sha256 ?? "") ||
 		!/^sha512-[A-Za-z0-9+/]+=*$/.test(m.integrity ?? "") ||
@@ -905,6 +942,11 @@ async function checkedRelease(
 	if (wrong.length > 0) {
 		throw new Error(`the tarball's package.json says ${wrong.join(", ")}`);
 	}
+	if (manifest.hotfix !== undefined) {
+		// A hotfix: its head is on its branch, on top of the release it starts from.
+		await checkHotfixCommit(io, manifest);
+		return { manifest, tarball, notes: pkg.crbReleaseNotesFile };
+	}
 	const tagSha = await tagCommit(io, manifest.tag);
 	if (tagSha !== manifest.sha) {
 		throw new Error(
@@ -915,6 +957,35 @@ async function checkedRelease(
 		throw new Error(`${manifest.tag} is not on master`);
 	}
 	return { manifest, tarball, notes: pkg.crbReleaseNotesFile };
+}
+
+/** GitHub's compare of two refs or commits: ahead, behind, identical, diverged. */
+async function compareStatus(io: Io, base: string, head: string) {
+	return (
+		await must(io, "gh", [
+			"api",
+			`repos/${io.repo}/compare/${base}...${head}`,
+			"--jq",
+			".status",
+		])
+	).trim();
+}
+
+/**
+ * Fails unless a hotfix manifest's commit is on its branch on GitHub and
+ * strictly after the release tag it starts from.
+ */
+async function checkHotfixCommit(io: Io, m: Manifest): Promise<void> {
+	const onBranch = await compareStatus(io, m.sha, m.hotfix ?? "");
+	if (!["ahead", "identical"].includes(onBranch)) {
+		throw new Error(`${m.sha} is not on ${m.hotfix} (${onBranch})`);
+	}
+	const afterStart = await compareStatus(io, m.tag, m.sha);
+	if (afterStart !== "ahead") {
+		throw new Error(
+			`${m.sha} is not on top of ${m.tag} (${afterStart}): a hotfix starts from that release`,
+		);
+	}
 }
 
 /**
@@ -943,7 +1014,7 @@ export function notesLines(field: unknown, version: string): string[] {
 }
 
 /** The commit a tag points at on GitHub, exactly (a branch of that name doesn't count). */
-async function tagCommit(io: Io, tag: string): Promise<string> {
+export async function tagCommit(io: Io, tag: string): Promise<string> {
 	const ref = JSON.parse(
 		await must(io, "gh", [
 			"api",
@@ -1245,7 +1316,9 @@ export async function publishRelease(
 			await checkStaged(io, stageId, manifest, dir);
 		}
 		io.log(
-			`Release ${manifest.version} from ${manifest.tag} (${manifest.sha})`,
+			manifest.hotfix
+				? `Hotfix ${manifest.version} from ${manifest.hotfix} (${manifest.sha}, on top of ${manifest.tag})`
+				: `Release ${manifest.version} from ${manifest.tag} (${manifest.sha})`,
 		);
 		io.log(
 			`  promote run ${run}, ${manifest.tarball}, sha256 ${manifest.sha256}`,
@@ -1259,7 +1332,9 @@ export async function publishRelease(
 		);
 		for (const line of notesLines(notes, manifest.version)) io.log(line);
 		io.log(
-			`  then release-finish: tag v${manifest.version}, rc, changelog, "next: ${manifest.next}" PR`,
+			manifest.hotfix
+				? `  then release-finish: tag v${manifest.version} on ${manifest.hotfix}, rc only if older, the port PR to master (the fix, the changelog); no "next" PR, master isn't frozen`
+				: `  then release-finish: tag v${manifest.version}, rc, changelog, "next: ${manifest.next}" PR`,
 		);
 		if (!(await io.ask(`Go on? [y/N] `))) {
 			io.log("Nothing done.");
@@ -1348,30 +1423,53 @@ export async function finishPlan(
 	version: string,
 	m: Manifest,
 	masterVersion: string,
-): Promise<{ pushTag: boolean; nextPr: boolean }> {
+): Promise<{ pushTag: boolean; nextPr: boolean; hotfix?: string }> {
 	if (m.version !== version) {
 		throw new Error(`the promote run released ${m.version}, not ${version}`);
 	}
-	// The manifest's tag and commit, checked here too: the tag is at that
-	// commit, and the commit is on master (this checkout, full history).
-	const rcTag = await io.run("git", [
-		"rev-parse",
-		"-q",
-		"--verify",
-		`refs/tags/${m.tag}^{commit}`,
-	]);
-	if (rcTag.code !== 0 || rcTag.stdout.trim() !== m.sha) {
-		throw new Error(
-			`${m.tag} is not at ${m.sha} here (${rcTag.stdout.trim() || "no such tag"})`,
-		);
+	const isAncestor = async (a: string, b: string) => {
+		const r = await io.run("git", ["merge-base", "--is-ancestor", a, b]);
+		if (r.code === 0 || r.code === 1) return r.code === 0;
+		throw new Error(`git merge-base failed: ${r.stderr.trim()}`);
+	};
+	if (m.hotfix !== undefined) {
+		// A hotfix (CAR-212): its commit is on its branch (this checkout has
+		// every branch) and after the release it starts from.
+		if (!(await isAncestor(m.sha, `refs/remotes/origin/${m.hotfix}`))) {
+			throw new Error(`${m.sha} is not on ${m.hotfix}`);
+		}
+		if (
+			m.sha ===
+				(
+					await io.run("git", [
+						"rev-parse",
+						"-q",
+						"--verify",
+						`refs/tags/${m.tag}^{commit}`,
+					])
+				).stdout.trim() ||
+			!(await isAncestor(`refs/tags/${m.tag}`, m.sha))
+		) {
+			throw new Error(`${m.sha} is not on top of ${m.tag}`);
+		}
+	} else {
+		// The manifest's tag and commit, checked here too: the tag is at that
+		// commit, and the commit is on master (this checkout, full history).
+		const rcTag = await io.run("git", [
+			"rev-parse",
+			"-q",
+			"--verify",
+			`refs/tags/${m.tag}^{commit}`,
+		]);
+		if (rcTag.code !== 0 || rcTag.stdout.trim() !== m.sha) {
+			throw new Error(
+				`${m.tag} is not at ${m.sha} here (${rcTag.stdout.trim() || "no such tag"})`,
+			);
+		}
+		if (!(await isAncestor(m.sha, "HEAD"))) {
+			throw new Error(`${m.sha} is not on master`);
+		}
 	}
-	const ancestor = await io.run("git", [
-		"merge-base",
-		"--is-ancestor",
-		m.sha,
-		"HEAD",
-	]);
-	if (ancestor.code !== 0) throw new Error(`${m.sha} is not on master`);
 	// The registry may lag the owner's publish.
 	if ((await waitForIntegrity(io, version, m.integrity)) !== "match") {
 		throw new Error(
@@ -1390,6 +1488,11 @@ export async function finishPlan(
 			throw new Error(`v${version} is at ${tag.stdout.trim()}, not ${m.sha}`);
 		}
 		pushTag = false;
+	}
+	// A hotfix opens no "next" PR (master's next release stays) and so
+	// never freezes master; its fix reaches master through the port PR.
+	if (m.hotfix !== undefined) {
+		return { pushTag, nextPr: false, hotfix: m.hotfix };
 	}
 	return { pushTag, nextPr: masterVersion === version };
 }

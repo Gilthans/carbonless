@@ -395,12 +395,28 @@ export async function withdraw(
 	io.log(
 		`Withdrawn: ${args.versions.join(", ")}${plan.tags.length ? `; ${plan.tags.map((t) => `${t.tag} on ${t.to}`).join(", ")}` : ""}.`,
 	);
-	const release = newestFirst(args.versions).find((v) => v.rc === undefined);
-	io.log(
-		release
-			? `Now ship a fix: pnpm release hotfix v${formatVersion(release)}`
-			: "Now ship a fix: its PR to master publishes the next RC.",
-	);
+	io.log(hotfixAdvice(state.versions, args.versions));
+}
+
+/**
+ * What withdraw says to do next, in step with `pnpm release hotfix`'s
+ * default (the newest release by semver, release-hotfix.ts): a hotfix of
+ * the newest release when it is among the withdrawn; else (an older
+ * release, or RCs only) the fix ships the usual way.
+ */
+export function hotfixAdvice(
+	published: readonly string[],
+	withdrawn: readonly string[],
+): string {
+	const newest = newestFirst(published).find((v) => v.rc === undefined);
+	const releases = newestFirst(withdrawn).filter((v) => v.rc === undefined);
+	if (newest && releases.some((v) => compareVersions(v, newest) === 0)) {
+		return `Now ship a fix: pnpm release hotfix v${formatVersion(newest)}`;
+	}
+	if (newest && releases.length > 0) {
+		return `Now ship a fix: only the newest release gets a hotfix (v${formatVersion(newest)}: pnpm release hotfix v${formatVersion(newest)}, if it has the bug too); else its PR to master publishes the next RC.`;
+	}
+	return "Now ship a fix: its PR to master publishes the next RC.";
 }
 
 /** `pnpm release status`'s withdrawn versions (after release-lib's status). */

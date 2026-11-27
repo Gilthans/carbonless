@@ -2016,7 +2016,7 @@ describe("release-finish: each step only once", () => {
 			"inputs.mode == 'promote' && format('Promote {0} (next {1})', inputs.rc || 'the newest RC', inputs.next)",
 		);
 		expect(promote).toContain(
-			'for (const k of ["version", "tag", "sha", "sha256", "integrity", "next", "tarball"])',
+			'for (const k of ["version", "tag", "hotfix", "sha", "sha256", "integrity", "next", "tarball"])',
 		);
 		expect(promote).toContain("pnpm release publish $GITHUB_RUN_ID");
 		// A release is only staged (latest, fixed at stage time); never published.
@@ -2158,7 +2158,7 @@ describe("release-finish: each step only once", () => {
 		inOrder(job, [
 			"ci:promote-plan",
 			'git worktree add --detach "$RC_DIR"',
-			'if [[ "$TAG" != "$CI_TAG" || "$sha" != "$CI_SHA" ]]; then',
+			'if [[ "$SOURCE" != "$CI_TAG" || "$sha" != "$CI_SHA" ]]; then',
 			"name: Install the RC",
 			"ci:set-version",
 			'pnpm pack --pack-destination "$out"',
@@ -2577,7 +2577,7 @@ esac
 		// After the RC it checks is planned and pinned, before anything is built.
 		expect(check.indexOf("ci:notes-input")).toBeGreaterThan(
 			check.indexOf(
-				'if [[ "$TAG" != "$CI_TAG" || "$sha" != "$CI_SHA" ]]; then',
+				'if [[ "$SOURCE" != "$CI_TAG" || "$sha" != "$CI_SHA" ]]; then',
 			),
 		);
 		expect(check.indexOf("ci:notes-input")).toBeLessThan(
