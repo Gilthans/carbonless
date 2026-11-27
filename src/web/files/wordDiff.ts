@@ -343,11 +343,24 @@ const LEADERS = ["///", "//", "#", "--", ";", "%", "*"] as const;
 
 /**
  * The comment leader the line starts with after its indentation (`///`,
- * `//`, `#`, `--`, `;`, `%` or `*`, the longest that fits), if any.
+ * `//`, `#`, `--`, `;`, `%` or `*`, the longest that fits), if any. A
+ * leader is followed by a space, a tab or the line's end (before a trailing
+ * `\r`): `*out`, `--i`, `#!` and `#b` are code, not comments (and a rare
+ * `//x` comment counts as none, the safe side: its text stays marked).
  */
 export function commentLeader(text: string): string | undefined {
 	const i = skipBlank(text, 0);
-	return LEADERS.find((l) => text.startsWith(l, i));
+	return LEADERS.find((l) => {
+		if (!text.startsWith(l, i)) return false;
+		const j = i + l.length;
+		const c = text.charCodeAt(j);
+		return (
+			j === text.length ||
+			c === 0x20 ||
+			c === 0x09 ||
+			(c === 0x0d && j === text.length - 1)
+		);
+	});
 }
 
 /** A split or join to mark (spec 2026-11-24-split-joined-lines, "The marks"). */

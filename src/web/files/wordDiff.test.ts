@@ -3,6 +3,7 @@ import fc from "fast-check";
 import { describe, expect, it } from "vitest";
 import type { Mark } from "../code/Invisibles";
 import {
+	commentLeader,
 	groupMarks,
 	tokenize,
 	tokenMarks,
@@ -928,6 +929,35 @@ describe("groupMarks", () => {
 			run: [[], [[0, 2]]],
 		});
 	});
+	it("marks an added operator that starts with a leader's characters", () => {
+		const deref = ["*out = add(a,", "    *b);"];
+		expect(split("*out = add(a, b);", deref)).toEqual({
+			one: [],
+			run: [[], [[4, 5]]],
+		});
+		expect(split("--i; f(a, b);", ["--i; f(a,", "  --b);"])).toEqual({
+			one: [],
+			run: [[], [[2, 4]]],
+		});
+		expect(split("#!/bin/sh a b", ["#!/bin/sh a", "#b"])).toEqual({
+			one: [],
+			run: [[], [[0, 1]]],
+		});
+	});
+	it("knows a leader by the space, tab or line end after it", () => {
+		expect(commentLeader("  // x")).toBe("//");
+		expect(commentLeader("/// x")).toBe("///");
+		expect(commentLeader(" * x")).toBe("*");
+		expect(commentLeader("#\tx")).toBe("#");
+		expect(commentLeader("//")).toBe("//");
+		expect(commentLeader("--\r")).toBe("--");
+		expect(commentLeader("*out")).toBeUndefined();
+		expect(commentLeader("--i")).toBeUndefined();
+		expect(commentLeader("#!/bin/sh")).toBeUndefined();
+		expect(commentLeader("//x")).toBeUndefined();
+		expect(commentLeader("////")).toBeUndefined();
+		expect(commentLeader("--\rx")).toBeUndefined();
+	});
 	it("marks a comment's continuation that isn't a comment", () => {
 		expect(split("// a b", ["// a", "b()"])).toEqual({
 			one: [],
@@ -997,8 +1027,17 @@ describe("groupMarks", () => {
 			" ",
 			"  ",
 			"\t",
+			"// ",
+			"# ",
+			"* ",
 		);
-		/** A line, and its run: broken at token boundaries, re-indented. */
+		/**
+		 * A line, and its run: broken at token boundaries, re-indented, and
+		 * (outside Markdown) a continuation's leader added when the line is a
+		 * comment. A continuation the cut alone starts with the line's leader
+		 * is left out: that leader is the break's, so the line's own one there
+		 * reads as removed (marked, the safe side).
+		 */
 		const splitLine = fc
 			.tuple(
 				fc.array(piece, { minLength: 1, maxLength: 30 }),
@@ -1008,10 +1047,12 @@ describe("groupMarks", () => {
 					maxLength: 9,
 				}),
 				fc.array(fc.boolean(), { minLength: 9, maxLength: 9 }),
+				fc.array(fc.boolean(), { minLength: 9, maxLength: 9 }),
 				fc.boolean(),
 			)
-			.map(([pieces, cuts, indents, keep, markdown]) => {
+			.map(([pieces, cuts, indents, keep, leaders, markdown]) => {
 				const one = pieces.join("");
+				const leader = markdown ? undefined : commentLeader(one);
 				const tokens = tokenize(one);
 				const at = [
 					...new Set(cuts.map((c) => 1 + (c % Math.max(1, tokens.length)))),
@@ -1020,16 +1061,24 @@ describe("groupMarks", () => {
 					.sort((a, b) => a - b);
 				const run: string[] = [];
 				const starts: number[] = [];
+				const added: boolean[] = [];
 				let from = 0;
 				for (const [k, to] of [...at, tokens.length].entries()) {
 					let text = tokens.slice(from, to).join("");
 					if (k > 0) {
-						text = (indents[k] as string) + text.replace(/^[ \t]+/, "");
-						starts.push((indents[k] as string).length);
+						const content = text.replace(/^[ \t]+/, "");
+						const add = leader !== undefined && content !== "" && !!leaders[k];
+						const head = (indents[k] as string) + (add ? `${leader} ` : "");
+						text = head + content;
+						starts.push(head.length);
+						added.push(add);
 						if (!keep[k - 1]) {
 							run[k - 1] = (run[k - 1] as string).replace(/[ \t]+$/, "");
 						}
-					} else starts.push(0);
+					} else {
+						starts.push(0);
+						added.push(false);
+					}
 					run.push(text);
 					from = to;
 				}
@@ -1037,8 +1086,17 @@ describe("groupMarks", () => {
 				for (const [k, text] of run.entries()) {
 					starts[k] = Math.min(starts[k] as number, text.length);
 				}
-				return { one, run, starts, markdown };
-			});
+				return { one, run, starts, markdown, leader, added };
+			})
+			.filter(({ run, leader, added }) =>
+				run.every(
+					(text, k) =>
+						k === 0 ||
+						added[k] ||
+						leader === undefined ||
+						commentLeader(text) !== leader,
+				),
+			);
 		it("marks nothing in a pure split or join", () => {
 			fc.assert(
 				fc.property(splitLine, fc.boolean(), ({ one, run, markdown }, old) => {
