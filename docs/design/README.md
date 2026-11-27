@@ -19,7 +19,7 @@ uses is checked for WCAG AA in `src/web/theme.test.ts`; add new pairs there.
 | `ink` `ink-soft` `muted` `faint` | text, strongest to weakest (all 4.5:1 on every surface) |
 | `label` | letter-spaced violet capitals for section labels |
 | `invisible` `invisible-strong` | hidden characters in code, nothing else: near-neutral stone greys, apart from the comment color and `faint`; not for text. `invisible`: whitespace marks (spaces, tabs, line endings) and the 10% chip behind an escape; `invisible-strong`: the escape's label, a notch up |
-| `accent` `link` | focus rings, the pointed-at cluster rail, selected segment, current file; links. `accent` is also unread: the dot on an agent pill, handle or bubble (and in the file tree) for an agent message not seen yet, and the "new" rule above it; never a state |
+| `accent` `link` | focus rings, the pointed-at cluster rail, selected segment, current file; links. `accent` is also unread: the dot on an agent pill, handle or bubble (and in the file tree) for an agent message not seen yet, and the "new" rule above it; and the 2px bracket that ties a split or joined line's group in the diff's gutter (CAR-130); never a state |
 | `add-done` `del-done` | reviewed lines: quieter add/del tints, text at full contrast |
 | `ok-wash` | a finished file's header: an opaque green wash on `raised` (it sticks over the diff) |
 | `mark-tint` (utility) | `accent` at 8% as an inset shadow over every cell of a row: a thread's commented lines, and a line landed on from a thread link (it fades, instantly with reduced motion). Over add/del/context it keeps all code text at 4.5:1 and green/red apart |

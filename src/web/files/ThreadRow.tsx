@@ -20,6 +20,14 @@ import { Conversation } from "../threads/Conversation";
 import { Avatar } from "../threads/people";
 import { ThreadStatus } from "../threads/ThreadStatus";
 import { useFloatClearCard } from "./floatClear";
+import {
+	BracketPiece,
+	GroupThrough,
+	THROUGH_CELL,
+	THROUGH_IN_SIDE,
+	throughLeft,
+	useGroupThrough,
+} from "./GroupBracket";
 import { StackControls } from "./stickyControls";
 import {
 	ChangedChip,
@@ -223,6 +231,13 @@ export function TailRow(props: {
 	// neither covers the other, whenever the card opens, and nothing else
 	// moves.
 	const clear = useContext(StackControls);
+	// Inside a split or joined line's group, its bracket runs on past the
+	// row, under the card (GroupBracket.tsx).
+	const through = useGroupThrough();
+	// What a card holds is no group's row.
+	const children = (
+		<GroupThrough.Provider value={null}>{props.children}</GroupThrough.Provider>
+	);
 	if ("columns" in place) {
 		return (
 			<tr
@@ -232,8 +247,19 @@ export function TailRow(props: {
 			>
 				<td
 					colSpan={place.columns}
-					className={`p-0 ${clear ? "pointer-coarse:pl-[calc(0.25rem+var(--controls-w))]" : ""}`}
+					className={`p-0 ${clear ? "pointer-coarse:pl-[calc(0.25rem+var(--controls-w))]" : ""} ${through ? THROUGH_CELL : ""}`}
 				>
+					{through && (
+						<BracketPiece
+							at="through"
+							label={through.label}
+							left={throughLeft(
+								place.columns === 6 ? "side-by-side" : "unified",
+								through.side,
+								"rail",
+							)}
+						/>
+					)}
 					<div
 						ref={floatCard}
 						data-tail-card=""
@@ -246,13 +272,25 @@ export function TailRow(props: {
 								className={`absolute inset-y-0 left-0 w-1 ${props.rail}`}
 							/>
 						)}
-						{props.children}
+						{children}
 					</div>
 				</td>
 			</tr>
 		);
 	}
-	const blank = <td colSpan={2} className="bg-band" />;
+	// The bracket's piece in its side's cell, the card's or the blank's.
+	const piece = (side: DiffSide) =>
+		through?.side === side && (
+			<BracketPiece at="through" label={through.label} left={THROUGH_IN_SIDE} />
+		);
+	const throughCell = (side: DiffSide) =>
+		through?.side === side ? THROUGH_CELL : "";
+	const blankSide = place.side === "RIGHT" ? "LEFT" : "RIGHT";
+	const blank = (
+		<td colSpan={2} className={`bg-band ${throughCell(blankSide)}`}>
+			{piece(blankSide)}
+		</td>
+	);
 	return (
 		<tr data-testid={props.testId} id={props.id}>
 			<td
@@ -262,9 +300,10 @@ export function TailRow(props: {
 			/>
 			<td />
 			{place.side === "RIGHT" && blank}
-			<td colSpan={2} className="p-0">
+			<td colSpan={2} className={`p-0 ${throughCell(place.side)}`}>
+				{piece(place.side)}
 				<div ref={floatCard} data-tail-card="" className={`px-2 ${CARD}`}>
-					{props.children}
+					{children}
 				</div>
 			</td>
 			{place.side === "LEFT" && blank}

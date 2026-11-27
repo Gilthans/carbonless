@@ -109,7 +109,17 @@ import {
 import { type CellLine, CODE_CELL, cellLine } from "./codeSpan";
 import { contextRanges, rangesKeyOf } from "./contextRanges";
 import { FullDiffLink, type FullDiffTarget } from "./FullDiffLink";
+import {
+	type BracketAt,
+	BracketPiece,
+	GroupThrough,
+	THROUGH_CELL,
+	type Through,
+	throughLeft,
+	useGroupThrough,
+} from "./GroupBracket";
 import { EXPAND_STEP, fileGaps, type Gap, gapState } from "./gaps";
+import { type GroupSpan, groupSpans } from "./groupSpans";
 import { Labelled, labelReserve } from "./HunkHeading";
 import { hiddenLines } from "./hiddenLines";
 import { languageFor } from "./highlight";
@@ -1037,14 +1047,20 @@ function NumberCell(props: {
 	className: string;
 	picker?: Picker;
 	pick?: NumberPick;
+	/**
+	 * Its line's group label (a split or joined line, CAR-130): in the
+	 * cell's accessible name, and its tooltip on hover.
+	 */
+	group?: string;
 }) {
-	const { picker, pick, n } = props;
+	const { picker, pick, n, group } = props;
 	return (
 		// biome-ignore lint/a11y/useKeyWithClickEvents: the keyboard uses the number button (see above).
 		<td
 			data-testid={props.side === "LEFT" ? "old" : "new"}
 			data-side={props.side}
 			data-picked={pick?.picked || undefined}
+			title={group}
 			onPointerDown={picker?.onPointerDown}
 			onPointerEnter={picker?.onPointerEnter}
 			onClick={picker?.onClick}
@@ -1091,6 +1107,7 @@ function NumberCell(props: {
 			) : (
 				n
 			)}
+			{group && <span className="sr-only">{group}</span>}
 		</td>
 	);
 }
@@ -1125,6 +1142,8 @@ function CodeCell(props: {
 	words?: Words;
 	/** The find's hits on the line's characters. */
 	finds?: readonly FindMark[];
+	/** Its piece of a group's bracket (GroupBracket.tsx), in its left padding. */
+	bracket?: { at: BracketAt; label: string };
 	/** Side by side only: the cell's own paint, kind, landing, mark, pick and find. */
 	cell?: {
 		paint: string;
@@ -1155,8 +1174,11 @@ function CodeCell(props: {
 			data-find-current={cell?.current || undefined}
 			aria-busy={props.words?.pending || undefined}
 			// Top-aligned next to its number, however tall the other side makes the row.
-			className={`${cell ? "align-top whitespace-pre-wrap [overflow-wrap:anywhere]" : "whitespace-pre"} ${bubblePad(bubbles)} ${cell?.paint ?? ""}`}
+			className={`${cell ? "align-top whitespace-pre-wrap [overflow-wrap:anywhere]" : "whitespace-pre"} ${bubblePad(bubbles)} ${cell?.paint ?? ""} ${props.bracket ? "relative" : ""}`}
 		>
+			{props.bracket && (
+				<BracketPiece at={props.bracket.at} label={props.bracket.label} />
+			)}
 			{bubbles > 0 && (
 				<BubbleSlot>
 					{lead}
@@ -1229,6 +1251,8 @@ interface RowProps {
 	pendingWords?: ReadonlySet<DiffLine>;
 	/** The paired lines whose word marks couldn't be computed (wordWork.ts). */
 	failedWords?: ReadonlySet<DiffLine>;
+	/** Each split or joined line's place in its group's rows as shown, and its label (groupSpans.ts). */
+	groups?: ReadonlyMap<DiffLine, GroupSpan>;
 	/**
 	 * The row starts a cluster right under another of the same colour
 	 * (HunkRows): a darker hairline at its top edge (`cluster-seam`).
@@ -1429,24 +1453,48 @@ function NoNewlineRow(props: {
 	right?: boolean;
 }) {
 	const columns = columnsOf(props.shape.view);
+	// Inside a split or joined line's group: its bracket runs on past.
+	const through = useGroupThrough();
 	if (props.shape.view === "unified") {
 		return (
 			<tr data-testid="no-newline" className="select-none">
 				<Rail state={props.state} />
-				<td colSpan={columns - 1} className="px-2 text-muted italic">
+				<td
+					colSpan={columns - 1}
+					className={`px-2 text-muted italic ${through ? THROUGH_CELL : ""}`}
+				>
+					{through && (
+						<BracketPiece
+							at="through"
+							label={through.label}
+							left={throughLeft("unified", through.side, "controls")}
+						/>
+					)}
 					{NO_NEWLINE}
 				</td>
 			</tr>
 		);
 	}
+	const piece = (side: DiffSide) =>
+		through?.side === side && (
+			<BracketPiece at="through" label={through.label} />
+		);
+	const cls = (side: DiffSide) =>
+		`px-2 ${through?.side === side ? THROUGH_CELL : ""}`;
 	return (
 		<tr data-testid="no-newline" className="text-muted italic select-none">
 			<Rail state={props.state} />
 			<ControlsCell />
 			<td />
-			<td className="px-2">{props.left && NO_NEWLINE}</td>
+			<td className={cls("LEFT")}>
+				{piece("LEFT")}
+				{props.left && NO_NEWLINE}
+			</td>
 			<td />
-			<td className="px-2">{props.right && NO_NEWLINE}</td>
+			<td className={cls("RIGHT")}>
+				{piece("RIGHT")}
+				{props.right && NO_NEWLINE}
+			</td>
 		</tr>
 	);
 }
@@ -1485,6 +1533,14 @@ function LineRow(props: RowProps & { line: RowLine; order?: number }) {
 	// The number GitHub knows the row by takes the pick's button (and its
 	// tab stop); the other number picks the row too, by pointer.
 	const pick = (side: DiffSide) => pickOf(cell, side === cell.side, picker);
+	// A split or joined line (CAR-130): its piece of the bracket, its label
+	// on its own number, and what's inserted under it inside the group.
+	const group =
+		line.kind === "ws" ? undefined : props.groups?.get(line as DiffLine);
+	const through: Through | null =
+		group && group.at !== "last"
+			? { label: group.label, side: cell.side }
+			: null;
 	return (
 		<>
 			<tr
@@ -1515,6 +1571,7 @@ function LineRow(props: RowProps & { line: RowLine; order?: number }) {
 					className={numberBg}
 					picker={picker}
 					pick={pick("LEFT")}
+					group={cell.side === "LEFT" ? group?.label : undefined}
 				/>
 				<NumberCell
 					side="RIGHT"
@@ -1522,10 +1579,12 @@ function LineRow(props: RowProps & { line: RowLine; order?: number }) {
 					className={numberBg}
 					picker={picker}
 					pick={pick("RIGHT")}
+					group={cell.side === "RIGHT" ? group?.label : undefined}
 				/>
 				<CodeCell
 					side={cell.side}
 					line={line}
+					bracket={group && { at: group.at, label: group.label }}
 					lang={props.lang}
 					tabWidth={props.tabWidth}
 					hunk={props.hunk}
@@ -1551,24 +1610,32 @@ function LineRow(props: RowProps & { line: RowLine; order?: number }) {
 					agentBubble={agentBubbleOf(asked, agentKeys, props.agent, where)}
 				/>
 			</tr>
-			{line.noNewline && <NoNewlineRow shape={shape} state={state} />}
-			<RowTail
-				opened={
-					open && endKey ? [{ endKey, keys, ending, side: cell.side }] : []
-				}
-				composing={[{ side: cell.side, items: composing }]}
-				threads={threads}
-				composers={props.composers}
-				agentOpened={
-					asked.open && asked.endKey
-						? [{ endKey: asked.endKey, ending: asked.ending, side: cell.side }]
-						: []
-				}
-				agentComposing={[{ side: cell.side, items: asking }]}
-				agent={props.agent}
-				shape={shape}
-				state={state}
-			/>
+			<GroupThrough.Provider value={through}>
+				{line.noNewline && <NoNewlineRow shape={shape} state={state} />}
+				<RowTail
+					opened={
+						open && endKey ? [{ endKey, keys, ending, side: cell.side }] : []
+					}
+					composing={[{ side: cell.side, items: composing }]}
+					threads={threads}
+					composers={props.composers}
+					agentOpened={
+						asked.open && asked.endKey
+							? [
+									{
+										endKey: asked.endKey,
+										ending: asked.ending,
+										side: cell.side,
+									},
+								]
+							: []
+					}
+					agentComposing={[{ side: cell.side, items: asking }]}
+					agent={props.agent}
+					shape={shape}
+					state={state}
+				/>
+			</GroupThrough.Provider>
 		</>
 	);
 }
@@ -1770,6 +1837,23 @@ function PairRow(
 		};
 	};
 	const own = !shape.split;
+	// A split or joined line's group (CAR-130): each side's line's place
+	// in it; the bracket runs down the run's side.
+	const sourceOf = (side: DiffSide) =>
+		row.kind === "context" ? undefined : side === "LEFT" ? row.del : row.add;
+	const groupOf = (side: DiffSide) => {
+		const source = sourceOf(side);
+		return source ? props.groups?.get(source) : undefined;
+	};
+	const runSide = (["LEFT", "RIGHT"] as const).find((side) => {
+		const g = groupOf(side);
+		return g && g.group.one !== sourceOf(side);
+	});
+	const runGroup = runSide && groupOf(runSide);
+	const through: Through | null =
+		runSide && runGroup && runGroup.at !== "last"
+			? { label: runGroup.label, side: runSide }
+			: null;
 	const cells = (side: DiffSide, cell: Cell | undefined) => {
 		if (!cell) return <BlankCells side={side} />;
 		const { line } = cell;
@@ -1793,10 +1877,16 @@ function PairRow(
 					className={`${numberBg} ${mark}`}
 					picker={picker}
 					pick={cell.pick}
+					group={groupOf(side)?.label}
 				/>
 				<CodeCell
 					side={side}
 					line={line}
+					bracket={
+						side === runSide && runGroup
+							? { at: runGroup.at, label: runGroup.label }
+							: undefined
+					}
 					lang={props.lang}
 					tabWidth={props.tabWidth}
 					hunk={props.hunk}
@@ -1847,51 +1937,53 @@ function PairRow(
 				{cells("LEFT", left)}
 				{cells("RIGHT", right)}
 			</tr>
-			{own && (
-				<BubbleRow
-					// A context line's bubble once, on the right.
-					left={row.kind === "context" ? {} : bubblesOf("LEFT", left)}
-					right={bubblesOf("RIGHT", right)}
+			<GroupThrough.Provider value={through}>
+				{own && (
+					<BubbleRow
+						// A context line's bubble once, on the right.
+						left={row.kind === "context" ? {} : bubblesOf("LEFT", left)}
+						right={bubblesOf("RIGHT", right)}
+						state={state}
+					/>
+				)}
+				{lead?.row(columnsOf(shape.view), state ? RAIL[state] : undefined)}
+				{(noNewline.left || noNewline.right) && (
+					<NoNewlineRow shape={shape} state={state} {...noNewline} />
+				)}
+				<RowTail
+					opened={sides.flatMap(([side, cell]) =>
+						cell?.open && cell.endKey
+							? [
+									{
+										endKey: cell.endKey,
+										keys: cell.shared?.keys ?? cell.keys,
+										ending: cell.ending,
+										side,
+									},
+								]
+							: [],
+					)}
+					composing={sides.map(([side, cell]) => ({
+						side,
+						items: props.composers?.at(cell?.keys ?? []) ?? [],
+					}))}
+					threads={threads}
+					composers={props.composers}
+					agentOpened={sides.flatMap(([side, cell]) => {
+						const asked = cellAgent(cell?.agentKeys ?? [], agent);
+						return asked.open && asked.endKey
+							? [{ endKey: asked.endKey, ending: asked.ending, side }]
+							: [];
+					})}
+					agentComposing={sides.map(([side, cell]) => ({
+						side,
+						items: agent?.composersAt(cell?.agentKeys ?? []) ?? [],
+					}))}
+					agent={agent}
+					shape={shape}
 					state={state}
 				/>
-			)}
-			{lead?.row(columnsOf(shape.view), state ? RAIL[state] : undefined)}
-			{(noNewline.left || noNewline.right) && (
-				<NoNewlineRow shape={shape} state={state} {...noNewline} />
-			)}
-			<RowTail
-				opened={sides.flatMap(([side, cell]) =>
-					cell?.open && cell.endKey
-						? [
-								{
-									endKey: cell.endKey,
-									keys: cell.shared?.keys ?? cell.keys,
-									ending: cell.ending,
-									side,
-								},
-							]
-						: [],
-				)}
-				composing={sides.map(([side, cell]) => ({
-					side,
-					items: props.composers?.at(cell?.keys ?? []) ?? [],
-				}))}
-				threads={threads}
-				composers={props.composers}
-				agentOpened={sides.flatMap(([side, cell]) => {
-					const asked = cellAgent(cell?.agentKeys ?? [], agent);
-					return asked.open && asked.endKey
-						? [{ endKey: asked.endKey, ending: asked.ending, side }]
-						: [];
-				})}
-				agentComposing={sides.map(([side, cell]) => ({
-					side,
-					items: agent?.composersAt(cell?.agentKeys ?? []) ?? [],
-				}))}
-				agent={agent}
-				shape={shape}
-				state={state}
-			/>
+			</GroupThrough.Provider>
 		</>
 	);
 }
@@ -1913,6 +2005,7 @@ function BubbleRow(props: {
 	const { left, right } = props;
 	// In a run whose touch controls stack, clear of the controls column.
 	const clear = useContext(StackControls);
+	const through = useGroupThrough();
 	const has = (b: Bubbles) => Boolean(b.lead || b.bubble || b.agent);
 	if (!has(left) && !has(right)) return null;
 	const group = (side: DiffSide, b: Bubbles) => (
@@ -1934,8 +2027,15 @@ function BubbleRow(props: {
 			<Rail state={props.state} />
 			<td
 				colSpan={columnsOf("side-by-side") - 1}
-				className={`px-2 py-0 ${clear ? CLEAR_OF_CONTROLS : ""}`}
+				className={`px-2 py-0 ${clear ? CLEAR_OF_CONTROLS : ""} ${through ? THROUGH_CELL : ""}`}
 			>
+				{through && (
+					<BracketPiece
+						at="through"
+						label={through.label}
+						left={throughLeft("side-by-side", through.side, "controls")}
+					/>
+				)}
 				<div className={`grid grid-cols-2 ${UNDER_CONTROLS}`}>
 					{group("LEFT", left)}
 					{group("RIGHT", right)}
@@ -4238,7 +4338,7 @@ function HunkRows(props: {
 	// The since view: each piece is a run of its own (its first line starts
 	// one), so every piece has its controls (CAR-218).
 	const sincePieces = props.pieces;
-	const { hunkRuns, items } = useMemo(() => {
+	const { hunkRuns, items, groups } = useMemo(() => {
 		const starts = sincePieces
 			? new Set(hunk.lines.filter((l) => sincePieces.has(l)))
 			: undefined;
@@ -4248,8 +4348,17 @@ function HunkRows(props: {
 			side:
 				view === "side-by-side" ? layoutRows(run.rows, shown.partners) : null,
 		}));
-		return { hunkRuns: runs, items: shown.items };
+		return {
+			hunkRuns: runs,
+			items: shown.items,
+			// Each split or joined line's place in its group as shown (its
+			// bracket piece) and the group's label (CAR-130).
+			groups: groupSpans(shown.items, view),
+		};
 	}, [hunk, ignoreWhitespace, view, sincePieces]);
+	// Markdown keeps a leader (`*`, `#`) in a group's marks: a new item.
+	// The file's language never changes under a hunk.
+	const markdown = props.lang === "markdown";
 	// The word marks of the hunk's pairs and groups: those done before and those the
 	// render budget allows now; the rest are marked off the render path and
 	// come in with `marked`, chunk by chunk (wordWork.ts, CAR-135). Their
@@ -4257,12 +4366,17 @@ function HunkRows(props: {
 	// Unmounted, the hunk stops waiting, and work nobody waits for is dropped.
 	const [marked, setMarked] = useState(0);
 	// biome-ignore lint/correctness/useExhaustiveDependencies: `marked` says more pairs are done.
-	const hunkMarks = useMemo(() => hunkWords(items, false), [items, marked]);
+	const hunkMarks = useMemo(
+		() => hunkWords(items, markdown),
+		[items, markdown, marked],
+	);
 	const words = hunkMarks.marks;
 	useEffect(() => {
 		if (hunkMarks.later.length === 0) return;
-		return requestMarks(hunkMarks.later, false, () => setMarked((n) => n + 1));
-	}, [hunkMarks]);
+		return requestMarks(hunkMarks.later, markdown, () =>
+			setMarked((n) => n + 1),
+		);
+	}, [hunkMarks, markdown]);
 	// The lines whose change doesn't show with hidden characters off (none
 	// to look for while they show).
 	const showHidden = useShowInvisibles();
@@ -4384,6 +4498,7 @@ function HunkRows(props: {
 					hidden,
 					pendingWords: hunkMarks.pending,
 					failedWords: hunkMarks.failed,
+					groups,
 				};
 				/** Whether anything renders under a line's row (RowTail, BubbleRow, NoNewlineRow): its threads, the agent's, composers, no newline. */
 				const tailed = (line?: RowLine) => {
