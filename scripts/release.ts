@@ -256,7 +256,13 @@ async function writeChangelog(
 	const range = await releaseRange(io, version, to);
 	const date = io.now().toISOString().slice(0, 10);
 	const file = join(root, "docs/changelog.md");
-	const existing = existsSync(file) ? readFileSync(file, "utf8") : null;
+	// Read once (no exists-then-read race): none yet is an empty changelog.
+	let existing: string | null = null;
+	try {
+		existing = readFileSync(file, "utf8");
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+	}
 	mkdirSync(dirname(file), { recursive: true });
 	const section = `## ${version} (${date})\n\n${renderNotesBody(notes, range)}`;
 	writeFileSync(file, withChangelogSection(existing, version, section));
