@@ -1,4 +1,5 @@
 import {
+	existsSync,
 	mkdirSync,
 	mkdtempSync,
 	readFileSync,
@@ -7,8 +8,23 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { readSeen, writeSeen } from "./seen";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { readSeen, recordSeen, seenSettled, writeSeen } from "./seen";
+
+/** While `held`, every atomic write waits for it (a busy file on Windows). */
+const gate = vi.hoisted(() => ({ held: null as Promise<void> | null }));
+vi.mock("./atomicFile", async (original) => {
+	const real = await original<typeof import("./atomicFile")>();
+	return {
+		...real,
+		writeFileAtomic: async (
+			...args: Parameters<typeof real.writeFileAtomic>
+		) => {
+			await gate.held;
+			return real.writeFileAtomic(...args);
+		},
+	};
+});
 
 const ID = "01jb0000000000000000000000";
 const HEAD = "a".repeat(40);
@@ -22,7 +38,9 @@ describe("last-seen head", () => {
 		saved = process.env.XDG_STATE_HOME;
 		process.env.XDG_STATE_HOME = dir;
 	});
-	afterEach(() => {
+	afterEach(async () => {
+		gate.held = null;
+		await seenSettled();
 		if (saved === undefined) delete process.env.XDG_STATE_HOME;
 		else process.env.XDG_STATE_HOME = saved;
 		rmSync(dir, { recursive: true, force: true });
@@ -72,5 +90,33 @@ describe("last-seen head", () => {
 			await expect(writeSeen(bad, HEAD)).rejects.toThrow(/review id/);
 		}
 		await expect(writeSeen(ID, "HEAD")).rejects.toThrow(/object ID/);
+	});
+
+	describe("recorded without waiting for the disk (CAR-181)", () => {
+		it("answers the newest note at once while the write is held, and writes one review's notes in order", async () => {
+			let release = () => {};
+			gate.held = new Promise((r) => {
+				release = r;
+			});
+			recordSeen(ID, HEAD, 1);
+			recordSeen(ID, "b".repeat(40), 2);
+			expect(await readSeen(ID)).toEqual({ head: "b".repeat(40), at: 2 });
+			expect(existsSync(file())).toBe(false);
+			release();
+			await seenSettled();
+			expect(JSON.parse(readFileSync(file(), "utf8"))).toEqual({
+				head: "b".repeat(40),
+				at: 2,
+			});
+			expect(await readSeen(ID)).toEqual({ head: "b".repeat(40), at: 2 });
+		});
+
+		it("a failed write only loses the note", async () => {
+			// A file where the state dir should be: the write can't land.
+			writeFileSync(join(dir, "carbonless"), "");
+			recordSeen(ID, HEAD, 1);
+			await seenSettled();
+			expect(await readSeen(ID)).toBeNull();
+		});
 	});
 });

@@ -109,6 +109,38 @@ describe("writeFileAtomic", () => {
 		},
 	);
 
+	describe("by default, the platform crb runs on", () => {
+		const real = Object.getOwnPropertyDescriptor(process, "platform");
+		const runOn = (platform: string) =>
+			Object.defineProperty(process, "platform", { value: platform });
+		afterEach(() => {
+			if (real) Object.defineProperty(process, "platform", real);
+		});
+		/** A rename busy once, its platform left to the default. */
+		const busyOn = () => {
+			const busy = busyRename("EPERM", 1);
+			const { platform: _p, ...options } = busy.options;
+			return { busy, options };
+		};
+
+		it("retries on Windows", async () => {
+			runOn("win32");
+			const { busy, options } = busyOn();
+			await writeFileAtomic(path, '{"n":1}', undefined, options);
+			expect(busy.calls).toHaveLength(2);
+			expect(read()).toEqual({ n: 1 });
+		});
+
+		it("doesn't retry on Linux", async () => {
+			runOn("linux");
+			const { busy, options } = busyOn();
+			await expect(
+				writeFileAtomic(path, "{}", undefined, options),
+			).rejects.toThrow(/EPERM/);
+			expect(busy.calls).toHaveLength(1);
+		});
+	});
+
 	it.skipIf(process.platform === "win32")("keeps the file's mode", async () => {
 		await writeFileAtomic(path, "{}", 0o600);
 		expect(statSync(path).mode & 0o777).toBe(0o600);

@@ -25,9 +25,17 @@ function seenPath(reviewId: string): string {
 	return join(stateDir(), "seen", `${reviewId}.json`);
 }
 
+/**
+ * Notes recorded but maybe not on disk yet, by review: the newest one, and
+ * the end of that review's chain of writes.
+ */
+const writing = new Map<string, { seen: Seen; done: Promise<void> }>();
+
 /** The last-seen head of the review, or null when none or unreadable. */
 export async function readSeen(reviewId: string): Promise<Seen | null> {
 	const path = seenPath(reviewId);
+	const pending = writing.get(reviewId);
+	if (pending) return pending.seen;
 	let text: string;
 	try {
 		text = await readFile(path, "utf8");
@@ -58,4 +66,32 @@ export async function writeSeen(
 	const path = seenPath(reviewId);
 	if (!OID.test(head)) throw new Error(`Not an object ID: ${head}`);
 	await writeFileAtomic(path, `${JSON.stringify({ head, at })}\n`);
+}
+
+/**
+ * Records `head` as the review's last-seen head without waiting for the
+ * disk: opening a review never waits on this note (on Windows a busy file
+ * can hold a save for seconds, CAR-181). readSeen answers it at once; one
+ * review's writes go to disk in order, so the newest recorded wins; a
+ * failed write only loses the note.
+ */
+export function recordSeen(
+	reviewId: string,
+	head: string,
+	at: number = Date.now(),
+): void {
+	const before = writing.get(reviewId)?.done ?? Promise.resolve();
+	const entry = {
+		seen: { head, at },
+		done: before.then(() => writeSeen(reviewId, head, at)).catch(() => {}),
+	};
+	writing.set(reviewId, entry);
+	void entry.done.then(() => {
+		if (writing.get(reviewId) === entry) writing.delete(reviewId);
+	});
+}
+
+/** Resolves once every recorded note is written (or failed). */
+export async function seenSettled(): Promise<void> {
+	await Promise.all([...writing.values()].map((w) => w.done));
 }

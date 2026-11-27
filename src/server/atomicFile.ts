@@ -64,7 +64,9 @@ async function renameRetrying(
  * Writes `data` to `path` so no reader ever sees it half-written: to a temp
  * file in the same directory (created with `mode`), then renamed over it
  * (on Windows, retrying while another process has the file open). A failed
- * write keeps the old file and removes the temp file. `options` are for
+ * write keeps the old file and removes the temp file. Concurrent writers
+ * to one path: the last rename wins, which a retry can make an older
+ * write; callers that care serialize their writes. `options` are for
  * tests.
  */
 export async function writeFileAtomic(
