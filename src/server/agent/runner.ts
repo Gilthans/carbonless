@@ -78,6 +78,17 @@ export interface RunnerFacts {
 	views(): { patchsets: PromptPatchset[]; current: string };
 	/** Asks GitHub for the PR's head, fetching a new one into the cache clone. */
 	checkHead(): Promise<void>;
+	/**
+	 * Which of `oids` (full OIDs) aren't commits in the review's cache
+	 * clone: one git read for all (CAR-140).
+	 */
+	missing(oids: string[]): Promise<string[]>;
+	/**
+	 * Whether carbonless fetches GitHub's newest head (`views().current`)
+	 * into the clone: false for a pinned review or a PR that isn't open,
+	 * whose `current` is never fetched (Session#noteHead).
+	 */
+	fetchesHead(): boolean;
 }
 
 /** What the runner asks of the review's join broker: its agent joins through it. */

@@ -52,6 +52,7 @@ import type {
 	Snapshot,
 	ThreadComment,
 } from "../../shared/types.js";
+import { missingCommits } from "../clone.js";
 import { readConfig } from "../config.js";
 import { loadFileHunks, readBlobs, statBlob } from "../diff/snapshot.js";
 import { chooseEncoding, decodeLines } from "../diff/text.js";
@@ -1246,7 +1247,7 @@ export class AgentHost {
 			thread.anchor.subject === "thread"
 				? await sessionThreadTurn(facts, thread, messages, moved, pr)
 				: await sessionSpanTurn(facts, thread, messages, moved, pr);
-		const { envelope } = turn;
+		const envelope = await withMissingCommits(facts, turn.envelope);
 		const anchor = envelope.thread.anchor;
 		// The head this question showed.
 		this.#seen = {
@@ -2358,7 +2359,78 @@ async function sessionThreadTurn(
 	return { envelope, anchored, hunk: github?.code ?? null };
 }
 
-/** The notices that are set, one per line; undefined when none is. */
+/**
+ * The commits a code envelope names that carbonless keeps in its clone
+ * (full OIDs, each once, with where the envelope first names it): the
+ * review's head and merge base, the anchor's commit, a thread
+ * conversation's openedOn, view, its patch sets' heads and merge bases,
+ * and `current` while carbonless fetches GitHub's head (`fetchesHead`;
+ * not for a pinned review or a PR that isn't open). Never the base
+ * branch's tip (`review.base`): carbonless diffs against the merge base
+ * and saves GitHub's base tip before (or without) fetching it.
+ */
+function envelopeCommits(
+	env: PromptCodeEnvelope,
+	fetchesHead: boolean,
+): [string, string][] {
+	const anchor = env.thread.anchor;
+	const named: [string | undefined, string][] = [
+		[env.review.head.commit, "review.head"],
+		[env.review.mergeBase, "review.mergeBase"],
+		[anchor.subject === "review" ? undefined : anchor.commit, "thread.anchor"],
+		[env.github?.openedOn, "github.openedOn"],
+		[env.view?.right, "view.right"],
+		[env.view?.left, "view.left"],
+		[fetchesHead ? env.current : undefined, "current"],
+		...(env.patchsets ?? []).flatMap((p): [string, string][] => [
+			[p.head, `patch set ${p.number}'s head`],
+			[p.mergeBase, `patch set ${p.number}'s mergeBase`],
+		]),
+	];
+	const out = new Map<string, string>();
+	for (const [oid, what] of named) {
+		if (oid && OID.test(oid) && !out.has(oid)) out.set(oid, what);
+	}
+	return [...out];
+}
+
+/**
+ * The notice for commits missing from the review's clone (CAR-140), the
+ * same for a joined and a spawned session: one line, their OIDs and where
+ * the envelope names them, never a path; undefined when none is missing.
+ * It claims only what the check knows: not in the clone now.
+ */
+export function missingCommitsNotice(
+	missing: readonly [string, string][],
+): string | undefined {
+	if (missing.length === 0) return undefined;
+	const list = missing.map(([oid, what]) => `${oid} (${what})`).join(", ");
+	return `Not in carbonless's clone, so it can't read or diff them (a force-push may have dropped them): ${list}.`;
+}
+
+/**
+ * The envelope with the missing-commit notice added after its own: one
+ * git read for all its commits (RunnerFacts.missing). A failed check adds
+ * nothing (the turn goes on). The envelope was sanitised before; the
+ * notice holds only checked OIDs and fixed labels, and is sanitised the
+ * same way all the same, so a label taken from PR text later can't slip
+ * past.
+ */
+async function withMissingCommits(
+	facts: RunnerFacts,
+	env: PromptCodeEnvelope,
+): Promise<PromptCodeEnvelope> {
+	const named = envelopeCommits(env, facts.fetchesHead());
+	if (named.length === 0) return env;
+	const gone = new Set(
+		await facts.missing(named.map(([oid]) => oid)).catch(() => []),
+	);
+	const missing = missingCommitsNotice(named.filter(([oid]) => gone.has(oid)));
+	if (!missing) return env;
+	const notice = joinNotices([env.notice, sanitizeThirdParty(missing)]);
+	return notice ? { ...env, notice } : env;
+}
+
 /**
  * A file's coverage by line for `progress`: its clusters' reviewed,
  * crossed-off and unreviewed lines on each side (pieces.ts marksOf, as
@@ -2420,6 +2492,7 @@ function progressFile(f: FileView): SessionProgressFile {
 	};
 }
 
+/** The notices that are set, one per line; undefined when none is. */
 function joinNotices(parts: (string | undefined)[]): string | undefined {
 	return parts.filter(Boolean).join("\n") || undefined;
 }
@@ -2503,6 +2576,9 @@ export function buildAgentHost(o: {
 		...(o.idleTurnMs !== undefined ? { idleTurnMs: o.idleTurnMs } : {}),
 	});
 }
+
+/** How long a turn's missing-commit check may take (one `cat-file --batch-check`); past it, no notice. */
+const MISSING_CHECK_MS = 10_000;
 
 /**
  * The hunks of `anchor.path` in `mergeBase`..`anchor.commit` (anchorHunk),
@@ -2624,6 +2700,11 @@ export interface ReviewAgentSource {
 	}[];
 	/** The PR's head on GitHub as last read (it may be past the snapshot's). */
 	currentHead(): string;
+	/**
+	 * Whether carbonless fetches GitHub's head (`currentHead`) into the
+	 * clone: false for a pinned review or a PR that isn't open.
+	 */
+	fetchesHead(): boolean;
 	/** Asks GitHub for the PR's head, fetching a new one into the clone (Session.checkHead). */
 	checkHead(): Promise<void>;
 	/** The PR author's login. */
@@ -2859,6 +2940,9 @@ export function reviewAgentHost(src: ReviewAgentSource): AgentHost {
 		}),
 		// Read-only towards GitHub: it asks for the head and fetches.
 		checkHead: () => src.checkHead(),
+		fetchesHead: () => src.fetchesHead(),
+		missing: (oids) =>
+			missingCommits(src.repo, oids, AbortSignal.timeout(MISSING_CHECK_MS)),
 	};
 	const code = async (anchor: AgentAnchor, at: string) => {
 		if (anchor.subject !== "line") return undefined;

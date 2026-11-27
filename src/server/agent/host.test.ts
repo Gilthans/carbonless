@@ -45,6 +45,7 @@ import {
 	CoverageError,
 	commentPostsOf,
 	type HostRunner,
+	missingCommitsNotice,
 	NotHandedError,
 	NotHoldingError,
 	OwnThreadError,
@@ -537,9 +538,25 @@ describe("AgentHost with a session joined through MCP", () => {
 		authorOf: async () => "reviewer",
 		join: async (folds) => folds,
 		github: async () => ghThread,
-		views: () => ({ patchsets, current: head }),
+		views: () => ({ patchsets, current: current ?? head }),
 		checkHead: async () => {},
+		missing: async (oids) => {
+			missingAsked.push([...oids]);
+			if (missingFails) throw new Error("git: cat-file failed");
+			return oids.filter((o) => gone.includes(o));
+		},
+		fetchesHead: () => fetchesHead,
 	};
+	/** GitHub's newest head as the stub facts list it (unset: the PR's head). */
+	let current: string | undefined;
+	/** Whether the stub session fetches GitHub's head (false: pinned, or not open). */
+	let fetchesHead: boolean;
+	/** The stub's missing-commit check fails while set. */
+	let missingFails: boolean;
+	/** Commits the stub clone doesn't have. */
+	let gone: string[];
+	/** Each `missing` call's OIDs, in order. */
+	let missingAsked: string[][];
 	/** GitHub's thread as the stub facts read it (thread conversations). */
 	let ghThread: GithubThreadFacts | null;
 	/** The PR's files as the stub facts list them. */
@@ -670,6 +687,11 @@ describe("AgentHost with a session joined through MCP", () => {
 		onThread = undefined;
 		ghComments = undefined;
 		head = "d".repeat(40);
+		gone = [];
+		missingAsked = [];
+		current = undefined;
+		fetchesHead = true;
+		missingFails = false;
 		patchsets = PATCHSETS;
 		mergeBase = "c".repeat(40);
 		codeWindow = undefined;
@@ -2666,6 +2688,117 @@ describe("AgentHost with a session joined through MCP", () => {
 			const facts = await host.sessionReview(token, true);
 			expect(facts).not.toHaveProperty("tree");
 			expect(facts).toMatchObject({ title: "Cache", head: { ref: "feat-x" } });
+		});
+
+		it("a head missing from the clone is noticed by OID only, in one check per turn; all present: no notice (CAR-140)", async () => {
+			const x = await host.open({ clientId: "c1", text: "Why?", span });
+			const token = await approve();
+			const first = await host.sessionNext(token);
+			expect(first?.envelope.notice).toBeUndefined();
+			expect(missingAsked).toHaveLength(1);
+			// Every commit the envelope names, each once; never the base tip.
+			expect([...(missingAsked[0] ?? [])].sort()).toEqual(
+				["a", "c", "d"].map((c) => c.repeat(40)),
+			);
+			await host.sessionReply(token, {
+				thread: x.id,
+				replyTo: first?.replyTo as string,
+				text: "Because.",
+			});
+			await host.message(x.id, { clientId: "c2", text: "And now?" });
+			gone = ["d".repeat(40)];
+			const q = await host.sessionNext(token);
+			expect(q?.thread).toBe(x.id);
+			expect(missingAsked).toHaveLength(2);
+			const notice = codeOf(q)?.notice ?? "";
+			expect(notice).toBe(
+				missingCommitsNotice([["d".repeat(40), "review.head"]]),
+			);
+			expect(notice).toBe(
+				`Not in carbonless's clone, so it can't read or diff them (a force-push may have dropped them): ${"d".repeat(40)} (review.head).`,
+			);
+			expect(notice).not.toContain("a".repeat(40));
+			for (const path of [dir, bare.path, "/"]) {
+				expect(notice).not.toContain(path);
+			}
+		});
+
+		it("a GitHub thread conversation: each missing commit once, by where the envelope first names it (CAR-140)", async () => {
+			listGh(false);
+			await store.open({
+				anchor: ghAnchor,
+				text: "Is this fixed?",
+				by: "human",
+				clientId: "g1",
+			});
+			gone = ["c".repeat(40), "d".repeat(40)];
+			const q = await host.sessionNext(await approve());
+			expect(q?.envelope.kind).toBe("github_thread_conversation");
+			expect(codeOf(q)?.notice).toBe(
+				missingCommitsNotice([
+					["d".repeat(40), "review.head"],
+					["c".repeat(40), "review.mergeBase"],
+				]),
+			);
+		});
+
+		it("a pinned review (or a PR not open): GitHub's unfetched head and the base tip are never noticed; a missing head still is (CAR-140)", async () => {
+			listGh(false);
+			await store.open({
+				anchor: ghAnchor,
+				text: "Is this fixed?",
+				by: "human",
+				clientId: "g1",
+			});
+			fetchesHead = false;
+			// A new push and a moved base, read from GitHub but never fetched.
+			current = "e".repeat(40);
+			gone = ["b".repeat(40), "e".repeat(40)];
+			const token = await approve();
+			const q = await host.sessionNext(token);
+			expect(q?.envelope.kind).toBe("github_thread_conversation");
+			expect(codeOf(q)?.current).toBe("e".repeat(40));
+			expect(codeOf(q)?.notice).toBeUndefined();
+			expect(missingAsked[0]).not.toContain("b".repeat(40));
+			expect(missingAsked[0]).not.toContain("e".repeat(40));
+			gone = ["b".repeat(40), "e".repeat(40), "d".repeat(40)];
+			const t = (await store.read())[0];
+			await host.sessionReply(token, {
+				thread: t?.id as string,
+				replyTo: q?.replyTo as string,
+				text: "Not yet.",
+			});
+			await host.message(t?.id as string, { clientId: "g2", text: "Now?" });
+			const again = await host.sessionNext(token);
+			expect(codeOf(again)?.notice).toBe(
+				missingCommitsNotice([["d".repeat(40), "review.head"]]),
+			);
+		});
+
+		it("an open PR: GitHub's newest head missing from the clone is noticed as current (CAR-140)", async () => {
+			listGh(false);
+			await store.open({
+				anchor: ghAnchor,
+				text: "Is this fixed?",
+				by: "human",
+				clientId: "g1",
+			});
+			current = "e".repeat(40);
+			gone = ["e".repeat(40)];
+			const q = await host.sessionNext(await approve());
+			expect(codeOf(q)?.notice).toBe(
+				missingCommitsNotice([["e".repeat(40), "current"]]),
+			);
+		});
+
+		it("a failed missing-commit check adds no notice and the turn goes on (CAR-140)", async () => {
+			const x = await host.open({ clientId: "c1", text: "Why?", span });
+			gone = ["d".repeat(40)];
+			missingFails = true;
+			const q = await host.sessionNext(await approve());
+			expect(q?.thread).toBe(x.id);
+			expect(missingAsked).toHaveLength(1);
+			expect(q?.envelope.notice).toBeUndefined();
 		});
 
 		it("an agent message's posted comment blocks reach the envelope as { block, text } (CAR-83)", async () => {
