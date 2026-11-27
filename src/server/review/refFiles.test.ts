@@ -86,6 +86,14 @@ describe("tipFromFiles", () => {
 		const ref = "refs/crb/sym";
 		run(bare, "symbolic-ref", ref, "refs/heads/main");
 		expect(await tipFromFiles(bare, ref)).toBeUndefined();
+		// Never a path out of refs/crb.
+		for (const bad of [
+			"refs/crb/../../config",
+			"refs/heads/main",
+			"refs/crb//x",
+		]) {
+			expect(await tipFromFiles(bare, bad), bad).toBeUndefined();
+		}
 		// Not a repository it knows the layout of.
 		expect(await tipFromFiles(join(tmp, "nowhere"), ref)).toBeUndefined();
 		// A reftable repository.

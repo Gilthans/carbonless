@@ -90,7 +90,7 @@ const headingRuns = new Map<string, Promise<GitHunkHeading[][] | null>>();
 export function clearSnapshotCaches(): void {
 	blobCache.clear();
 	nameCache.clear();
-	closeCatFiles();
+	void closeCatFiles();
 	headingRuns.clear();
 }
 

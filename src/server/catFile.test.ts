@@ -36,8 +36,12 @@ const fx = createGitFixture([
 		binary: { "big.bin": big },
 	},
 ]);
-afterAll(() => fx.cleanup());
 afterEach(() => closeCatFiles());
+afterAll(async () => {
+	// Windows keeps a running process's directory: gone first.
+	await closeCatFiles();
+	fx.cleanup();
+});
 const [commit = ""] = fx.shas;
 const git = (...args: string[]) =>
 	execFileSync("git", args, {
@@ -113,7 +117,8 @@ describe("catFile", () => {
 	it("fails the reads out when its process dies, and starts another for the next", async () => {
 		await readBlob(fx.path, `${commit}:a.txt`);
 		const pending = readBlob(fx.path, `${commit}:big.bin`);
-		closeCatFiles();
+		const closed = closeCatFiles();
+		await closed;
 		await expect(pending).rejects.toThrow(GitError);
 		expect(catFileCount()).toBe(0);
 		expect((await readBlob(fx.path, `${commit}:a.txt`)).toString()).toBe(

@@ -1,5 +1,5 @@
 import { readFile, stat } from "node:fs/promises";
-import { join } from "node:path";
+import { join, resolve, sep } from "node:path";
 
 /*
  * A ref's tip read off git's own files (CAR-320): a loose ref file, else
@@ -18,6 +18,10 @@ import { join } from "node:path";
  */
 
 const OID = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
+
+/** A crb ref name this reads (RefStore checks it too): never a path out of refs/crb. */
+const CRB_REF =
+	/^refs\/crb\/(?:[A-Za-z0-9_-][A-Za-z0-9._-]*\/)*[A-Za-z0-9_-][A-Za-z0-9._-]*$/;
 
 /** Each repo's git directory with a files backend, or null (ask git). */
 const gitDirs = new Map<string, Promise<string | null>>();
@@ -66,11 +70,15 @@ export async function tipFromFiles(
 	repo: string,
 	ref: string,
 ): Promise<string | null | undefined> {
+	if (!CRB_REF.test(ref) || ref.includes("..")) return undefined;
 	try {
 		const dir = await gitDirOf(repo);
 		if (!dir) return undefined;
+		const root = resolve(dir, "refs", "crb");
+		const file = resolve(dir, ref);
+		if (!file.startsWith(root + sep)) return undefined;
 		try {
-			const loose = (await readFile(join(dir, ref), "utf8")).trim();
+			const loose = (await readFile(file, "utf8")).trim();
 			return OID.test(loose) ? loose : undefined;
 		} catch (error) {
 			if (!missing(error)) return undefined;

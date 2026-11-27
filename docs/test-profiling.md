@@ -243,7 +243,7 @@ with the background work it sets off (settled before the next step).
   a restart (the clone and a started review, nothing in memory) and a
   reload, with their shapes (`git diff ×3`, `gh api graphql ×6`).
   `--calls` adds every command line.
-- `src/server/spawnCounts.test.ts` runs it at 6 files / 18 threads and at
+- `src/server/spawnCounts.test.ts` runs it at 15 files / 15 threads and at
   4x that, and fails when any step's count differs: a process per file,
   thread or commit shows up there.
 

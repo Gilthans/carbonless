@@ -56,12 +56,19 @@ class CatFile {
 	#stderr = "";
 	#dead = false;
 	#idle: ReturnType<typeof setTimeout> | undefined;
+	/** Settles once its process has exited (Windows holds its directory till then). */
+	readonly exited: Promise<void>;
 
 	constructor(
 		repo: string,
 		private readonly onExit: () => void,
 	) {
 		this.#child = spawnLongGit(repo, ["cat-file", "-z", "--batch"]);
+		this.exited = new Promise((resolve) => {
+			this.#child.on("close", () => resolve());
+			// Never started: no exit to wait for.
+			this.#child.on("error", () => resolve());
+		});
 		this.#child.stdout?.on("data", (chunk: Buffer) => {
 			this.#chunks.push(chunk);
 			this.#size += chunk.length;
@@ -150,6 +157,8 @@ class CatFile {
 	#fail(message: string): void {
 		if (this.#dead) return;
 		this.#dead = true;
+		ending.add(this.exited);
+		void this.exited.then(() => ending.delete(this.exited));
 		clearTimeout(this.#idle);
 		this.onExit();
 		if (!this.#child.killed && this.#child.exitCode === null) {
@@ -247,6 +256,8 @@ class CatFile {
 }
 
 const processes = new Map<string, CatFile>();
+/** Processes ended (idle, failed, closed) that haven't exited yet. */
+const ending = new Set<Promise<void>>();
 
 /** The clone's process, started if none runs. */
 function processOf(repo: string): CatFile {
@@ -318,10 +329,16 @@ export async function readBlob(
 	return object.content;
 }
 
-/** Ends every clone's process (a reset, tests); the next read starts one. */
-export function closeCatFiles(): void {
-	for (const p of [...processes.values()]) p.close();
+/**
+ * Ends every clone's process (a reset, tests); the next read starts one.
+ * Settles once they have exited: on Windows a running process keeps its
+ * clone's directory from being removed.
+ */
+export async function closeCatFiles(): Promise<void> {
+	const all = [...processes.values()];
 	processes.clear();
+	for (const p of all) p.close();
+	await Promise.all([...ending]);
 }
 
 /** How many clones have a process up (tests). */
