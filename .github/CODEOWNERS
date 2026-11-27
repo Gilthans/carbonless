@@ -8,6 +8,8 @@
 /scripts/rc-fixup.d.mts @Gilthans
 /scripts/ci-passed.mjs @Gilthans
 /scripts/ci-passed.d.mts @Gilthans
+/scripts/hotfix-prs.mjs @Gilthans
+/scripts/hotfix-prs.d.mts @Gilthans
 /scripts/release-gate.mjs @Gilthans
 /scripts/release-gate.d.mts @Gilthans
 /scripts/pack-smoke.mjs @Gilthans

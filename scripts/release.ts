@@ -7,7 +7,8 @@
 //                                             installs it as the global crb; the last stdout line
 //                                             is the tarball's path
 //   pnpm release status                       master's next version, rc and latest on npm and in tags,
-//                                             and the withdrawn versions
+//                                             the withdrawn versions, and the hotfixes whose fix
+//                                             master still lacks
 //   pnpm release promote [<rc tag>] [--next patch|minor|major]
 //                                             collects the release's notes for exactly <rc tag>'s
 //                                             range from Linear (refusing while any is missing),
@@ -16,6 +17,14 @@
 //                                             it), packed as X.Y.Z with those notes, the tarball
 //                                             smoke-tested, and staged on npm (hidden until
 //                                             approved); prints the run's URL
+//   pnpm release hotfix [vX.Y.Z]              ON THE OWNER'S WORD: creates hotfix/<next patch> on
+//                                             origin at the newest release tag's commit (the only
+//                                             one accepted; after a withdraw, the withdrawn
+//                                             release; a version npm has with no tag is skipped);
+//                                             the fix goes in as a PR into it
+//   pnpm release promote --hotfix X.Y.Z       ON THE OWNER'S WORD: promotes hotfix/X.Y.Z's head
+//                                             as promote does an RC (CI passed on the head, its
+//                                             PRs' notes from Linear); no RC on rc first
 //   pnpm release publish [<run-id>]
 //                                             THE OWNER ONLY: checks a promote run's staged
 //                                             tarball (default: the newest run) and approves it
@@ -56,23 +65,25 @@
 // Steps the workflows run (not for people): ci:rc-version, ci:set-version,
 // ci:check-publish, ci:write-version, ci:promote-plan, ci:manifest,
 // ci:check-run, ci:finish-plan, ci:notes-input, ci:published-notes,
-// ci:changelog, ci:release-body, ci:bump, ci:pr-note. (CI passed on the
+// ci:changelog, ci:release-body, ci:bump, ci:pr-note, ci:port. (CI passed on the
 // RC's commit: scripts/ci-passed.mjs, with no dependencies.) They print KEY=value
 // lines for $GITHUB_OUTPUT and read the checkout's tags. (The rc fix-up is
 // scripts/rc-fixup.mjs, with no dependencies, for the jobs that hold npm's
 // OIDC credential.)
 import { execFileSync, spawn } from "node:child_process";
-import {
-	existsSync,
-	mkdirSync,
-	mkdtempSync,
-	readFileSync,
-	writeFileSync,
-} from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { createInterface } from "node:readline/promises";
 import { NOTE_KINDS, type NoteKind } from "../src/shared/releaseNotes.js";
+import {
+	hotfixStart,
+	hotfixStatus,
+	missingOnMaster,
+	portPr,
+	promoteHotfix,
+	resolveHotfix,
+} from "./release-hotfix.js";
 import {
 	bump,
 	checkPromoteRun,
@@ -106,6 +117,7 @@ import {
 	capShipped,
 	finishNotes,
 	formatNotesFile,
+	hotfixNotes,
 	type Linear,
 	LOCAL_NOTES_GIT_PATH,
 	linearClient,
@@ -134,6 +146,7 @@ const runner: Runner = (cmd, args, opts) =>
 	new Promise((resolve, reject) => {
 		const child = spawn(cmd, args, {
 			cwd: opts?.cwd,
+			env: opts?.env ? { ...process.env, ...opts.env } : undefined,
 			stdio: ["ignore", "pipe", "pipe"],
 		});
 		let stdout = "";
@@ -181,7 +194,7 @@ const publishIo: PublishIo = {
 
 function usage(): never {
 	console.error(
-		'usage: pnpm release local [--out <dir>] [--no-install] | status | promote [<rc tag>] [--next patch|minor|major] | publish [<run-id>] | withdraw <version>... "<why>" [--deprecate-only] | next <patch|minor|major|X.Y.Z> | merge-ok <pr> | note <CAR-N> "<text>" [--kind new|improved|fixed] | note <CAR-N> --none "<why>" | notes [X.Y.Z] [--pr] | notes check',
+		'usage: pnpm release local [--out <dir>] [--no-install] | status | hotfix [vX.Y.Z] | promote [<rc tag>] [--next patch|minor|major] | promote --hotfix X.Y.Z | publish [<run-id>] | withdraw <version>... "<why>" [--deprecate-only] | next <patch|minor|major|X.Y.Z> | merge-ok <pr> | note <CAR-N> "<text>" [--kind new|improved|fixed] | note <CAR-N> --none "<why>" | notes [X.Y.Z] [--pr] | notes check',
 	);
 	process.exit(2);
 }
@@ -222,6 +235,37 @@ async function prFiles(number: number): Promise<string[]> {
 		".[].filename",
 	]);
 	return out.split("\n").filter((f) => f !== "");
+}
+
+/**
+ * docs/changelog.md's section of `version` and its release-notes/X.Y.Z.json
+ * (the published notes, dated) in the checkout at `root`; the PRs from
+ * git, up to `to`. Returns how many PRs.
+ */
+async function writeChangelog(
+	version: string,
+	to: string,
+	published: string,
+	root: string,
+): Promise<number> {
+	const notes = readPublishedNotes(published, version);
+	const range = await releaseRange(io, version, to);
+	const date = io.now().toISOString().slice(0, 10);
+	const file = join(root, "docs/changelog.md");
+	// Read once (no exists-then-read race): none yet is an empty changelog.
+	let existing: string | null = null;
+	try {
+		existing = readFileSync(file, "utf8");
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+	}
+	mkdirSync(dirname(file), { recursive: true });
+	const section = `## ${version} (${date})\n\n${renderNotesBody(notes, range)}`;
+	writeFileSync(file, withChangelogSection(existing, version, section));
+	const notesFile = join(root, notesPath(version));
+	mkdirSync(dirname(notesFile), { recursive: true });
+	writeFileSync(notesFile, formatNotesFile({ ...notes, date }));
+	return range.prs.length;
 }
 
 /** package.json's version in `dir`. */
@@ -300,7 +344,13 @@ async function main(argv: string[]) {
 		case "status":
 			await status(io);
 			await withdrawnStatus(io);
+			await hotfixStatus(io);
 			return;
+		case "hotfix": {
+			if (rest.length > 1 || rest[0]?.startsWith("-")) usage();
+			await hotfixStart(io, rest[0]);
+			return;
+		}
 		case "withdraw": {
 			// withdraw <version>... "<why>" [--deprecate-only]: the last
 			// positional is the reason.
@@ -321,12 +371,22 @@ async function main(argv: string[]) {
 		case "promote": {
 			let tag: string | undefined;
 			let kind: Kind = "minor";
+			let hotfix: string | undefined;
 			for (let i = 0; i < rest.length; i++) {
 				const a = rest[i] ?? "";
 				if (a === "--next") kind = kindArg(rest[++i]);
 				else if (a.startsWith("--next=")) kind = kindArg(a.slice(7));
+				else if (a === "--hotfix") hotfix = rest[++i] ?? usage();
 				else if (!tag && !a.startsWith("-")) tag = a;
 				else usage();
+			}
+			if (hotfix !== undefined) {
+				// A hotfix has no RC tag and opens no "next" PR.
+				if (tag || rest.some((a) => a.startsWith("--next"))) usage();
+				await promoteHotfix(io, hotfix, (branch, sha, release) =>
+					hotfixNotes(io, release, branch, sha, findLinear()),
+				);
+				return;
 			}
 			await promote(io, tag, kind, (rc, release) =>
 				promoteNotes(io, release, rc, findLinear()),
@@ -345,14 +405,16 @@ async function main(argv: string[]) {
 			return;
 		}
 		case "ci:manifest": {
-			// ci:manifest <tgz> <release> <rc tag> <sha> <next>: promote's manifest.json.
-			const [tgz, version, tag, sha, nextKind] = rest;
+			// ci:manifest <tgz> <release> <rc tag> <sha> <next> [hotfix/X.Y.Z]:
+			// promote's manifest.json (a hotfix's tag: the release it starts from).
+			const [tgz, version, tag, sha, nextKind, hotfix] = rest;
 			if (!tgz || !version || !tag || !sha || !nextKind) usage();
 			const manifest = parseManifest(
 				JSON.stringify({
 					version,
 					tag,
 					sha,
+					...(hotfix ? { hotfix } : {}),
 					...tarballDigests(readFileSync(tgz)),
 					next: nextKind,
 					tarball: tgz.split("/").at(-1),
@@ -385,6 +447,54 @@ async function main(argv: string[]) {
 			console.log(`next=${manifest.next}`);
 			console.log(`push_tag=${plan.pushTag}`);
 			console.log(`next_pr=${plan.nextPr}`);
+			console.log(`hotfix=${plan.hotfix ?? ""}`);
+			return;
+		}
+		case "ci:port": {
+			// ci:port <X.Y.Z> <worktree> <notes.json> <out dir>: the hotfix
+			// port PR (CAR-212): a worktree of master on hotfix-port/X.Y.Z
+			// with each of vX.Y.Z's PRs master lacks that applies cleanly
+			// (git cherry-pick -x), and a commit of the changelog section and
+			// release-notes/X.Y.Z.json; the PR's title and body in <out dir>
+			// (title, body.md). Prints the summary (markdown). git only.
+			const [version, worktree, published, out] = rest;
+			const v = parseVersion(version ?? "");
+			if (
+				!version ||
+				!v ||
+				v.rc !== undefined ||
+				!worktree ||
+				!published ||
+				!out
+			)
+				usage();
+			const items = await missingOnMaster(io, `v${version}`, {
+				worktree,
+				keep: `hotfix-port/${version}`,
+			});
+			const to = (
+				await must(io, "git", ["rev-parse", `refs/tags/v${version}^{commit}`])
+			).trim();
+			await writeChangelog(version, to, published, worktree);
+			const paths = ["docs/changelog.md", notesPath(version)];
+			await must(io, "git", ["add", "--", ...paths], { cwd: worktree });
+			await must(
+				io,
+				"git",
+				[
+					"commit",
+					"-m",
+					`Hotfix ${version}: its changelog and release notes`,
+					"--",
+					...paths,
+				],
+				{ cwd: worktree },
+			);
+			const pr = portPr(version, items);
+			mkdirSync(out, { recursive: true });
+			writeFileSync(join(out, "title"), pr.title);
+			writeFileSync(join(out, "body.md"), `${pr.body}\n`);
+			console.log(`### Port of ${version} to master\n\n${pr.body}`);
 			return;
 		}
 		case "next": {
@@ -557,9 +667,26 @@ async function main(argv: string[]) {
 			return;
 		}
 		case "ci:promote-plan": {
-			const plan = await resolvePromote(io, rest[0] ?? "");
+			// ci:promote-plan <rc tag | ""> [hotfix/X.Y.Z | ""]: what promote
+			// builds (ref) and what promote-ci checked (source: the RC tag,
+			// or the hotfix branch).
+			const [rc = "", hotfix = ""] = rest;
+			if (hotfix !== "") {
+				if (rc.trim() !== "") usage();
+				const m = /^hotfix\/(\d+\.\d+\.\d+)$/.exec(hotfix);
+				if (!m?.[1]) throw new Error(`not a hotfix branch: ${hotfix}`);
+				const plan = await resolveHotfix(io, m[1]);
+				console.log(`tag=${plan.tag}`);
+				console.log(`release=${plan.release}`);
+				console.log(`ref=refs/remotes/origin/${plan.branch}`);
+				console.log(`source=${plan.branch}`);
+				return;
+			}
+			const plan = await resolvePromote(io, rc);
 			console.log(`tag=${plan.tag}`);
 			console.log(`release=${plan.release}`);
+			console.log(`ref=refs/tags/${plan.tag}`);
+			console.log(`source=${plan.tag}`);
 			return;
 		}
 		case "ci:changelog": {
@@ -570,18 +697,8 @@ async function main(argv: string[]) {
 			// there: what was published wins).
 			const [version, to, published] = rest;
 			if (!version || !to || !published) usage();
-			const notes = readPublishedNotes(published, version);
-			const range = await releaseRange(io, version, to);
-			const date = io.now().toISOString().slice(0, 10);
-			const file = join(process.cwd(), "docs/changelog.md");
-			const existing = existsSync(file) ? readFileSync(file, "utf8") : null;
-			mkdirSync(dirname(file), { recursive: true });
-			const section = `## ${version} (${date})\n\n${renderNotesBody(notes, range)}`;
-			writeFileSync(file, withChangelogSection(existing, version, section));
-			const notesFile = join(process.cwd(), notesPath(version));
-			mkdirSync(dirname(notesFile), { recursive: true });
-			writeFileSync(notesFile, formatNotesFile({ ...notes, date }));
-			console.log(`prs=${range.prs.length}`);
+			const prs = await writeChangelog(version, to, published, process.cwd());
+			console.log(`prs=${prs}`);
 			return;
 		}
 		case "ci:bump": {

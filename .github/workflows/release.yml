@@ -13,7 +13,16 @@
 #     publish`). The run's artifact `release` holds the tarball and its
 #     manifest. Before the package's first publish nothing is staged: the
 #     owner publishes that one.
+#     With the input `hotfix` (`pnpm release promote --hotfix X.Y.Z`,
+#     CAR-212): the head of branch hotfix/X.Y.Z instead of an RC (CI must
+#     have passed on it; it must be on top of the newest release tag, of
+#     which X.Y.Z is the next patch), packed by this file and master's
+#     scripts: a hotfix branch's own (old) workflows never publish. No RC of
+#     a hotfix is published first; the `npm` environment stays master-only.
 #   - mode=fixup (release-finish): `rc` up to a new release, when behind.
+#
+# A push to hotfix/* never makes an RC: the workflow_run trigger takes
+# master's CI runs only, and rc-build publishes only master's tip.
 #
 # npm: Trusted Publishing (OIDC), no token; npm adds provenance (the repo is
 # public). Only the jobs in the GitHub environment `npm` (master only) get
@@ -28,6 +37,7 @@
 name: Release
 run-name: >-
   ${{ github.event_name == 'workflow_run' && 'Publish RC' ||
+  inputs.mode == 'promote' && inputs.hotfix != '' && format('Promote {0}', inputs.hotfix) ||
   inputs.mode == 'promote' && format('Promote {0} (next {1})', inputs.rc || 'the newest RC', inputs.next) ||
   format('rc up to {0}', inputs.version) }}
 
@@ -54,6 +64,10 @@ on:
         default: minor
       version:
         description: "fixup: the release just published (X.Y.Z)"
+        required: false
+        default: ""
+      hotfix:
+        description: "promote: a hotfix branch (hotfix/X.Y.Z) instead of an RC; empty = an RC"
         required: false
         default: ""
       notes:
@@ -323,10 +337,12 @@ jobs:
     permissions:
       contents: read
       actions: read # CI's runs on the RC's commit
+      pull-requests: read # a hotfix's PRs (only merged PRs enter it)
     timeout-minutes: 5
     env:
       # Inputs reach the shell as variables, never pasted into scripts.
       RC_INPUT: ${{ inputs.rc }}
+      HOTFIX_INPUT: ${{ inputs.hotfix }}
     outputs:
       tag: ${{ steps.rc.outputs.tag }}
       sha: ${{ steps.rc.outputs.sha }}
@@ -334,13 +350,29 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           ref: master
-          fetch-depth: 0 # every tag
+          fetch-depth: 0 # every tag, and every branch (a hotfix's)
           persist-credentials: false
       - name: The RC
         # git only. promote-check plans it again with release.ts and fails
-        # unless it is this tag at this commit.
+        # unless it is this tag (or hotfix branch) at this commit.
         id: rc
         run: |
+          if [[ -n "$HOTFIX_INPUT" ]]; then
+            [[ "$HOTFIX_INPUT" =~ ^hotfix/[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "::error::not a hotfix branch (hotfix/X.Y.Z): '$HOTFIX_INPUT'"; exit 1; }
+            [[ -z "$RC_INPUT" ]] || { echo "::error::an RC tag or a hotfix branch, not both"; exit 1; }
+            sha="$(git rev-parse --verify --quiet "refs/remotes/origin/$HOTFIX_INPUT^{commit}")" || { echo "::error::no branch $HOTFIX_INPUT"; exit 1; }
+            echo "tag=$HOTFIX_INPUT" >>"$GITHUB_OUTPUT"
+            echo "sha=$sha" >>"$GITHUB_OUTPUT"
+            echo "RC_SHA=$sha" >>"$GITHUB_ENV"
+            echo "BRANCH=$HOTFIX_INPUT" >>"$GITHUB_ENV"
+            # The newest release tag below it (hotfix-prs.mjs's range start;
+            # promote-check checks it is the newest release, of its line).
+            ver="v${HOTFIX_INPUT#hotfix/}"
+            start="$({ git tag -l 'v*' | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' || true; echo "$ver"; } | sort -uV | grep -B1 -x "$ver" | head -1)"
+            [[ "$start" != "$ver" ]] || { echo "::error::no release below $ver"; exit 1; }
+            echo "START=$start" >>"$GITHUB_ENV"
+            exit 0
+          fi
           tag="$RC_INPUT"
           if [[ -z "$tag" ]]; then
             tag="$(git tag -l 'v*-rc.*' --sort=-v:refname | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+-rc\.[0-9]+$' | head -1 || true)"
@@ -355,8 +387,17 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh api "repos/$GITHUB_REPOSITORY/actions/workflows/ci.yml/runs?head_sha=$RC_SHA&event=push&branch=master&per_page=100" \
-            >"$RUNNER_TEMP/ci-runs.json"
+          if [[ -n "${BRANCH:-}" ]]; then
+            # A hotfix branch: its pushes or dispatches (ci-passed.mjs checks).
+            gh api "repos/$GITHUB_REPOSITORY/actions/workflows/ci.yml/runs?head_sha=$RC_SHA&per_page=100" \
+              >"$RUNNER_TEMP/ci-runs.json"
+            # Its merged PRs, and the rules protecting it (hotfix-prs.mjs judges).
+            gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/pulls?state=closed&base=$BRANCH&per_page=100" >"$RUNNER_TEMP/pulls.json"
+            gh api "repos/$GITHUB_REPOSITORY/rules/branches/${BRANCH//\//%2F}" >"$RUNNER_TEMP/rules.json"
+          else
+            gh api "repos/$GITHUB_REPOSITORY/actions/workflows/ci.yml/runs?head_sha=$RC_SHA&event=push&branch=master&per_page=100" \
+              >"$RUNNER_TEMP/ci-runs.json"
+          fi
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version-file: .nvmrc
@@ -365,9 +406,16 @@ jobs:
         # (a re-run that passed counts). No dependencies, no token. Only its
         # verdict passes: an exit 0 that says nothing doesn't.
         run: |
-          out="$(node scripts/ci-passed.mjs "$RC_SHA" "$RUNNER_TEMP/ci-runs.json")"
+          out="$(node scripts/ci-passed.mjs "$RC_SHA" "$RUNNER_TEMP/ci-runs.json" ${BRANCH:+"$BRANCH"})"
           echo "$out"
           [[ "$out" == "CI passed on $RC_SHA ("* ]] || { echo "::error::ci-passed.mjs gave no verdict for $RC_SHA"; exit 1; }
+      - name: Only merged PRs enter a hotfix
+        # Every first-parent commit from the start tag to the head is the
+        # merge of a PR merged into the branch at that commit, and the
+        # Master ruleset protects the branch (setup step 12). No
+        # dependencies, no token.
+        if: env.BRANCH != ''
+        run: node scripts/hotfix-prs.mjs "$BRANCH" "$START" "$RC_SHA" "$RUNNER_TEMP/pulls.json" "$RUNNER_TEMP/rules.json"
 
   promote-check:
     needs: promote-ci
@@ -383,15 +431,16 @@ jobs:
     env:
       # Inputs reach the shell as variables, never pasted into scripts.
       RC_INPUT: ${{ inputs.rc }}
+      HOTFIX_INPUT: ${{ inputs.hotfix }}
       NEXT_INPUT: ${{ inputs.next }}
-      # The RC promote-ci found CI passed on.
+      # The RC (or hotfix branch) promote-ci found CI passed on.
       CI_TAG: ${{ needs.promote-ci.outputs.tag }}
       CI_SHA: ${{ needs.promote-ci.outputs.sha }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           ref: master
-          fetch-depth: 0 # every tag; the RC must be in master's history
+          fetch-depth: 0 # every tag and branch; the RC must be in master's history
           persist-credentials: false
       - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v4.4.0
         with:
@@ -399,22 +448,26 @@ jobs:
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version-file: .nvmrc
-          cache: pnpm
+          # No cache: this job installs a hotfix branch's tree, which must
+          # not write the cache master's jobs restore.
       - run: pnpm install --frozen-lockfile
       - name: Plan
         id: plan
-        run: pnpm exec tsx scripts/release.ts ci:promote-plan "$RC_INPUT" | tee -a "$GITHUB_OUTPUT"
+        # A hotfix: the branch's head, after its start tag (the newest
+        # release; the branch's version its next patch).
+        run: pnpm exec tsx scripts/release.ts ci:promote-plan "$RC_INPUT" "$HOTFIX_INPUT" | tee -a "$GITHUB_OUTPUT"
       - name: Check out the RC
         env:
-          TAG: ${{ steps.plan.outputs.tag }}
+          REF: ${{ steps.plan.outputs.ref }}
+          SOURCE: ${{ steps.plan.outputs.source }}
         run: |
           echo "RC_DIR=$RUNNER_TEMP/rc" >>"$GITHUB_ENV"
           RC_DIR="$RUNNER_TEMP/rc"
-          git worktree add --detach "$RC_DIR" "refs/tags/$TAG"
-          sha="$(git rev-parse "refs/tags/$TAG^{commit}")"
-          # The RC promote-ci checked: the same tag at the same commit.
-          if [[ "$TAG" != "$CI_TAG" || "$sha" != "$CI_SHA" ]]; then
-            echo "::error::planned $TAG at $sha, but promote-ci checked $CI_TAG at $CI_SHA"
+          git worktree add --detach "$RC_DIR" "$REF"
+          sha="$(git rev-parse "$REF^{commit}")"
+          # The RC promote-ci checked: the same tag (or hotfix branch) at the same commit.
+          if [[ "$SOURCE" != "$CI_TAG" || "$sha" != "$CI_SHA" ]]; then
+            echo "::error::planned $SOURCE at $sha, but promote-ci checked $CI_TAG at $CI_SHA"
             exit 1
           fi
           echo "RC_SHA=$sha" >>"$GITHUB_ENV"
@@ -472,7 +525,7 @@ jobs:
           TAG: ${{ steps.plan.outputs.tag }}
         run: |
           out="$RUNNER_TEMP/release"
-          pnpm exec tsx scripts/release.ts ci:manifest "$TGZ" "$RELEASE" "$TAG" "$RC_SHA" "$NEXT_INPUT" >"$out/manifest.json"
+          pnpm exec tsx scripts/release.ts ci:manifest "$TGZ" "$RELEASE" "$TAG" "$RC_SHA" "$NEXT_INPUT" ${HOTFIX_INPUT:+"$HOTFIX_INPUT"} >"$out/manifest.json"
           node -e '
             const m = require(process.argv[1]);
             if (m.sha256 !== process.argv[2]) {
@@ -480,14 +533,14 @@ jobs:
               process.exit(1);
             }' "$out/manifest.json" "$PACKED_SHA256"
           {
-            echo "### Ready to publish carbonless-review@$RELEASE from $TAG"
+            echo "### Ready to publish carbonless-review@$RELEASE from ${HOTFIX_INPUT:-$TAG}"
             echo
             echo "| | |"
             echo "|---|---|"
             node -e '
               const m = require(process.argv[1]);
-              for (const k of ["version", "tag", "sha", "sha256", "integrity", "next", "tarball"])
-                console.log(`| ${k} | \`${m[k]}\` |`);' "$out/manifest.json"
+              for (const k of ["version", "tag", "hotfix", "sha", "sha256", "integrity", "next", "tarball"])
+                if (m[k] !== undefined) console.log(`| ${k} | \`${m[k]}\` |`);' "$out/manifest.json"
             echo
             echo "CI passed on its commit, and this tarball passed the smoke test; the stage job stages it on npm for the owner's approval."
           } >>"$GITHUB_STEP_SUMMARY"

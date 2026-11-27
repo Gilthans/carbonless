@@ -2016,7 +2016,7 @@ describe("release-finish: each step only once", () => {
 			"inputs.mode == 'promote' && format('Promote {0} (next {1})', inputs.rc || 'the newest RC', inputs.next)",
 		);
 		expect(promote).toContain(
-			'for (const k of ["version", "tag", "sha", "sha256", "integrity", "next", "tarball"])',
+			'for (const k of ["version", "tag", "hotfix", "sha", "sha256", "integrity", "next", "tarball"])',
 		);
 		expect(promote).toContain("pnpm release publish $GITHUB_RUN_ID");
 		// A release is only staged (latest, fixed at stage time); never published.
@@ -2111,7 +2111,9 @@ describe("release-finish: each step only once", () => {
 				.exec(text)?.[1]
 				?.replace(/ +#.*$/gm, "");
 		// Least privilege: only promote-ci reads CI's runs.
-		expect(permissions(ci)).toBe("      contents: read\n      actions: read\n");
+		expect(permissions(ci)).toBe(
+			"      contents: read\n      actions: read\n      pull-requests: read\n",
+		);
 		expect(permissions(job)).toBe("      contents: read\n");
 		expect(job).toMatch(/^ {4}needs: promote-ci$/m);
 		/** Each text's index in `text`, which must be increasing. */
@@ -2158,7 +2160,7 @@ describe("release-finish: each step only once", () => {
 		inOrder(job, [
 			"ci:promote-plan",
 			'git worktree add --detach "$RC_DIR"',
-			'if [[ "$TAG" != "$CI_TAG" || "$sha" != "$CI_SHA" ]]; then',
+			'if [[ "$SOURCE" != "$CI_TAG" || "$sha" != "$CI_SHA" ]]; then',
 			"name: Install the RC",
 			"ci:set-version",
 			'pnpm pack --pack-destination "$out"',
@@ -2577,7 +2579,7 @@ esac
 		// After the RC it checks is planned and pinned, before anything is built.
 		expect(check.indexOf("ci:notes-input")).toBeGreaterThan(
 			check.indexOf(
-				'if [[ "$TAG" != "$CI_TAG" || "$sha" != "$CI_SHA" ]]; then',
+				'if [[ "$SOURCE" != "$CI_TAG" || "$sha" != "$CI_SHA" ]]; then',
 			),
 		);
 		expect(check.indexOf("ci:notes-input")).toBeLessThan(
@@ -2630,7 +2632,12 @@ esac
 			expect(at(before), before).toBeGreaterThan(-1);
 			expect(at(before), before).toBeLessThan(at("The GitHub release's text"));
 		}
-		expect(at("GitHub release")).toBe(at("Summary") - 1);
+		// Then only a hotfix's port PR (after the release: a refused push
+		// never holds it up), and the summary.
+		expect(at("GitHub release")).toBe(at("Summary") - 2);
+		expect(at("A hotfix's fix and changelog to master (the port PR)")).toBe(
+			at("Summary") - 1,
+		);
 		// The next PR step runs the repository's code without the token or
 		// git's auth header.
 		const nextPr = finish[at("Next version and changelog PR")] ?? "";

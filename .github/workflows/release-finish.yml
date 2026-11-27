@@ -9,6 +9,13 @@
 # crbReleaseNotesFile (CAR-242), never a file at the RC's commit. Every step
 # skips what is already done, so it can run again after a failure. No npm
 # credentials at all.
+#
+# A hotfix (the manifest's `hotfix`, CAR-212): the tag goes on the hotfix
+# branch's head; rc moves only when older than the hotfix (the fixup's
+# rule); no "next" PR, so master is never frozen; instead the port PR
+# (hotfix-port/X.Y.Z) brings the fixes master lacks (cherry-picked; the
+# ones that don't apply are listed for a port by hand), the changelog
+# section and release-notes/X.Y.Z.json to master.
 # docs/releasing.md.
 name: Release finish
 run-name: Finish release ${{ inputs.version }}
@@ -24,8 +31,8 @@ on:
         required: true
 
 permissions:
-  contents: write # the vX.Y.Z tag and the next/* branch
-  pull-requests: write # the "next" PR
+  contents: write # the vX.Y.Z tag, the next/* and hotfix-port/* branches
+  pull-requests: write # the "next" PR, a hotfix's port PR
   actions: write # the promote run's artifact; starting release.yml's fixup; rerunning PRs' release gate
 
 concurrency:
@@ -56,7 +63,7 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           ref: master
-          fetch-depth: 0 # every tag, and history for the changelog
+          fetch-depth: 0 # every tag and branch (a hotfix's), and history for the changelog
           persist-credentials: false
       - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v4.4.0
         with:
@@ -82,6 +89,7 @@ jobs:
         id: plan
         run: pnpm exec tsx scripts/release.ts ci:finish-plan "$VERSION" "$RUNNER_TEMP/release/manifest.json" | tee -a "$GITHUB_OUTPUT"
       - name: Tag
+        id: tag
         if: steps.plan.outputs.push_tag == 'true'
         env:
           TOKEN: ${{ github.token }}
@@ -188,10 +196,51 @@ jobs:
           else
             gh release create "v$VERSION" --repo "$GITHUB_REPOSITORY" --verify-tag --title "v$VERSION" --notes-file "$RUNNER_TEMP/release-body.md"
           fi
+      - name: A hotfix's fix and changelog to master (the port PR)
+        # git (cherry-picks onto master in a worktree) and the published
+        # notes; the repository's code runs without the token or git's auth
+        # header. The PR's title and body come from files ci:port wrote
+        # (PR titles from git escaped there), never pasted into the script.
+        # A rerun leaves an existing port branch alone and only opens the PR.
+        # After the GitHub release: a refused push never holds it up.
+        # Not when the tag step failed: ci:port reads vX.Y.Z (a skipped tag
+        # step, already pushed before, is fine).
+        if: ${{ !cancelled() && steps.plan.outputs.hotfix != '' && steps.tag.outcome != 'failure' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          crb_release() { env -u GH_TOKEN -u GIT_CONFIG_COUNT -u GIT_CONFIG_KEY_0 -u GIT_CONFIG_VALUE_0 pnpm exec tsx scripts/release.ts "$@"; }
+          branch="hotfix-port/$VERSION"
+          out="$RUNNER_TEMP/port"
+          crb_release ci:port "$VERSION" "$out/tree" "$RUNNER_TEMP/release-notes.json" "$out" | tee -a "$GITHUB_STEP_SUMMARY"
+          auth="$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)"
+          echo "::add-mask::$auth"
+          export GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=http.https://github.com/.extraheader \
+            GIT_CONFIG_VALUE_0="AUTHORIZATION: basic $auth"
+          if git ls-remote --exit-code --heads origin "$branch" >/dev/null; then
+            echo "$branch is already on origin: not pushed again"
+          elif ! git -C "$out/tree" push origin "HEAD:refs/heads/$branch"; then
+            # GITHUB_TOKEN can't push a change to .github/workflows.
+            {
+              echo "### The port PR wasn't pushed"
+              echo
+              echo "Push it by hand: in a checkout of master, \`git fetch origin --tags\`, cherry-pick each PR above (\`git cherry-pick -x -m 1 <merge>\`) onto a branch \`$branch\`, add v$VERSION's section of its GitHub release to docs/changelog.md, push it and open its PR to master (a close and reopen gives it CI)."
+            } >>"$GITHUB_STEP_SUMMARY"
+            echo "::error::the port branch $branch couldn't be pushed (a workflow file change needs a person's push): see the summary"
+            exit 1
+          fi
+          unset GIT_CONFIG_COUNT GIT_CONFIG_KEY_0 GIT_CONFIG_VALUE_0
+          open="$(gh pr list --head "$branch" --state open --json url --jq '.[0].url // ""')"
+          if [[ -z "$open" ]]; then
+            gh pr create --base master --head "$branch" --title "$(cat "$out/title")" --body-file "$out/body.md"
+          fi
       - name: Summary
+        if: ${{ !cancelled() }}
         env:
           TAG_DONE: ${{ steps.plan.outputs.push_tag == 'true' && 'pushed' || 'already there' }}
-          PR_DONE: ${{ steps.plan.outputs.next_pr == 'true' && 'opened or updated' || 'not needed (master moved on)' }}
+          PR_DONE: ${{ steps.plan.outputs.hotfix != '' && 'none, a hotfix opens the port PR instead' || steps.plan.outputs.next_pr == 'true' && 'opened or updated' || 'not needed (master moved on)' }}
         run: |
           {
             echo "Released carbonless-review@$VERSION on \`latest\` (promote run $RUN)."

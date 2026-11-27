@@ -1,12 +1,14 @@
-# Every PR, push to master, tag and manual run gets the checks and the full
-# Playwright run (desktop + phone). The release-flip workflow chains on
-# `name: CI`: keep it.
+# Every PR, push to master or a hotfix branch, tag and manual run gets the
+# checks and the full Playwright run (desktop + phone). A hotfix's head
+# needs a passing run to be promoted (CAR-212; a branch cut from a tag
+# older than this line runs CI on dispatch only). The release-flip
+# workflow chains on `name: CI`: keep it.
 name: CI
 
 on:
   pull_request:
   push:
-    branches: [master]
+    branches: [master, "hotfix/**"]
     tags: ["v*"]
   workflow_dispatch:
 

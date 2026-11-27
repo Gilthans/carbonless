@@ -1950,6 +1950,52 @@ export async function promoteNotes(
 	const sha = (
 		await must(io, "git", ["rev-parse", `refs/tags/${tag}^{commit}`])
 	).trim();
+	return notesUpTo(io, release, sha, tag, found);
+}
+
+/**
+ * `pnpm release promote --hotfix X.Y.Z` (CAR-212): the hotfix's notes,
+ * as promoteNotes collects an RC's, for exactly its branch's PRs (the
+ * release it starts from up to `sha`, the branch's head on origin).
+ */
+export async function hotfixNotes(
+	io: Io,
+	release: string,
+	branch: string,
+	sha: string,
+	found: { linear: Linear | null; tried: readonly string[] },
+): Promise<string> {
+	if (branch !== `hotfix/${release}` || !/^[0-9a-f]{40}$/.test(sha)) {
+		throw new Error(
+			`not ${release}'s hotfix branch and head: ${branch} ${sha}`,
+		);
+	}
+	await must(io, "git", [
+		"fetch",
+		"origin",
+		`+refs/heads/${branch}:refs/remotes/origin/${branch}`,
+		"--tags",
+	]);
+	const head = (
+		await must(io, "git", [
+			"rev-parse",
+			`refs/remotes/origin/${branch}^{commit}`,
+		])
+	).trim();
+	if (head !== sha) {
+		throw new Error(`${branch} moved on (${head}, not ${sha}): promote again`);
+	}
+	return notesUpTo(io, release, sha, branch, found);
+}
+
+/** promoteNotes and hotfixNotes once the commit is known: `tag` names it (an RC tag or a hotfix branch). */
+async function notesUpTo(
+	io: Io,
+	release: string,
+	sha: string,
+	tag: string,
+	found: { linear: Linear | null; tried: readonly string[] },
+): Promise<string> {
 	const path = notesPath(release);
 	const { linear } = found;
 	if (!linear) {
