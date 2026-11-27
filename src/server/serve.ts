@@ -11,6 +11,7 @@ import {
 	rotateAccessKey,
 	writeServerState,
 } from "./serverState.js";
+import { startOwnLog } from "./telemetry/ownLog.js";
 import { startMailboxTimer } from "./telemetry/schedule.js";
 import { TEST_HOOKS_ENV, testHookToken } from "./testHooks.js";
 import { tracer } from "./trace.js";
@@ -56,6 +57,10 @@ export async function startServer(opts: {
 }): Promise<StartedServer> {
 	const log = opts.log ?? (() => {});
 	const { config, problems } = await readConfig();
+	// While the mailbox is on, what crb serve writes to stderr also goes to
+	// serve-own.log, however it was started (telemetry/ownLog.ts).
+	let mailboxOn = config.telemetry !== undefined;
+	const stopOwnLog = startOwnLog({ enabled: () => mailboxOn });
 	for (const problem of problems) log(`config: ${problem}`);
 	const host = opts.host ?? config.serve.host;
 	const port = opts.port ?? config.serve.port;
@@ -116,6 +121,7 @@ export async function startServer(opts: {
 	try {
 		await app.listen({ port, host });
 	} catch (error) {
+		stopOwnLog();
 		await registry.closeAll();
 		if ((error as NodeJS.ErrnoException).code === "EADDRINUSE") {
 			throw new Error(`Port ${port} on ${host} is already in use`);
@@ -147,6 +153,9 @@ export async function startServer(opts: {
 		readConfig,
 		traceDir: () => tracer().dir,
 		log,
+		onState: (on) => {
+			mailboxOn = on;
+		},
 	});
 
 	// Asks npm in the background: never delays or fails a start.
@@ -161,6 +170,7 @@ export async function startServer(opts: {
 			closed ??= (async () => {
 				updater.stop();
 				await mailbox.stop();
+				stopOwnLog();
 				await removeServerState();
 				await app.close();
 				// Their background reads of GitHub and the clones stop with them.

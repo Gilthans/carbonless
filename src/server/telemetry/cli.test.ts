@@ -1,4 +1,4 @@
-import { execFileSync, spawnSync } from "node:child_process";
+import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -132,6 +132,52 @@ describe("crb telemetry", () => {
 		);
 		expect(defaultDevice("DESKTOP-AB12")).toBe("desktop-ab12");
 		expect(defaultDevice("---")).toBe("device");
+	});
+
+	it("a crb serve started with no log file of its own still sends its log", async () => {
+		// Started by hand (or systemd): its output goes to a pipe, not serve.log.
+		rmSync(join(stateDir(), "serve.log"), { force: true });
+		mkdirSync(configDir(), { recursive: true });
+		writeFileSync(
+			join(configDir(), "config.json"),
+			JSON.stringify({
+				serve: { port: 0 },
+				updates: { check: false },
+				telemetry: { mailbox: remote.path, device: "hand", every: 15 },
+			}),
+		);
+		const root = fileURLToPath(new URL("../../..", import.meta.url));
+		const serve = spawn(
+			process.execPath,
+			["--import", "tsx", "src/cli.ts", "serve"],
+			{ cwd: root, env: process.env, stdio: ["ignore", "pipe", "pipe"] },
+		);
+		const exited = new Promise((done) => serve.once("exit", done));
+		try {
+			let stderr = "";
+			await new Promise<void>((done, fail) => {
+				serve.stderr.on("data", (d: Buffer) => {
+					stderr += d.toString();
+					if (stderr.includes("carbonless listening")) done();
+				});
+				serve.once("exit", () => fail(new Error(`serve exited: ${stderr}`)));
+			});
+			expect(await run("send")).toBe(0);
+			const log = execFileSync(
+				"git",
+				[
+					"--git-dir",
+					remote.path,
+					"show",
+					"device/hand:devices/hand/logs/serve-own.log",
+				],
+				{ encoding: "utf8", env: testGitEnv() },
+			);
+			expect(log).toMatch(/carbonless listening on http:\/\/127\.0\.0\.1:\d+/);
+		} finally {
+			serve.kill("SIGTERM");
+			await exited;
+		}
 	});
 
 	it("is a crb command", () => {

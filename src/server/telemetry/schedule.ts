@@ -31,6 +31,8 @@ const STOP_WAIT_MS = 5000;
  */
 export function startMailboxTimer(opts: {
 	readConfig: () => Promise<ConfigRead>;
+	/** Whether the mailbox is on, as each look found it. */
+	onState?: (on: boolean) => void;
 	traceDir: () => string | null;
 	log: (message: string) => void;
 	now?: () => number;
@@ -69,6 +71,7 @@ export function startMailboxTimer(opts: {
 	const once = async () => {
 		const { config } = await opts.readConfig();
 		const t = config.telemetry;
+		opts.onState?.(t !== undefined);
 		if (!t) {
 			if (wasOn) opts.log("telemetry: off");
 			wasOn = false;

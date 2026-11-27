@@ -15,10 +15,18 @@ Under `devices/<device>/` on the branch `device/<device>`:
   [test-profiling.md](test-profiling.md), "crb outside tests") of the last
   7 days, up to 300 MB in all (beyond that the oldest are left out). The
   file being written is sent up to its last whole line.
-- `logs/`: `serve.log`, `serve.log.1` and the updater's `update.log`, each
-  its last 5 MB (up to 10 MB while it grows: the tail is cut anew only past
-  twice that, so a growing log is read incrementally too), as text (bytes that aren't UTF-8, e.g. a Windows console
-  code page, become U+FFFD).
+- `logs/`: `serve.log`, `serve.log.1`, `serve-own.log`, `serve-own.log.1`
+  and the updater's `update.log`, each its last 5 MB (up to 10 MB while it
+  grows: the tail is cut anew only past twice that, so a growing log is read
+  incrementally too), as text (bytes that aren't UTF-8, e.g. a Windows
+  console code page, become U+FFFD). `serve.log` has crb serve's output only
+  when crb started it (`crb <pr>`, the updater); started by hand, by systemd
+  or a Windows service, its output goes elsewhere (a terminal, the journal,
+  which crb never reads). So while the mailbox is on, crb serve also writes
+  its own stderr lines to `serve-own.log` in the state dir (rolled to `.1`
+  past 1 MB), however it was started; not when its stderr already is
+  `serve.log`, so no line is sent twice (and `serve.log` keeps what only it
+  catches, like a crash's last words).
 - `state.json`: crb's version and commit, OS and arch, node and git
   versions, the server's pid and uptime, the config, the trace directory's
   size, and for each clone in crb's cache: owner/repo, size on disk, refs

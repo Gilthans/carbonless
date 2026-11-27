@@ -485,6 +485,9 @@ async function fillOutbox(opts: {
 	const logs: [string, string][] = [
 		["serve.log", join(stateDir(), "serve.log")],
 		["serve.log.1", join(stateDir(), "serve.log.1")],
+		// crb serve's own lines however it was started (ownLog.ts).
+		["serve-own.log", join(stateDir(), "serve-own.log")],
+		["serve-own.log.1", join(stateDir(), "serve-own.log.1")],
 		["update.log", join(cacheDir(), "update.log")],
 	];
 	for (const [name, src] of logs) {
