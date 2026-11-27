@@ -6,7 +6,7 @@ import {
 	subtract,
 	union,
 } from "../../shared/lineRanges.js";
-import { markdownBlocks } from "../../shared/markdownBlocks.js";
+import { type MdBlock, markdownBlocks } from "../../shared/markdownBlocks.js";
 import {
 	clusterAt,
 	cutRunsAtBlocks,
@@ -60,7 +60,23 @@ import {
 import { detectShape, type Shape } from "./shape.js";
 
 /** Bumped when the engine's cached, state-free result could change for the same inputs. */
-const ENGINE_VERSION = 8;
+const ENGINE_VERSION = 10;
+
+/**
+ * A side's Markdown blocks, parsed once per side's lines (CAR-318): the
+ * since answer and every since-view request for the file read the same
+ * traced InterdiffFile (session.ts keeps it), so its line arrays are the
+ * key; a new trace's are new arrays, parsed again.
+ */
+const blocksMemo = new WeakMap<readonly string[], MdBlock[]>();
+function blocksOfSide(lines: readonly string[]): MdBlock[] {
+	let blocks = blocksMemo.get(lines);
+	if (!blocks) {
+		blocks = markdownBlocks(lines);
+		blocksMemo.set(lines, blocks);
+	}
+	return blocks;
+}
 
 /** The patch set a comparison is from, with its snapshot and folded states. */
 export type SincePatchset = PatchsetRecord & {
@@ -1367,7 +1383,13 @@ function sinceFileHunks(
 		return { hunks, newLineCount: 0, pieces };
 	}
 	if (orphans.length === 0 && file.clusters.every((c) => c.kind !== "lines")) {
-		return { hunks: [], newLineCount: file.newLines.length };
+		// No line changed since (a file-level change alone, CAR-297): still
+		// Rendered for a Markdown file, its row above the document (CAR-318).
+		return {
+			hunks: [],
+			newLineCount: file.newLines.length,
+			...(file.markdown ? { markdownBlocks: true as const } : {}),
+		};
 	}
 	const byNew = new Map<number, string>();
 	const byOld = new Map<number, string>();
@@ -1408,13 +1430,25 @@ function sinceFileHunks(
 			lines: 0,
 		}),
 	);
-	const hunks = buildDisplayHunks(
+	const built = buildDisplayHunks(
 		file.oldLines,
 		file.newLines,
 		[...clusters, ...anchors],
 		3,
 		file.noNewlineAtEnd,
 	);
+	// A Markdown file: each interdiff cluster's lines laid out block group
+	// by block group (cutRunsAtBlocks, while each run is still one interdiff
+	// cluster's), so a removed line can be keyed below by the addition of
+	// its group, the one that replaced it, and sit by it (CAR-318), not by
+	// the cluster's first addition, cut off on its own. The cut after the
+	// keys (below) then finds the groups already made.
+	const hunks = file.markdown
+		? cutRunsAtBlocks(built, {
+				old: blocksOfSide(file.oldLines),
+				new: blocksOfSide(file.newLines),
+			})
+		: built;
 	const addKey = (line: DiffLine): string | undefined => {
 		const newNo = line.newNo as number;
 		return (
@@ -1474,15 +1508,20 @@ function sinceFileHunks(
 		)?.key;
 	};
 	for (const hunk of hunks) {
-		// The first added line's key of each interdiff cluster, for its removed lines.
+		// The first added line's key of each interdiff cluster, for its
+		// removed lines; in a Markdown file, of each of its block groups
+		// first (`blockPiece`), when the group has one.
 		const firstAdd = new Map<string, string | undefined>();
+		const groupAdd = new Map<string, string | undefined>();
+		const groupOf = (line: DiffLine) =>
+			`${line.clusterKey}|${line.blockPiece ?? ""}`;
 		for (const line of hunk.lines) {
-			if (
-				line.kind === "add" &&
-				line.clusterKey &&
-				!firstAdd.has(line.clusterKey)
-			) {
+			if (line.kind !== "add" || !line.clusterKey) continue;
+			if (!firstAdd.has(line.clusterKey)) {
 				firstAdd.set(line.clusterKey, addKey(line));
+			}
+			if (line.blockPiece !== undefined && !groupAdd.has(groupOf(line))) {
+				groupAdd.set(groupOf(line), addKey(line));
 			}
 		}
 		for (const line of hunk.lines) {
@@ -1495,6 +1534,7 @@ function sinceFileHunks(
 						? byOld.get(line.oldNo as number)
 						: (gone(goneOld[line.oldNo as number]) ??
 							removedBy(line) ??
+							groupAdd.get(groupOf(line)) ??
 							firstAdd.get(temp));
 			if (key === undefined) delete line.clusterKey;
 			else line.clusterKey = key;
@@ -1528,8 +1568,8 @@ function sinceFileHunks(
 	placeOrphans(hunks, orphans);
 	const shown = file.markdown
 		? cutRunsAtBlocks(hunks, {
-				old: markdownBlocks(file.oldLines),
-				new: markdownBlocks(file.newLines),
+				old: blocksOfSide(file.oldLines),
+				new: blocksOfSide(file.newLines),
 			})
 		: hunks;
 	// The keys are final here: the view matches these same arrays (its `~`

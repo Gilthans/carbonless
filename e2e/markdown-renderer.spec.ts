@@ -1295,3 +1295,233 @@ test("a hidden HTML comment's change shows as source under its block, in the ful
 	await check(since, LONG, `${LONG}, twice`);
 	await shot(since, "md-hidden-since");
 });
+
+/** PS1 marked reviewed from each file's header, then `push`, viewed since PS1. */
+async function sincePs1(
+	page: Page,
+	p: Pr,
+	paths: string[],
+	push: Parameters<Pr["moveHead"]>[0],
+) {
+	for (const path of paths) {
+		const section = fileSection(page, path);
+		const expand = section.getByRole("button", { name: "Expand file" });
+		if (await expand.isVisible()) await expand.click();
+		await marksReady(page, section);
+		await section
+			.getByRole("button", { name: "Mark remaining reviewed" })
+			.click();
+		await expect(
+			section.getByRole("button", { name: "Unmark reviewed" }),
+		).toBeVisible();
+	}
+	await expect(progress(page)).toHaveAttribute("aria-valuenow", "100");
+	await expect(page.getByTestId("sync-notices")).toHaveCount(0, GIT_WAIT);
+	p.moveHead(push);
+	await page.reload();
+	await expect(page.getByTestId("ps-tail")).toHaveAttribute(
+		"data-state",
+		"head",
+		GIT_WAIT,
+	);
+	await page
+		.getByTestId("head-toast")
+		.getByRole("button", { name: "View" })
+		.click();
+	await expect(
+		page
+			.getByTestId("ps-node-ps1")
+			.getByRole("button", { name: "comparison base" }),
+	).toBeVisible();
+}
+
+test("the since view: loading shows the skeleton while its hunks are held, never an empty document or Nothing to read (CAR-318)", async ({
+	page,
+	pr,
+	startCrb,
+}) => {
+	const p = await pr(fixture);
+	const s = await startCrb();
+	await openFiles(page, s.url);
+	await sincePs1(page, p, [README, NOTES], {
+		message: "rework",
+		files: { [README]: PS2 },
+	});
+	const held: Route[] = [];
+	let holding = true;
+	await page.route("**/files/*/hunks?*", (route) => {
+		if (holding && route.request().url().includes("from=")) held.push(route);
+		else void route.continue();
+	});
+	const section = fileSection(page, README);
+	await section.getByRole("button", { name: "Expand file" }).click();
+	await expectLoadingThen({
+		loading: section.getByTestId("md-loading"),
+		empty: [section.getByTestId("md-doc"), section.getByTestId("since-empty")],
+		release: async () => {
+			await expect(section.getByTestId("md-loading")).toHaveAttribute(
+				"aria-busy",
+				"true",
+			);
+			await expect.poll(() => held.length).toBeGreaterThanOrEqual(1);
+			holding = false;
+			for (const route of held.splice(0)) await route.continue();
+		},
+		result: block(section, "Intro"),
+	});
+	await expect(section.getByTestId("md-box")).toHaveCount(2);
+});
+
+test("a document Rendered can't rebuild whole falls back to Text, every box there, and its Rendered button says why (CAR-318)", async ({
+	page,
+	pr,
+	startCrb,
+}) => {
+	await pr(fixture);
+	const s = await startCrb();
+	await openFiles(page, s.url);
+	// The file's first line arrives from neither read (the hunks' context
+	// rows dropped, the unchanged lines without it): the document can't be
+	// shown whole, never with a gap.
+	type Line = { kind: string; newNo?: number };
+	await page.route("**/files/*/hunks?*", async (route) => {
+		const response = await route.fetch();
+		const body = (await response.json()) as { hunks: { lines: Line[] }[] };
+		for (const h of body.hunks) {
+			h.lines = h.lines.filter((l) => l.kind !== "context");
+		}
+		await route.fulfill({ response, json: body });
+	});
+	await page.route("**/files/*/context?*", async (route) => {
+		const response = await route.fetch();
+		const lines = (await response.json()) as Line[];
+		await route.fulfill({
+			response,
+			json: lines.filter((l) => l.newNo !== 1),
+		});
+	});
+	const section = fileSection(page, README);
+	await section.getByRole("button", { name: "Expand file" }).click();
+	await shownAs(section, "text");
+	await expect(section.getByTestId("md-doc")).toHaveCount(0);
+	const rendered = viewButton(section, "Rendered");
+	await expect(rendered).toHaveAccessibleDescription(
+		"Couldn't render this file",
+	);
+	await expect(section.getByTestId("view-warn")).toBeVisible();
+	// Every cluster has its box in Text.
+	await expect(textBox(section, "Intro new")).toBeVisible();
+	await expect(textBox(section, "three")).toBeVisible();
+	await expect(textBox(section, "Para D changed")).toBeVisible();
+});
+
+test("the since view: a .md file-level change reverted since shows its row and box above the Rendered document, never Couldn't render (CAR-297, CAR-318)", async ({
+	page,
+	pr,
+	startCrb,
+}) => {
+	const p = await pr({
+		base: { [README]: BASE },
+		files: [
+			{
+				message: "docs, executable",
+				files: { [README]: PS1 },
+				chmod: { [README]: "755" },
+			},
+		],
+	});
+	const s = await startCrb();
+	await openFiles(page, s.url);
+	await sincePs1(page, p, [README], {
+		message: "mode back",
+		files: {},
+		chmod: { [README]: "644" },
+	});
+	const section = fileSection(page, README);
+	const expand = section.getByRole("button", { name: "Expand file" });
+	await expect(expand.or(section.getByTestId("md-doc"))).toBeVisible(GIT_WAIT);
+	if (await expand.isVisible()) await expand.click();
+	await expect(section.getByTestId("md-doc")).toBeVisible(GIT_WAIT);
+	await shownAs(section, "markdown");
+	await expect(section.getByTestId("view-warn")).toHaveCount(0);
+	const level = section.getByTestId("since-file-level");
+	await expect(level).toContainText("Mode changed 100755 → 100644");
+	await expect(section.getByTestId("since-empty")).toHaveCount(0);
+	await marksReady(page, section);
+	await level.getByRole("checkbox", { name: "Mark cluster reviewed" }).click();
+	await expect(page.getByTestId("sync-notices")).toHaveCount(0, GIT_WAIT);
+	await expect(progress(page)).toHaveAttribute("aria-valuenow", "100");
+	await shownAs(section, "markdown");
+});
+
+test("phone, side by side: a block's threads show under its row across both columns, and a whitespace-only change keeps its own ~ box in the controls row (CAR-318)", async ({
+	page,
+	pr,
+	startCrb,
+	isMobile,
+}) => {
+	test.skip(!isMobile, "the phone's side by side");
+	await page.setViewportSize({ width: 360, height: 780 });
+	// One paragraph: its first line edited, its second only re-indented
+	// (whitespace only, a cluster of its own on the same block).
+	const doc = (first: string, second: string) =>
+		`# Doc\n\nPara A\n\n${first}\n${second}\nthird line.\n\nPara F\n`;
+	await pr({
+		base: { [COMMENTED]: doc("First old words", "second line") },
+		files: [
+			{
+				message: "docs",
+				files: { [COMMENTED]: doc("First new words", "   second line") },
+			},
+		],
+	});
+	const s = await startCrb();
+	await openFiles(page, s.url);
+	await sideBySide(page, true);
+	const section = await openRendered(page, COMMENTED);
+	const row = block(section, "First");
+	const boxes = row.getByTestId("md-box");
+	await expect(boxes).toHaveCount(2);
+	const ws = row.getByTestId("md-ws");
+	await expect(ws).toHaveAccessibleName("Whitespace only");
+	const controls = row.locator(".md-controls");
+	await expect(controls.getByTestId("md-ws")).toHaveCount(1);
+	const wsUnit = boxes.filter({ has: page.getByTestId("md-ws") });
+	const wsBox = wsUnit.getByRole("checkbox", { name: "Mark cluster reviewed" });
+	expect(
+		await tapHeight(wsUnit.getByTestId("cluster-box-target")),
+	).toBeGreaterThanOrEqual(40);
+	// A comment on the block: its thread under the row, as wide as both columns.
+	await row.getByRole("button", { name: "Comment on block" }).click();
+	const composer = row.getByTestId("new-thread");
+	await composer.getByRole("textbox", { name: "Comment" }).fill("Why?");
+	await composer.getByRole("button", { name: "Comment" }).click();
+	const thread = row.getByTestId("files-thread").filter({ hasText: "Why?" });
+	await expect(thread).toBeVisible(GIT_WAIT);
+	const box = async (l: Locator) => {
+		const b = await l.boundingBox();
+		if (!b) throw new Error("not shown");
+		return b;
+	};
+	const threads = await box(row.getByTestId("md-threads"));
+	const oldCol = await box(row.locator('.md-body[data-col="old"]'));
+	const newCol = await box(row.locator('.md-body[data-col="new"]'));
+	expect(threads.y).toBeGreaterThanOrEqual(
+		Math.max(oldCol.y + oldCol.height, newCol.y + newCol.height) - 0.5,
+	);
+	expect(threads.x).toBeLessThanOrEqual(oldCol.x + 0.5);
+	expect(threads.x + threads.width).toBeGreaterThanOrEqual(
+		newCol.x + newCol.width - 0.5,
+	);
+	await expectNoPageOverflow(page);
+	// The ~ box ticks its own cluster only.
+	await marksReady(page, section);
+	await wsBox.click();
+	await expect(wsBox).toBeChecked();
+	await expect(
+		boxes
+			.filter({ hasNot: page.getByTestId("md-ws") })
+			.getByRole("checkbox", { name: "Mark cluster reviewed" }),
+	).not.toBeChecked();
+	await expect(page.getByTestId("sync-notices")).toHaveCount(0, GIT_WAIT);
+});

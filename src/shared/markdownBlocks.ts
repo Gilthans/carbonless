@@ -154,14 +154,25 @@ function frontMatterEnd(lines: readonly string[]): number {
 	return 0;
 }
 
-/** Deepest quote/list/indent nesting a line may open before the parse is skipped. */
-const MAX_NESTING = 64;
+/**
+ * Deepest quote/list nesting a line may open before the parse is skipped.
+ * marked's cost per character grows with the nesting (CAR-318, measured on
+ * 200 KB documents against a README of headings, lists, tables and
+ * fences: one-line markers 8 deep 2.9x, 16 deep 3.3x, 60 deep 5.8x; an
+ * indented staircase 60 deep 2.4x). 16 keeps every real document parsed
+ * (a list 16 levels deep) and the worst one near 3x.
+ */
+const MAX_NESTING = 16;
 /** Largest document (characters) the parser is given. */
 const MAX_CHARS = 1_000_000;
 /** Longest line (characters) the parser is given. */
 const MAX_LINE = 10_000;
 
-/** Nesting a line opens: `>` quotes, list markers, and indent in steps of 4. */
+/**
+ * Nesting a line opens: `>` quotes, list markers, and indent in steps of 4
+ * before them. Indent with no marker after it (a code line, a
+ * continuation) opens nothing: it costs marked no more than plain text.
+ */
 function nestingOf(line: string): number {
 	let depth = 0;
 	let i = 0;
@@ -170,14 +181,12 @@ function nestingOf(line: string): number {
 		while (line[i] === " " || line[i] === "\t") {
 			indent += line[i] === "\t" ? 4 : 1;
 			i++;
-			if (indent > MAX_NESTING * 4) return MAX_NESTING + 1;
 		}
-		depth += Math.floor(indent / 4);
-		if (depth > MAX_NESTING) return depth;
 		const rest = line.slice(i, i + 12);
 		const marker = /^(?:>|[-*+](?=\s)|\d{1,9}[.)](?=\s))/.exec(rest);
 		if (!marker) return depth;
-		depth++;
+		depth += Math.floor(indent / 4) + 1;
+		if (depth > MAX_NESTING) return depth;
 		i += marker[0].length;
 	}
 }

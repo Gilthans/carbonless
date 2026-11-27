@@ -303,11 +303,12 @@ export function lineRuns(
  * (`blocks.new`, by `newNo`), with a pairing budget of its own (a run's
  * cut never depends on another's). A run cut in several has its lines
  * laid out group by group, each group's removals before its additions as
- * git shows a hunk, and tagged with the group's `blockPiece`, so each
- * group is a run, and a piece (sincePieces), of its own. The same lines,
- * only regrouped: every line stays in exactly one run. A run whose
- * removals don't all come before its additions isn't cut (one piece, as
- * without the cut). Hunks with nothing to cut are returned as they are.
+ * git shows a hunk, and tagged with the group's `blockPiece` (unique in
+ * the hunk), so each group is a run, and a piece (sincePieces), of its
+ * own. The same lines, only regrouped: every line stays in exactly one
+ * run. A run whose removals don't all come before its additions isn't cut
+ * (one piece, as without the cut). Hunks with nothing to cut are returned
+ * as they are.
  */
 export function cutRunsAtBlocks<H extends { lines: readonly DiffLine[] }>(
 	hunks: readonly H[],
@@ -315,6 +316,13 @@ export function cutRunsAtBlocks<H extends { lines: readonly DiffLine[] }>(
 ): H[] {
 	return hunks.map((hunk) => {
 		let cut = false;
+		// Group tags new in this hunk: past any it has (a cut made before,
+		// the engine's of an interdiff cluster's lines), so two runs of one
+		// key never share one and merge.
+		let next = 0;
+		for (const l of hunk.lines) {
+			if (l.blockPiece !== undefined) next = Math.max(next, l.blockPiece + 1);
+		}
 		const lines = lineRuns(hunk.lines).flatMap((run) => {
 			// An orphan run (CAR-216) is a piece of its own already, and its
 			// removed lines have no old number here to find their block by.
@@ -334,12 +342,13 @@ export function cutRunsAtBlocks<H extends { lines: readonly DiffLine[] }>(
 			);
 			if (groups.length <= 1) return run.lines;
 			cut = true;
-			return groups.flatMap(({ removed: [rf, rt], added: [af, at] }, g) =>
-				[...removed.slice(rf, rt), ...added.slice(af, at)].map((l) => ({
+			return groups.flatMap(({ removed: [rf, rt], added: [af, at] }) => {
+				const tag = next++;
+				return [...removed.slice(rf, rt), ...added.slice(af, at)].map((l) => ({
 					...l,
-					blockPiece: g,
-				})),
-			);
+					blockPiece: tag,
+				}));
+			});
 		});
 		return cut ? { ...hunk, lines } : hunk;
 	});

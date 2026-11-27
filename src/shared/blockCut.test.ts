@@ -416,14 +416,41 @@ const LINE = fc.oneof(
 	fc.stringMatching(/^[a-z #|>*-]{0,12}$/),
 );
 
+/**
+ * Shapes of several lines (CAR-318): a fence (a blank line inside), a
+ * table, a paragraph over lines, an item with a continuation, a quote, a
+ * nested list with a tail, front matter. Mixed with single lines, an edit
+ * can start or end inside any of them.
+ */
+const SHAPE = fc.constantFrom(
+	["```", "code a", "", "code b", "```"],
+	["| h | i |", "| - | - |", "| 1 | 2 |", "| 3 | 4 |"],
+	["first line of a", "paragraph that goes", "on for three lines"],
+	["- item", "  its continuation", "", "  a second paragraph"],
+	["> quote one", "> quote two", ">", "> quote three"],
+	["1. first", "   - nested", "", "   tail of first", "2. second"],
+	["---", "title: x", "---"],
+	["<div>", "raw html", "</div>"],
+	["    indented code", "    more code"],
+);
+const LINES = fc
+	.array(
+		fc.oneof(
+			LINE.map((l) => [l]),
+			SHAPE,
+		),
+		{ maxLength: 12 },
+	)
+	.map((parts) => parts.flat());
+
 describe("cutAtBlocks properties", () => {
 	it("covers every line once, in order, each piece within one block per side", () => {
 		fc.assert(
 			fc.property(
-				fc.array(LINE, { maxLength: 30 }),
+				fc.oneof(fc.array(LINE, { maxLength: 30 }), LINES),
 				fc.nat(),
 				fc.nat(),
-				fc.array(LINE, { maxLength: 12 }),
+				fc.oneof(fc.array(LINE, { maxLength: 12 }), LINES),
 				(oldLines, s, k, inserted) => {
 					const start = s % (oldLines.length + 1);
 					const count = k % (oldLines.length - start + 1);

@@ -121,14 +121,25 @@ A block is the smallest rendered unit a reviewer ticks:
 | Markdown | Block |
 |---|---|
 | paragraph, heading, thematic break | one each |
-| list item | one per item; a nested item is its own block, apart from its parent's own lines |
+| list item | one per item; a nested item is its own block, apart from its parent's own lines (an item's tail after its nested list is one too, rendered in its item's list: numbered under a numbered item) |
 | table | one per row (the header row and its delimiter row together) |
 | fenced or indented code | the whole fence, never split by the block cut |
 | blockquote | each block inside it, as above |
 | front matter (`---` at the top), raw HTML block, link reference definitions | one each, shown as source |
 
 Blank lines belong to no block. A changed blank line goes with the block it
-follows (or the next block, at the top of the file).
+follows (or the next block, at the top of the file). An added Markdown
+file is not cut again at blank lines (CAR-235's cut for added files): the
+block cut already ends a piece after each block's blank lines, so a blank
+line inside a block (a code fence, an item's second paragraph) keeps the
+block one box (CAR-318).
+
+A line nesting more than 16 quotes and list markers (indent before a
+marker counts in steps of 4; indent with no marker after it doesn't) skips
+the parse: the file falls back to a paragraph per run of lines, so
+marked's cost, which grows with the nesting, stays near a README's of the
+same size (CAR-318). The since view parses each side of a file once per
+trace, not per request.
 
 Block boundaries come from a Markdown block parse of each side's text, with
 line numbers. `marked`'s lexer (already a dependency) gives tokens with
@@ -261,14 +272,19 @@ line (`lines-reviewed`), so cutting a piece needs no carry.
   rules; `sincePieces` then makes each group a piece (and cuts the groups
   at whitespace-only runs). One function, `groupByBlocks`, does the
   grouping for both cuts. A piece already never spans two clusters; now it
-  never spans two blocks either.
+  never spans two blocks either. Each interdiff cluster's lines are first
+  laid out by these groups, so a removed line is keyed by the addition of
+  its group (the one that replaced it) and sits by it in one piece, not by
+  the cluster's first addition on a piece of its own (CAR-318).
 - **The view:** the Rendered view rebuilds the since view's two sides from
   what its line view reads, the hunks and the context route over the
   whole new side (both with `from`), and reads its pieces; it shows a box per piece on
   its block, with the since view's kinds (reworked, new, reverted, removed)
   as the line view shows them; a piece of the compared patch set only (red,
   gone) shows struck with its since-only box. Unchanged-since text renders
-  at full strength and folds like the full diff's.
+  at full strength and folds like the full diff's. A file-level piece (CAR-297: a mode change
+  reverted since) has no block: its row and box show above the document,
+  as the file's other rows do, and Rendered stays (CAR-318).
 - **Comments, threads, find:** as in the full diff; a comment on a removed
   line posts on its base line, as the since line view does (CAR-217).
 
@@ -292,7 +308,9 @@ diff, the compared patch set in the since view), framed red with the
 picture faded (a placeholder's words never fade); an added one is framed
 green. An image that fails to load (in the since view, one missing at the
 compared patch set) becomes a still placeholder ("Not at this patch set"),
-never a broken image. Raw HTML blocks show as source.
+never a broken image. Only an old-side image in the since view says "Not
+at this patch set"; any other that fails, a remote one clicked to load
+included, says "Not loaded" (CAR-318). Raw HTML blocks show as source.
 
 **No invisible change.** Sanitizing drops source the rendering never
 shows: an HTML comment (a known prompt-injection channel in README and

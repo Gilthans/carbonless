@@ -2315,14 +2315,20 @@ export function DiffBody(props: {
 	/**
 	 * With `linesHidden`: another renderer shows the lines (Markdown's
 	 * Rendered view), and says itself what the since view has to read; it
-	 * shows the line comments being written too.
+	 * shows the line comments being written too. The since view's
+	 * file-level pieces (no block to sit on) stay rows of this body's.
 	 */
 	linesElsewhere?: boolean;
 }) {
 	const { file, revision, find, linesHidden } = props;
+	// Markdown's Rendered view in the since view reads these same hunks:
+	// their file-level pieces (CAR-297) are rows of this body's, above the
+	// document (CAR-318).
+	const elsewhereSince =
+		props.linesElsewhere === true && props.from !== undefined;
 	const read = useQuery({
 		...hunksQuery(revision, file.index, props.from),
-		enabled: !linesHidden,
+		enabled: !linesHidden || elsewhereSince,
 	});
 	const hunks: HunksRead = linesHidden ? HIDDEN_HUNKS : read;
 	const ignoreWs = ignoreWhitespace.use();
@@ -2400,7 +2406,9 @@ export function DiffBody(props: {
 	const filePieces =
 		props.from === undefined
 			? []
-			: (hunks.data?.pieces ?? []).filter((p) => p.file !== undefined);
+			: ((elsewhereSince ? read.data : hunks.data)?.pieces ?? []).filter(
+					(p) => p.file !== undefined,
+				);
 	const root = useRef<HTMLDivElement>(null);
 	const scroller = useRef<HTMLDivElement>(null);
 	const table = useRef<HTMLTableElement>(null);

@@ -12,6 +12,7 @@ import {
 	newSide,
 	oldSide,
 	SENTINEL,
+	scrub,
 } from "./wordMarks";
 
 /**
@@ -306,6 +307,22 @@ export function stillImage(img: HTMLImageElement, why: string): boolean {
 	return true;
 }
 
+/**
+ * A remote image's placeholder (`placeholder`) clicked: the image, loaded
+ * from `url` (already checked http(s): remoteImageUrl) without a
+ * referrer, with the placeholder's alt; should it fail to load, it becomes
+ * a still placeholder (`stillImage`) as a loaded local one does, never a
+ * broken image (CAR-318).
+ */
+export function loadRemoteImage(button: Element, url: string): void {
+	const img = button.ownerDocument.createElement("img");
+	img.setAttribute("referrerpolicy", "no-referrer");
+	img.alt = button.querySelector(".md-image-alt")?.textContent ?? "";
+	img.setAttribute(PATH_ATTR, url);
+	img.src = url;
+	button.replaceWith(img);
+}
+
 /** `img`, its src resolved to `url`, or the placeholder it becomes. */
 function placeImage(
 	img: HTMLImageElement,
@@ -447,6 +464,14 @@ export interface MergedOptions extends RenderOptions {
 	 * rendered under it and the header dropped, as `renderBlocks` does.
 	 */
 	header?: string;
+	/**
+	 * Each side's own block source (renderPair's, CAR-318): the merged
+	 * body is checked against these rendered, not against the merged
+	 * source's sides, so a merge that lost or moved a change (or a side
+	 * that isn't the block's own) gives null. Without them, against the
+	 * merged source's own sides.
+	 */
+	sources?: { old: string; new: string };
 }
 
 /** Elements a mark never wraps: it goes inside them (a run split at each). */
@@ -582,7 +607,8 @@ function sideOf(body: HTMLElement, keep: "del" | "ins"): string {
  * sentinels, so content can't forge one (its own `<del>`/`<ins>` render
  * but lose every class). The result is checked against both sides: with
  * the `md-ins` marks dropped it must equal the old side rendered alone, and
- * with the `md-del` ones dropped, the new side. So a mark that moved syntax
+ * with the `md-del` ones dropped, the new side (each block's own source,
+ * `opts.sources`, when given). So a mark that moved syntax
  * (a split link, emphasis across a mark, a pipe in a struck run) gives null,
  * never a wrong picture; and no sentinel survives into the output.
  */
@@ -638,8 +664,10 @@ function mergedBody(
 	};
 	try {
 		const merged = body(src);
-		const oldBody = body(oldSide(src));
-		const newBody = body(newSide(src));
+		// Each block's source as mergedSource read it (its own sentinel
+		// code points scrubbed), so such a block still matches.
+		const oldBody = body(opts.sources ? scrub(opts.sources.old) : oldSide(src));
+		const newBody = body(opts.sources ? scrub(opts.sources.new) : newSide(src));
 		if (!merged || !oldBody || !newBody) return null;
 		applyMarks(merged);
 		const html = merged.innerHTML;
@@ -755,6 +783,33 @@ function nestOf(b: MdBlock, own: readonly string[], quotes: number): number {
 	return Math.max(0, b.depth - quotes - Math.max(0, markers - 1));
 }
 
+/**
+ * Each list item tail's list (a continuation after a nested list: no
+ * marker of its own): the kind of the item it continues, `ol` under a
+ * numbered one, so the tail stays in that list (CAR-318); undefined for
+ * any other block. One forward pass: the last item opened at each depth.
+ */
+function tailLists(
+	lines: readonly string[],
+	blocks: readonly MdBlock[],
+): ("ol" | "ul" | undefined)[] {
+	const open: ("ol" | "ul")[] = [];
+	return blocks.map((b) => {
+		if (b.kind !== "list-item") return undefined;
+		const marker = LIST_MARKER.exec(unwrap(lines, b).lines[0] ?? "");
+		if (marker) {
+			open.length = b.depth;
+			open[b.depth] = /^\d/.test(marker[0]) ? "ol" : "ul";
+			return undefined;
+		}
+		return open[b.depth] ?? "ul";
+	});
+}
+
+/** A tail's HTML as its item's own: in a list of its kind, with no marker. */
+const continued = (html: string, list: "ol" | "ul"): string =>
+	`<${list}><li class="md-continuation">${html}</li></${list}>`;
+
 /** `html` inside `levels` list wrappers (no markers of their own). */
 const renest = (html: string, levels: number): string =>
 	'<ul class="md-nest"><li class="md-nest">'.repeat(levels) +
@@ -807,6 +862,7 @@ function renderBlock(
 	links: Links,
 	header: MdBlock | undefined,
 	lost: Lost,
+	tail: "ol" | "ul" = "ul",
 ): string {
 	const b = blocks[i] as MdBlock;
 	const { lines: own, quotes } = unwrap(lines, b);
@@ -839,10 +895,7 @@ function renderBlock(
 	if (kind === "list-item" && !LIST_MARKER.test(own[0] ?? "")) {
 		// The tail of an item after its nested list: still part of the item.
 		const html = renderMarkdown(src, opts, links, undefined, lost);
-		return requote(
-			renest(`<ul><li class="md-continuation">${html}</li></ul>`, nest),
-			quotes,
-		);
+		return requote(renest(continued(html, tail), nest), quotes);
 	}
 	return requote(
 		renest(renderMarkdown(src, opts, links, undefined, lost), nest),
@@ -858,6 +911,7 @@ export function renderBlocks(
 ): RenderedBlock[] {
 	const links = fileLinks(lines, blocks);
 	const headers = tableHeaders(blocks);
+	const tails = tailLists(lines, blocks);
 	return blocks.map((b, index) => {
 		try {
 			const lost: Lost = { any: false };
@@ -869,6 +923,7 @@ export function renderBlocks(
 				links,
 				headers[index],
 				lost,
+				tails[index],
 			);
 			return lost.any ? { index, html, hidden: true } : { index, html };
 		} catch {
@@ -891,6 +946,8 @@ export interface SideBlocks {
 	blocks: readonly MdBlock[];
 	links: Links;
 	headers: readonly (MdBlock | undefined)[];
+	/** Each item tail's list (tailLists). */
+	tails: readonly ("ol" | "ul" | undefined)[];
 }
 
 export function sideBlocks(
@@ -902,6 +959,7 @@ export function sideBlocks(
 		blocks,
 		links: fileLinks(lines, blocks),
 		headers: tableHeaders(blocks),
+		tails: tailLists(lines, blocks),
 	};
 }
 
@@ -985,17 +1043,10 @@ const isContinuation = (b: MdBlock, own: readonly string[]) =>
 
 const wrapBlock = (
 	html: string,
-	continuation: boolean,
+	tail: "ol" | "ul" | undefined,
 	quotes: number,
 	nest: number,
-) =>
-	requote(
-		renest(
-			continuation ? `<ul><li class="md-continuation">${html}</li></ul>` : html,
-			nest,
-		),
-		quotes,
-	);
+) => requote(renest(tail ? continued(html, tail) : html, nest), quotes);
 
 /**
  * Old block `oi` paired with new block `ni` (the cut's pairing), as one
@@ -1022,6 +1073,8 @@ export function renderPair(
 		if (uo.quotes !== un.quotes) return null;
 		const continuation = isContinuation(nb, un.lines);
 		if (continuation !== isContinuation(ob, uo.lines)) return null;
+		const tail = continuation ? (nu.tails[ni] ?? "ul") : undefined;
+		if (continuation && (old.tails[oi] ?? "ul") !== tail) return null;
 		let header: string | undefined;
 		if (nb.kind === "table-row") {
 			const oneRow = (b: MdBlock) => b.to === b.from;
@@ -1042,6 +1095,8 @@ export function renderPair(
 		if (merged === null) return null;
 		const mergedOpts: MergedOptions = {
 			image: opts.image,
+			// Checked against each block's own source, as written.
+			sources: { old: uo.lines.join("\n"), new: un.lines.join("\n") },
 			...(opts.oldImage ? { oldImage: opts.oldImage } : {}),
 			links: { ...old.links, ...nu.links },
 			...(header === undefined ? {} : { header }),
@@ -1056,8 +1111,7 @@ export function renderPair(
 		};
 		const nest = nestOf(nb, un.lines, un.quotes);
 		if (nest !== nestOf(ob, uo.lines, uo.quotes)) return null;
-		const wrap = (html: string) =>
-			wrapBlock(html, continuation, un.quotes, nest);
+		const wrap = (html: string) => wrapBlock(html, tail, un.quotes, nest);
 		const shown = sided();
 		return {
 			merged: wrap(shown.innerHTML),

@@ -138,6 +138,61 @@ describe("markdownBlocks", () => {
 			);
 			expect(ratio).toBeLessThan(3);
 		});
+		it("a document nested past the cap costs about a README of the same size (CAR-318)", () => {
+			const fill = (size: number, line: (i: number) => string) => {
+				const out: string[] = [];
+				for (let i = 0, n = 0; n < size; i++) {
+					const l = line(i);
+					out.push(l);
+					n += l.length + 1;
+				}
+				return out;
+			};
+			const readme = [
+				"# Heading",
+				"",
+				"- item one",
+				"- item two",
+				"  - nested",
+				"",
+				"| a | b |",
+				"|---|---|",
+				"| 1 | 2 |",
+				"",
+				"```",
+				"code",
+				"```",
+				"",
+			];
+			const plain = fill(100_000, (i) => readme[i % readme.length] ?? "");
+			// Markers 60 deep on each line: under the old cap (64) marked read
+			// it, at about 5.8x the README's cost (measured on 200 KB).
+			const nested = fill(100_000, (i) => `${"- ".repeat(60)}x${i}`);
+			expect(markdownBlocks(nested).every((b) => b.kind === "paragraph")).toBe(
+				true,
+			);
+			const { ratio } = bestCpuRatio(
+				() => markdownBlocks(nested),
+				() => markdownBlocks(plain),
+			);
+			expect(ratio).toBeLessThan(3);
+		});
+		it("indent with no marker after it opens no nesting: a deep code line still parses (CAR-318)", () => {
+			const code = ["```", `${" ".repeat(400)}deep`, "```", "", "- a"];
+			expect(blocks(code.join("\n"))).toEqual([
+				{ kind: "code", from: 1, to: 3 },
+				{ kind: "list-item", from: 5, to: 5 },
+			]);
+			// A list 16 deep parses; 17 deep falls back.
+			const list = (n: number) =>
+				Array.from({ length: n }, (_, i) => `${"    ".repeat(i)}- x`);
+			expect(markdownBlocks(list(16)).map((b) => b.kind)).toEqual(
+				Array(16).fill("list-item"),
+			);
+			expect(markdownBlocks(list(17)).map((b) => b.kind)).toEqual([
+				"paragraph",
+			]);
+		});
 		it("one very long line costs about a plain line of the same size", () => {
 			const emphasis = [`${"a*".repeat(500_000)}`];
 			const plain = ["a".repeat(1_000_000)];
