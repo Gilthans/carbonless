@@ -117,9 +117,10 @@ describe("catFile", () => {
 	it("fails the reads out when its process dies, and starts another for the next", async () => {
 		await readBlob(fx.path, `${commit}:a.txt`);
 		const pending = readBlob(fx.path, `${commit}:big.bin`);
-		const closed = closeCatFiles();
-		await closed;
-		await expect(pending).rejects.toThrow(GitError);
+		// Its failure watched before the close that causes it.
+		const failed = expect(pending).rejects.toThrow(GitError);
+		await closeCatFiles();
+		await failed;
 		expect(catFileCount()).toBe(0);
 		expect((await readBlob(fx.path, `${commit}:a.txt`)).toString()).toBe(
 			"one\ntwo\n",
