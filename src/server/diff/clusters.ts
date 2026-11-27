@@ -187,6 +187,8 @@ const MACHINE_MADE: readonly RegExp[] = [
 	/_pb2\.py$/,
 	/\.g\.dart$/,
 	/\.designer\.cs$/,
+	// Visual Studio's own spelling (Form1.Designer.cs).
+	/\.Designer\.cs$/,
 	/\.generated\.[^/]+$/,
 ];
 
@@ -202,10 +204,6 @@ export function addedCut(path: string): "blocks" | "lock" | "machine" {
 	if (isMarkdownPath(name)) return "blocks";
 	return MACHINE_MADE.some((r) => r.test(name)) ? "machine" : "blocks";
 }
-
-/** Whether an added file at `path` is cut at its blank lines (addedCut). */
-export const cutsAtBlankLines = (path: string): boolean =>
-	addedCut(path) === "blocks";
 
 /**
  * The key salt of an added machine-made file's cluster (CAR-322): a new

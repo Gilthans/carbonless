@@ -8,7 +8,6 @@ import type { LineCluster } from "./clusters.js";
 import {
 	addedCut,
 	buildAllClusters,
-	cutsAtBlankLines,
 	fileLevelCluster,
 	headersFor,
 	parseU0Patch,
@@ -426,7 +425,7 @@ describe("splitAtBlankLines (CAR-235)", () => {
 	});
 });
 
-describe("cutsAtBlankLines: lock files stay whole (CAR-235, owner 2026-11-24)", () => {
+describe("addedCut: lock files stay whole (CAR-235, owner 2026-11-24)", () => {
 	it("refuses known lock files by name, in any folder", () => {
 		for (const path of [
 			"pnpm-lock.yaml",
@@ -440,7 +439,7 @@ describe("cutsAtBlankLines: lock files stay whole (CAR-235, owner 2026-11-24)", 
 			"Pipfile.lock",
 			"uv.lock",
 		]) {
-			expect(cutsAtBlankLines(path), path).toBe(false);
+			expect(addedCut(path), path).not.toBe("blocks");
 		}
 	});
 
@@ -452,7 +451,7 @@ describe("cutsAtBlankLines: lock files stay whole (CAR-235, owner 2026-11-24)", 
 			"my-yarn.lock",
 			"lock/index.ts",
 		]) {
-			expect(cutsAtBlankLines(path), path).toBe(true);
+			expect(addedCut(path), path).toBe("blocks");
 		}
 	});
 });
@@ -469,10 +468,11 @@ describe("addedCut: machine-made files stay whole too, by name (CAR-322, owner 2
 			"proto/user_pb2.py",
 			"lib/model.g.dart",
 			"Forms/Main.designer.cs",
+			"Forms/Form1.Designer.cs",
 			"src/api.generated.ts",
 		]) {
 			expect(addedCut(path), path).toBe("machine");
-			expect(cutsAtBlankLines(path), path).toBe(false);
+			expect(addedCut(path), path).not.toBe("blocks");
 		}
 	});
 
@@ -481,7 +481,7 @@ describe("addedCut: machine-made files stay whole too, by name (CAR-322, owner 2
 		for (const path of [
 			"src/a.ts",
 			"app.MIN.JS",
-			"Forms/Main.Designer.cs",
+			"Forms/Main.DESIGNER.cs",
 			"logo.SVG",
 			"docs/api.generated.md",
 			"notes.generated.MD",

@@ -1018,14 +1018,16 @@ based exceptions") an added file whose name (any folder, case-sensitive)
 ends like a machine-made one stays one cluster, as a lock file does
 (`MACHINE_MADE` and `addedCut` in `src/server/diff/clusters.ts`):
 `*.min.js`, `*.min.css`, `*.map`, `*.snap`, `*.svg`, `*.pb.go`,
-`*_pb2.py`, `*.g.dart`, `*.designer.cs`, `*.generated.*`. Never a
+`*_pb2.py`, `*.g.dart`, `*.designer.cs` and `*.Designer.cs`, `*.generated.*`. Never a
 Markdown file, whose Rendered view needs its block cut (CAR-167). By
 name, not by `.gitattributes`' `linguist-generated`: a name gives every
 machine the same clusters, with no git call and no git version to
 depend on. Its cluster's key is salted (`WHOLE_SALT`, the `salt` of
 `clusterKeys`), so it is not the key the whole file had before CAR-235:
-**nothing is carried**. Marks on it from before (whole, before CAR-235;
-on its pieces, under CAR-235) read unreviewed once, never more reviewed,
+**nothing is carried**. Any mark on it from before CAR-322 (whole,
+before CAR-235; on its pieces, under CAR-235) reads unreviewed once,
+never more reviewed. The other way round, an older crb reads marks made
+on the salted key as unreviewed (it cuts the file and knows no such key),
 and the split carry is untouched (no new event, no new stored field).
 Lock files keep their key (never cut, nothing to drop). `ENGINE_VERSION`
 went to 9 so no cached comparison names the pieces' keys. A file that
