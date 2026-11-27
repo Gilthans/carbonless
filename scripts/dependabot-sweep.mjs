@@ -335,6 +335,53 @@ export const SCAN_REBASE_WAIT_MS = 6 * 60 * 60 * 1000;
 /** The ruleset's text when a merge waits for code scanning results. */
 export const SCAN_WAITING = /Code scanning is waiting for results/i;
 
+/** How long after its workflow ran a missing code scanning result may still appear. */
+export const SCAN_UPLOAD_GRACE_MS = 60 * 60 * 1000;
+
+/**
+ * Is a workflow named after one of the missing tools (CodeQL's is
+ * "CodeQL") still running on the head, or done within the grace period?
+ */
+export function scanWorkflowBusy(tools, runs, now) {
+	return (runs ?? []).some(
+		(r) =>
+			(tools ?? []).includes(r.name) &&
+			(r.status !== "completed" ||
+				now - Date.parse(r.updatedAt) < SCAN_UPLOAD_GRACE_MS),
+	);
+}
+
+/**
+ * The error for a failed command: its message ends with the output's last
+ * lines; `output` keeps all of it (gh may append hints after the error).
+ */
+export function runError(cmd, args, r) {
+	const text = `${r.stderr ?? ""}${r.stdout ?? ""}`;
+	const e = new Error(
+		`${cmd} ${args.join(" ")} exited ${r.status}: ${(r.stderr || r.stdout || "").trim().split("\n").slice(-5).join(" | ")}`,
+	);
+	e.output = text;
+	return e;
+}
+
+/**
+ * state.json after asking Dependabot to rebase. The two asks are tracked
+ * apart: one for missing code scanning results (per PR) mustn't make a
+ * later BEHIND or DIRTY state of the same head wait on it.
+ */
+export function recordRebase(state, n, sha, action, at) {
+	return action.scan
+		? {
+				...state,
+				scanRebaseAsked: { ...state.scanRebaseAsked, [String(n)]: { sha, at } },
+			}
+		: { ...state, rebaseAsked: { ...state.rebaseAsked, [sha]: at } };
+}
+
+/** Was this merge error the ruleset waiting for code scanning results? */
+export const isScanRefusal = (e) =>
+	SCAN_WAITING.test(`${e?.message ?? ""}\n${e?.output ?? ""}`);
+
 /**
  * The required code scanning tools (from master's rules) that have no
  * completed analysis on the head commit: GitHub posts one check run per
@@ -521,6 +568,13 @@ export function decide(f) {
 	if (scans.length > 0) {
 		const asked = f.scanRebase;
 		const what = `no ${scans.join(", ")} results for its head`;
+		// Its workflow ran on this head just now (or still runs): the result
+		// may be on its way to the head's check runs.
+		if (scanWorkflowBusy(scans, f.scanWorkflowRuns, f.now ?? 0))
+			return {
+				type: "wait",
+				reason: `${what} yet; its workflow ran on it within the hour`,
+			};
 		if (!asked)
 			return {
 				type: "rebase",
@@ -626,10 +680,7 @@ function run(cmd, args, opts = {}) {
 		...opts,
 	});
 	if (r.error) throw r.error;
-	if (r.status !== 0 && !opts.allowFail)
-		throw new Error(
-			`${cmd} ${args.join(" ")} exited ${r.status}: ${(r.stderr || r.stdout).trim().split("\n").slice(-5).join(" | ")}`,
-		);
+	if (r.status !== 0 && !opts.allowFail) throw runError(cmd, args, r);
 	return r;
 }
 const out = (cmd, args, opts) => run(cmd, args, opts).stdout;
@@ -785,6 +836,19 @@ function gatherFacts(n, ctx) {
 				`repos/{owner}/{repo}/commits/${sha}/check-runs?check_name=${encodeURIComponent(tool)}&per_page=100`,
 			])?.check_runs ?? [])
 				scanRuns.push({ name: r.name, app: r.app?.slug, status: r.status });
+	const scanWorkflowRuns =
+		ctx.scanTools.length > 0 && SHA_RE.test(sha ?? "")
+			? (
+					ghJson([
+						"api",
+						`repos/{owner}/{repo}/actions/runs?head_sha=${sha}&per_page=100`,
+					])?.workflow_runs ?? []
+				).map((r) => ({
+					name: r.name,
+					status: r.status,
+					updatedAt: r.updated_at,
+				}))
+			: [];
 	const mine = (pr.comments ?? []).filter((c) => c.author?.login === ctx.me);
 	return {
 		pr: {
@@ -806,6 +870,7 @@ function gatherFacts(n, ctx) {
 		scanTools: ctx.scanTools,
 		scansMissing: missingScans(ctx.scanTools, scanRuns),
 		scanRebase: ctx.state.scanRebaseAsked?.[String(n)] ?? null,
+		scanWorkflowRuns,
 		now: Date.now(),
 		note: releaseNote(bump, ctx.alerts),
 		bump,
@@ -1193,13 +1258,13 @@ function act(n, facts, action, ctx) {
 			);
 		case "rebase": {
 			comment(n, "@dependabot rebase", null, ctx);
-			const at = new Date().toISOString();
-			ctx.state.rebaseAsked = { ...ctx.state.rebaseAsked, [sha]: at };
-			if (action.scan)
-				ctx.state.scanRebaseAsked = {
-					...ctx.state.scanRebaseAsked,
-					[String(n)]: { sha, at },
-				};
+			ctx.state = recordRebase(
+				ctx.state,
+				n,
+				sha,
+				action,
+				new Date().toISOString(),
+			);
 			ctx.saveState();
 			return "asked Dependabot to rebase";
 		}
@@ -1250,7 +1315,7 @@ function act(n, facts, action, ctx) {
 			} catch (e) {
 				// The check runs said the scans were there, the ruleset says
 				// not: handle it as missing results.
-				if (!SCAN_WAITING.test(e.message)) throw e;
+				if (!isScanRefusal(e)) throw e;
 				const tools = facts.scanTools?.length ? facts.scanTools : ["CodeQL"];
 				const again = decide({ ...facts, scansMissing: tools });
 				if (again.type === "merge") throw e;

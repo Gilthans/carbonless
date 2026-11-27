@@ -31,8 +31,8 @@ For each open PR by `app/dependabot`, oldest first, the launcher reads the
 PR, its commits (`gh api …/pulls/N/commits`), its checks (all, and the
 required ones), the failed runs' jobs and steps, `package.json` on master
 and at the PR's head, the open Dependabot alerts, the code scanning tools
-master's rules require (`gh api …/rules/branches/master`) and their check
-runs on the PR's head. Then, in order:
+master's rules require (`gh api …/rules/branches/master`), their check
+runs on the PR's head and the head's workflow runs. Then, in order:
 
 1. **Not the sweep's**: author isn't `dependabot[bot]`, not open, or a
    draft → skip.
@@ -81,17 +81,20 @@ runs on the PR's head. Then, in order:
    reported. **No code scanning results** for the head (a tool master's
    rules require, e.g. CodeQL, has no completed check run from GitHub's
    code scanning app on it: the PR was opened before that workflow
-   existed) → comment `@dependabot rebase`, once per PR (recorded in
-   `state.json` under `scanRebaseAsked`), so the workflow runs on the new
-   head. Still none after the rebase, or no rebase within 6 hours →
-   comment for the owner, leave it. Any line of the description that mentions "Release note"
+   existed). If the tool's workflow (CodeQL's is named `CodeQL`) still
+   runs on the head or finished within the hour → wait for the result.
+   Otherwise → comment `@dependabot rebase`, once per PR (recorded in
+   `state.json` under `scanRebaseAsked`, apart from rule 7's asks), so the
+   workflow runs on the new head. Still none after the rebase, or no
+   rebase within 6 hours → comment for the owner, leave it. Any line of the description that mentions "Release note"
    and isn't exactly the sweep's (anywhere: the description isn't parsed
    as HTML, so quoted, folded or hidden text counts too) → comment for the
    owner instead. Otherwise → `pnpm release merge-ok N` (from a clean worktree of master),
    the head re-read, then `gh pr merge N --merge --admin
    --match-head-commit <sha>`. A release freeze → comment once and wait.
-   A merge the ruleset refuses for missing code scanning results gets the
-   no-results handling above instead of an error.
+   A merge the ruleset refuses for missing code scanning results (its
+   text anywhere in gh's output) gets the no-results handling above
+   instead of an error.
 
 Owner comments start with `Dependabot sweep:`, are fixed text (counts,
 run numbers and the sweep's own commit ids, never names, paths or text

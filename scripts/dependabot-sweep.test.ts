@@ -11,15 +11,20 @@ import {
 	decide,
 	dependabotNames,
 	hasReleaseNote,
+	isScanRefusal,
 	manifestProblems,
 	metadataMajor,
 	missingScans,
 	otherNoteLines,
 	parseResult,
+	recordRebase,
 	releaseNote,
+	runError,
 	SCAN_REBASE_WAIT_MS,
+	SCAN_UPLOAD_GRACE_MS,
 	SCAN_WAITING,
 	sandboxArgs,
+	scanWorkflowBusy,
 	scrub,
 } from "./dependabot-sweep.mjs";
 import { prBodyNote } from "./release-notes";
@@ -388,6 +393,72 @@ describe("missing code scanning results (CAR-311)", () => {
 			),
 		).toBe(true);
 		expect(SCAN_WAITING.test("Required status check is expected")).toBe(false);
+	});
+
+	it("tracks a scan ask apart, so a head that turns BEHIND still gets the usual rebase", () => {
+		const at = ago(60_000);
+		const state = recordRebase({}, 201, SHA, { scan: true }, at);
+		expect(state).toEqual({ scanRebaseAsked: { "201": { sha: SHA, at } } });
+		const rebaseAsked = Boolean(
+			(state.rebaseAsked as Record<string, string> | undefined)?.[SHA],
+		);
+		expect(
+			decide(
+				noScan(
+					{ rebaseAsked, scanRebase: { sha: SHA, at } },
+					{ mergeStateStatus: "BEHIND" },
+				),
+			).type,
+		).toBe("rebase");
+		// The behind ask is still once per head commit.
+		expect(recordRebase({}, 201, SHA, {}, at)).toEqual({
+			rebaseAsked: { [SHA]: at },
+		});
+	});
+
+	it("waits while the scan's workflow runs on the head or finished within the hour", () => {
+		const run = (status: string, updated: number) => ({
+			name: "CodeQL",
+			status,
+			updatedAt: ago(updated),
+		});
+		const rebased = { sha: "b".repeat(40), at: ago(2 * 60 * 60 * 1000) };
+		for (const r of [run("in_progress", 0), run("completed", 5 * 60_000)]) {
+			expect(scanWorkflowBusy(["CodeQL"], [r], NOW)).toBe(true);
+			expect(
+				decide(noScan({ scanRebase: rebased, scanWorkflowRuns: [r] })).type,
+			).toBe("wait");
+		}
+		const old = run("completed", SCAN_UPLOAD_GRACE_MS + 1);
+		expect(scanWorkflowBusy(["CodeQL"], [old], NOW)).toBe(false);
+		expect(
+			decide(noScan({ scanRebase: rebased, scanWorkflowRuns: [old] })).type,
+		).toBe("owner");
+		// Another workflow on the head doesn't count.
+		expect(
+			scanWorkflowBusy(
+				["CodeQL"],
+				[{ ...run("in_progress", 0), name: "CI" }],
+				NOW,
+			),
+		).toBe(false);
+	});
+
+	it("finds the refusal in gh's whole output, past a hint gh appends", () => {
+		const hint = Array.from({ length: 8 }, (_, i) => `hint: line ${i}`).join(
+			"\n",
+		);
+		const e = runError("gh", ["pr", "merge", "201"], {
+			status: 1,
+			stderr: `GraphQL: Repository rule violations found\n\nCode scanning is waiting for results from CodeQL for the commits 2d16cc3 or 7d79f0b.\n\n (mergePullRequest)\n${hint}\n`,
+		});
+		expect(e.message).not.toMatch(/Code scanning/);
+		expect(isScanRefusal(e)).toBe(true);
+		expect(
+			isScanRefusal(
+				runError("gh", ["pr", "merge"], { status: 1, stderr: `boom\n${hint}` }),
+			),
+		).toBe(false);
 	});
 
 	it("posts fixed text only", () => {
