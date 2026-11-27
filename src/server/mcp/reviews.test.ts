@@ -199,17 +199,24 @@ describe("listJoinable", () => {
 			expect(r.progress).toEqual({ reviewed: r.pr, total: 100, unit: "lines" });
 		}
 		asked.length = 0;
-		await listJoinable(
+		// Not counted (commits not readable), whatever the list carried:
+		// progress is missing, never a 0.
+		const uncounted = await listJoinable(
 			deps({
-				started: async () => many,
+				started: async () =>
+					many.map((s) => ({
+						...s,
+						coverage: { done: 0, total: 0, unit: "clusters" as const },
+					})),
 				coverage: async (_slug, reviews) => {
 					asked.push(reviews.map((r) => r.number));
-					return new Map();
+					return new Map(reviews.map((r) => [r.id, null]));
 				},
 			}),
 			ORIGIN,
 		);
 		expect(asked[0]).toHaveLength(MAX_JOINABLE);
+		expect(uncounted.every((r) => r.progress === null)).toBe(true);
 	});
 
 	it("PR text (title, branches, author) comes out sanitised, one line each", async () => {

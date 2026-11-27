@@ -132,13 +132,9 @@ export async function listJoinable(
 					? { state: stateOf(o.state, false) }
 					: {}),
 			lastActivity: s.lastActedAt,
-			progress: s.coverage
-				? {
-						reviewed: s.coverage.done,
-						total: s.coverage.total,
-						unit: s.coverage.unit,
-					}
-				: null,
+			// Filled below, only for the reviews answered with, only from a
+			// count: never a placeholder 0 (CAR-324).
+			progress: null,
 			buddy: o && !o.agent ? "none" : buddyOf(s.id, o ? o.buddy : undefined),
 			joinable: true,
 		});

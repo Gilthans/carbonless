@@ -4,6 +4,7 @@ import {
 	readdirSync,
 	readFileSync,
 	rmSync,
+	utimesSync,
 	writeFileSync,
 } from "node:fs";
 import { dirname, join } from "node:path";
@@ -19,7 +20,8 @@ import { cacheDir } from "../paths.js";
 import { newEvent } from "../review/events.js";
 import { RefStore } from "../review/refStore.js";
 import { ReviewService } from "../review/reviews.js";
-import { COVERAGE_VERSION, StartedReviews } from "./started.js";
+import type { BuildInfo } from "../version.js";
+import { buildKey, StartedReviews } from "./started.js";
 
 // Each fake gh call is a node process, and the scaling test starts 32
 // reviews through them: give a loaded machine time.
@@ -31,6 +33,9 @@ vi.mock("../git.js", async (importOriginal) => {
 	return { ...git, runGit: vi.fn(git.runGit) };
 });
 const gits = vi.mocked(runGit);
+
+/** The build the scanners count as (a clean one: its coverage is kept on disk). */
+const BUILD_A: BuildInfo = { version: "9.9.9-rc.1", commit: "a".repeat(40) };
 
 /** The PR keys Home asks coverage for: acme/widget's PRs `numbers`. */
 const prs = (...numbers: number[]) =>
@@ -51,12 +56,13 @@ describe("StartedReviews", () => {
 	let reviews: ReviewService;
 	let snap: Snapshot;
 	let builds: number;
-	const scanner = () =>
+	const scanner = (buildInfo: BuildInfo = BUILD_A) =>
 		new StartedReviews({
 			build: (...args) => {
 				builds++;
 				return buildSnapshot(...args);
 			},
+			buildInfo,
 		});
 
 	beforeEach(async () => {
@@ -280,7 +286,7 @@ describe("StartedReviews", () => {
 
 	/** A scanner whose snapshots are `snap`, built without git. */
 	const gitless = (build: () => Promise<Snapshot> = async () => snap) =>
-		new StartedReviews({ build });
+		new StartedReviews({ build, buildInfo: BUILD_A });
 
 	it("Home's view, then its repo's read on the same scanner: coverage with one git log", async () => {
 		await startMany(100, 3);
@@ -469,7 +475,7 @@ describe("StartedReviews", () => {
 		const real = review?.coverage;
 		expect(real?.done).toBeGreaterThan(0);
 		const file = coverageFile();
-		expect(file.data.version).toBe(COVERAGE_VERSION);
+		expect(file.data.version).toBe(buildKey(BUILD_A));
 		const entry = file.data.reviews[review?.id as string];
 		const tampered = (reviewsField: unknown, over: object = {}) => ({
 			...file.data,
@@ -485,7 +491,9 @@ describe("StartedReviews", () => {
 					file.write(
 						tampered(
 							{ [review?.id as string]: { ...entry, coverage: inflated } },
-							{ version: COVERAGE_VERSION + 1 },
+							{
+								version: buildKey({ ...BUILD_A, commit: "b".repeat(40) }),
+							},
 						),
 					),
 			],
@@ -512,6 +520,54 @@ describe("StartedReviews", () => {
 					),
 			],
 			[
+				"another reviewer",
+				() =>
+					file.write(
+						tampered(
+							{ [review?.id as string]: { ...entry, coverage: inflated } },
+							{ slug: "someone-else" },
+						),
+					),
+			],
+			[
+				"another meta tip",
+				() =>
+					file.write(
+						tampered({
+							[review?.id as string]: {
+								...entry,
+								metaTip: "e".repeat(40),
+								coverage: inflated,
+							},
+						}),
+					),
+			],
+			[
+				"a tip that isn't an OID",
+				() =>
+					file.write(
+						tampered({
+							[review?.id as string]: {
+								...entry,
+								progressTip: ` ${entry.progressTip}`,
+								coverage: inflated,
+							},
+						}),
+					),
+			],
+			[
+				"an unknown unit",
+				() =>
+					file.write(
+						tampered({
+							[review?.id as string]: {
+								...entry,
+								coverage: { ...inflated, unit: "hunks" },
+							},
+						}),
+					),
+			],
+			[
 				"another progress tip",
 				() =>
 					file.write(
@@ -533,6 +589,85 @@ describe("StartedReviews", () => {
 		}
 		// Rewritten by the recount: the next restart trusts it again.
 		expect((await repoView(scanner())).built).toBe(0);
+	});
+
+	it("coverage counted by another build is never read: each build keeps its own file (CAR-324)", async () => {
+		await startMany(1, 1);
+		const a = await repoView(scanner());
+		expect(a.built).toBe(1);
+		// The next RC, or a branch instance on the same cache: counted again.
+		const other = { version: "9.9.9-rc.2", commit: "b".repeat(40) };
+		const b = await repoView(scanner(other));
+		expect(b.built).toBe(1);
+		expect(b.list).toEqual(a.list);
+		// Neither overwrote the other's file.
+		const files = readdirSync(join(cacheDir(), "coverage"));
+		expect(files.filter((f) => f.endsWith(".json"))).toHaveLength(2);
+		expect((await repoView(scanner())).built).toBe(0);
+		expect((await repoView(scanner(other))).built).toBe(0);
+	});
+
+	it("a build its commit doesn't name (dirty tree, no git) neither reads nor keeps coverage (CAR-324)", async () => {
+		await startMany(1, 1);
+		await repoView(scanner());
+		for (const commit of [`${"a".repeat(40)}-dirty`, "unknown"]) {
+			const dev = { ...BUILD_A, commit };
+			const first = await repoView(scanner(dev));
+			expect(first.built, commit).toBe(1);
+			expect((await repoView(scanner(dev))).built, commit).toBe(1);
+		}
+		// Only the clean build's file.
+		const files = readdirSync(join(cacheDir(), "coverage"));
+		expect(files).toHaveLength(1);
+	});
+
+	it("coverage files and crashed temp files not written for two weeks are deleted on the first write (CAR-324)", async () => {
+		await startMany(1, 1);
+		const dir = join(cacheDir(), "coverage");
+		mkdirSync(dir, { recursive: true });
+		const old = Date.now() / 1000 - 15 * 24 * 60 * 60;
+		const stale = join(dir, `${"0".repeat(64)}.json`);
+		const crashed = join(dir, `${"1".repeat(64)}.json.x.tmp`);
+		const recent = join(dir, `${"2".repeat(64)}.json`);
+		for (const f of [stale, crashed, recent]) writeFileSync(f, "{}");
+		utimesSync(stale, old, old);
+		utimesSync(crashed, old, old);
+		await repoView(scanner());
+		const left = readdirSync(dir);
+		expect(left).toContain(`${"2".repeat(64)}.json`);
+		expect(left).not.toContain(`${"0".repeat(64)}.json`);
+		expect(left).not.toContain(`${"1".repeat(64)}.json.x.tmp`);
+		expect(left).toHaveLength(2);
+	});
+
+	it("scans side by side count each review once, at most four builds at a time (CAR-324)", async () => {
+		await seed(1, 8);
+		let running = 0;
+		let most = 0;
+		let started = 0;
+		const gate: (() => void)[] = [];
+		const s = gitless(async () => {
+			started++;
+			running++;
+			most = Math.max(most, running);
+			await new Promise<void>((go) => gate.push(go));
+			running--;
+			return snap;
+		});
+		const want = prs(1, 2, 3, 4, 5, 6, 7, 8);
+		const one = s.list("octo", want, "acme/widget");
+		const two = s.list("octo", want, "acme/widget");
+		// Let the builds through as they come, one at a time.
+		while (started < 8 || gate.length > 0) {
+			const go = gate.shift();
+			if (go) go();
+			await new Promise((r) => setImmediate(r));
+		}
+		const [a, b] = await Promise.all([one, two]);
+		expect(started).toBe(8);
+		expect(most).toBeLessThanOrEqual(4);
+		expect(a.filter((r) => r.coverage)).toHaveLength(8);
+		expect(b).toEqual(a);
 	});
 
 	it("the MCP door counts coverage only for the reviews it asks, after a list without (CAR-324)", async () => {

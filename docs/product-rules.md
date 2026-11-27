@@ -76,14 +76,17 @@ other started reviews). Home and the MCP `reviews` tool count coverage only
 for what they show: Home a repo's rows (its PRs with facts), the tool the
 reviews it answers with, never every review ever started (CAR-324). Counted
 coverage is kept across restarts in `$XDG_CACHE_HOME/carbonless/coverage/`
-(one small JSON file per clone and reviewer), valid only at the meta and
-progress tips it was counted at and the coverage code's version
-(`COVERAGE_VERSION`, `src/server/home/started.ts`, bumped whenever the same
-refs could count differently): a restart counts no review again whose refs
-didn't move. The file is derived, never the truth: one that can't be read,
-of another version, or with an entry that doesn't check out (done over
-total, other tips) is counted again, so it can never show more coverage
-than the refs say (principle 2).
+(one small JSON file per clone, reviewer and crb build), valid only at the
+meta and progress tips it was counted at and for the build that counted it
+(version and commit, `buildKey` in `src/server/home/started.ts`): a restart
+of the same build counts no review again whose refs didn't move, and an
+update counts each shown review once, so a fix to how lines are counted
+is never hidden behind older counts. A build its commit doesn't name (a
+dev tree with changes) keeps nothing. The file is derived, never the
+truth: one that can't be read, of another build, clone or reviewer, or
+with an entry that doesn't check out (done over total, an unknown unit,
+other tips) is counted again, so it can never show more coverage than the
+refs say (principle 2). Files not written for two weeks are deleted.
 
 A repo's first open waits on crb's clone of it (`gh repo clone --bare`: 27 s
 of a 29 s open on a large repo), which no later open pays. The owner,

@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
-import { readdir, readFile } from "node:fs/promises";
+import { readdir, readFile, rm, stat } from "node:fs/promises";
 import { join } from "node:path";
 import type { Coverage } from "../../shared/home.js";
 import type { Snapshot } from "../../shared/types.js";
@@ -13,6 +13,7 @@ import { foldProgress } from "../review/fold.js";
 import { RefStore } from "../review/refStore.js";
 import { reviewCreated } from "../review/reviews.js";
 import { withSplitCarries } from "../review/splitCarry.js";
+import { BUILD, type BuildInfo } from "../version.js";
 import type { StartedReview } from "./facts.js";
 
 /**
@@ -29,13 +30,31 @@ import type { StartedReview } from "./facts.js";
  */
 const MAX_SNAPSHOTS = 4;
 
+/** Snapshot builds at once: a cold count of many reviews queues the rest. */
+const MAX_BUILDS = 4;
+
 /**
- * Bumped whenever the coverage of the same refs could come out different:
- * the snapshot's clusters or their keys (`diff/snapshot.ts`), the fold
- * (`review/fold.ts`), split carries, or `coverageOf` below. A file of
- * another version is ignored whole, so every review is counted again.
+ * A knob within one build: bumped to drop what this very build counted.
+ * The coverage file is keyed by the build itself (version and commit), so
+ * any change to the code that counts (the diff, clusters, the fold, split
+ * carries, `coverageOf`) is never read with counts made by other code.
  */
 export const COVERAGE_VERSION = 1;
+
+/** Coverage files not written for this long are deleted (other builds', removed clones', crashed temp files). */
+const PRUNE_AFTER_MS = 14 * 24 * 60 * 60 * 1000;
+
+/**
+ * The key a build's coverage files carry, or null when the build's code
+ * isn't named by its commit (a dev tree with changes, no git): then
+ * nothing is read from disk or kept there.
+ */
+export function buildKey(build: BuildInfo): string | null {
+	if (build.commit === "unknown" || build.commit.endsWith("-dirty")) {
+		return null;
+	}
+	return `${COVERAGE_VERSION}:${build.version}:${build.commit}`;
+}
 
 /** `<cache>/carbonless/repos`, where every clone lives. */
 const reposDir = () => join(cacheDir(), "repos");
@@ -54,7 +73,6 @@ interface DiskEntry {
 	coverage: Coverage;
 }
 
-const OID = /^[0-9a-f]{40}([0-9a-f]{24})?$/;
 const UNITS = new Set<Coverage["unit"]>(["lines", "clusters", "files"]);
 const count = (n: unknown): n is number =>
 	typeof n === "number" && Number.isSafeInteger(n) && n >= 0;
@@ -66,8 +84,11 @@ const count = (n: unknown): n is number =>
 function diskEntry(value: unknown): DiskEntry | null {
 	if (typeof value !== "object" || value === null) return null;
 	const { metaTip, progressTip, coverage } = value as Record<string, unknown>;
-	if (typeof metaTip !== "string" || !OID.test(metaTip)) return null;
-	if (typeof progressTip !== "string" || !OID.test(progressTip)) return null;
+	// Tips are only ever compared for equality with tips git listed: any
+	// string that isn't one of them is a miss.
+	if (typeof metaTip !== "string" || typeof progressTip !== "string") {
+		return null;
+	}
 	if (typeof coverage !== "object" || coverage === null) return null;
 	const { done, total, unit } = coverage as Record<string, unknown>;
 	if (!count(done) || !count(total) || done > total) return null;
@@ -137,9 +158,24 @@ export class StartedReviews {
 	readonly #memos = new Map<string, Map<string, Memo>>();
 	/** By clone and slug: the coverage file as read, by review id. */
 	readonly #disk = new Map<string, Promise<Map<string, DiskEntry>>>();
+	/** The coverage files' key (buildKey); null: none read or written. */
+	readonly #buildKey: string | null;
+	/** Old coverage files deleted once per server, on its first write. */
+	#pruned = false;
+	/**
+	 * Counts under way, by clone, review and progress tip: a scan running
+	 * beside another (two tabs, Home and the MCP tool) waits for the same
+	 * count instead of building again.
+	 */
+	readonly #counting = new Map<string, Promise<Coverage | undefined>>();
+	#buildsRunning = 0;
+	readonly #buildsWaiting: (() => void)[] = [];
 
-	constructor(options: { build?: typeof buildSnapshot } = {}) {
+	constructor(
+		options: { build?: typeof buildSnapshot; buildInfo?: BuildInfo } = {},
+	) {
 		this.#build = options.build ?? buildSnapshot;
+		this.#buildKey = buildKey(options.buildInfo ?? BUILD);
 	}
 
 	/** Forgets its ref stores, snapshots and summaries (the test hook's reset). */
@@ -159,6 +195,20 @@ export class StartedReviews {
 		return store;
 	}
 
+	/** Runs `build` once fewer than MAX_BUILDS others run. */
+	async #limited<T>(build: () => Promise<T>): Promise<T> {
+		if (this.#buildsRunning >= MAX_BUILDS) {
+			await new Promise<void>((go) => this.#buildsWaiting.push(go));
+		}
+		this.#buildsRunning++;
+		try {
+			return await build();
+		} finally {
+			this.#buildsRunning--;
+			this.#buildsWaiting.shift()?.();
+		}
+	}
+
 	#snapshot(repo: string, base: string, head: string): Promise<Snapshot> {
 		const key = `${repo}\0${base}\0${head}`;
 		let snap = this.#snapshots.get(key);
@@ -167,7 +217,7 @@ export class StartedReviews {
 				const oldest = this.#snapshots.keys().next().value;
 				if (oldest !== undefined) this.#snapshots.delete(oldest);
 			}
-			snap = this.#build(repo, base, head);
+			snap = this.#limited(() => this.#build(repo, base, head));
 			// A failure is asked again next time.
 			snap.catch(() => this.#snapshots.delete(key));
 			this.#snapshots.set(key, snap);
@@ -382,34 +432,57 @@ export class StartedReviews {
 			} else misses.push(memo);
 		}
 		if (misses.length === 0) return;
-		const unread = misses.filter((m) => !m.events).map((m) => m.progressTip);
+		const keyOf = (m: Memo) => `${repo}\0${m.review?.id}\0${m.progressTip}`;
+		// Counted already by a scan beside this one: wait for it.
+		const own = misses.filter((m) => !this.#counting.has(keyOf(m)));
+		const unread = own.filter((m) => !m.events).map((m) => m.progressTip);
 		const read =
 			unread.length > 0
 				? await this.#store(repo).eventsOfTips(unread)
 				: new Map<string, CrbEvent[] | Error>();
+		let counted = false;
 		await Promise.all(
 			misses.map(async (memo) => {
-				try {
-					memo.events ??= eventsOf(read, memo.progressTip);
-				} catch (error) {
-					console.error(
-						`crb: no coverage for ${memo.review?.id} in ${repo}: ${String(error)}`,
+				const key = keyOf(memo);
+				let counting = this.#counting.get(key);
+				if (!counting) {
+					try {
+						memo.events ??= eventsOf(read, memo.progressTip);
+					} catch (error) {
+						console.error(
+							`crb: no coverage for ${memo.review?.id} in ${repo}: ${String(error)}`,
+						);
+						return;
+					}
+					const events = memo.events;
+					counting = this.#count(repo, slug, events).finally(() =>
+						this.#counting.delete(key),
 					);
-					return;
+					this.#counting.set(key, counting);
 				}
-				await this.#coverage(repo, slug, memo);
+				const coverage = await counting;
+				if (coverage) {
+					memo.coverage = coverage;
+					memo.events = undefined;
+					counted = true;
+				}
 			}),
 		);
-		if (misses.some((m) => m.coverage !== undefined)) {
-			await this.#writeDisk(repo, slug);
-		}
+		if (counted) await this.#writeDisk(repo, slug);
 	}
 
-	/** Fills `memo.coverage` from its events, which it then lets go. */
-	async #coverage(repo: string, slug: string, memo: Memo): Promise<void> {
-		const events = memo.events ?? [];
+	/**
+	 * The coverage of a progress ref's `events`; undefined when the patch
+	 * set's commits aren't readable: no coverage to claim (shown as none),
+	 * tried again next time from the memo's kept events.
+	 */
+	async #count(
+		repo: string,
+		slug: string,
+		events: CrbEvent[],
+	): Promise<Coverage | undefined> {
 		const patchset = foldProgress(events).patchset;
-		if (!patchset) return;
+		if (!patchset) return undefined;
 		try {
 			const snapshot = await this.#snapshot(
 				repo,
@@ -419,20 +492,21 @@ export class StartedReviews {
 			// Home never writes: marks on hunks now cut at whitespace-only
 			// runs count on their pieces as the review's first open writes
 			// them (CAR-156).
-			memo.coverage = coverageOf(
-				snapshot,
-				withSplitCarries(events, snapshot, slug),
-			);
-			memo.events = undefined;
+			return coverageOf(snapshot, withSplitCarries(events, snapshot, slug));
 		} catch {
-			// The patch set's commits aren't readable: no coverage to claim
-			// (shown as none), tried again next time from the kept events.
+			return undefined;
 		}
 	}
 
-	/** The coverage file of `repo` and `slug` (hashed: no path or slug in its name). */
+	/**
+	 * The coverage file of `repo`, `slug` and this build (hashed: no path or
+	 * slug in its name); two builds running at once (main and a branch
+	 * instance on the same cache) keep files of their own.
+	 */
 	#diskPath(repo: string, slug: string): string {
-		const name = createHash("sha256").update(`${repo}\0${slug}`).digest("hex");
+		const name = createHash("sha256")
+			.update(`${repo}\0${slug}\0${this.#buildKey}`)
+			.digest("hex");
 		return join(coverageDir(), `${name}.json`);
 	}
 
@@ -447,6 +521,7 @@ export class StartedReviews {
 		if (!disk) {
 			disk = (async () => {
 				const entries = new Map<string, DiskEntry>();
+				if (this.#buildKey === null) return entries;
 				let parsed: unknown;
 				try {
 					parsed = JSON.parse(
@@ -458,7 +533,7 @@ export class StartedReviews {
 				if (typeof parsed !== "object" || parsed === null) return entries;
 				const file = parsed as Record<string, unknown>;
 				if (
-					file.version !== COVERAGE_VERSION ||
+					file.version !== this.#buildKey ||
 					file.repo !== repo ||
 					file.slug !== slug ||
 					typeof file.reviews !== "object" ||
@@ -483,6 +558,11 @@ export class StartedReviews {
 	 * started reviews that exist. A failed write keeps the memory copy.
 	 */
 	async #writeDisk(repo: string, slug: string): Promise<void> {
+		if (this.#buildKey === null) return;
+		if (!this.#pruned) {
+			this.#pruned = true;
+			await pruneCoverage();
+		}
 		const key = `${repo}\0${slug}`;
 		const disk = await this.#readDisk(repo, slug);
 		const memos = this.#memos.get(key);
@@ -511,7 +591,7 @@ export class StartedReviews {
 			await writeFileAtomic(
 				this.#diskPath(repo, slug),
 				JSON.stringify({
-					version: COVERAGE_VERSION,
+					version: this.#buildKey,
 					repo,
 					slug,
 					reviews: Object.fromEntries(next),
@@ -521,6 +601,28 @@ export class StartedReviews {
 			console.error(`crb: coverage not kept for ${repo}: ${String(error)}`);
 		}
 	}
+}
+
+/**
+ * Deletes coverage files (and temp files a crash left) not written for
+ * PRUNE_AFTER_MS: other builds' files, removed clones'. One still in use is
+ * at worst counted again.
+ */
+async function pruneCoverage(): Promise<void> {
+	const dir = coverageDir();
+	const names = await readdir(dir).catch(() => [] as string[]);
+	const before = Date.now() - PRUNE_AFTER_MS;
+	await Promise.all(
+		names.map(async (name) => {
+			const path = join(dir, name);
+			try {
+				if ((await stat(path)).mtimeMs < before)
+					await rm(path, { force: true });
+			} catch {
+				// Gone already, or another crb's: nothing to do.
+			}
+		}),
+	);
 }
 
 /** A tip's events as `read` has them; throws when it hasn't, or failed. */
