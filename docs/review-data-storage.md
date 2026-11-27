@@ -197,8 +197,11 @@ same repo. So `crb serve` maintains its clones (`src/server/maintenance.ts`):
   by commit ID with no ref; a review's snapshot must stay readable whatever
   became unreachable. So no `gc`, no `prune`, no `repack -a`/`-A`, no cruft
   expiry: an unreachable object is kept, in a pack, for as long as the clone
-  lives. The guard test fetches commits by ID with no ref, writes loose
-  objects nothing refers to, and checks every one of them after a run.
+  lives. The guard tests fetch commits by ID with no ref, write loose
+  objects nothing refers to, and rewrite a review's ref as compaction does
+  (its old commits unreachable, packed in a pack the run rolls up, or
+  loose), and check every one of them after a run; `repack -a -d` fails
+  them.
   Compaction (below) makes old review commits unreachable; dropping them
   needs a prune policy that knows which heads crb still reads, which is not
   built.
@@ -1373,7 +1376,8 @@ reviews.
   `git gc --prune=now` runs, and its merge base after the base branch is
   deleted; clone maintenance leaves no loose objects and at
   most 3 packs after 8 or 32 fetches, keeps every commit fetched by ID and
-  every unreferenced object, never runs beside a repo-lock holder and at
+  every unreferenced object and a review's commits a ref rewrite left
+  unreachable, never runs beside a repo-lock holder and at
   most once a day (`maintenance.test.ts`); with a git config that sets a real user email, crb commits still
   carry only the slug and tool identities; starting PS2 writes `since`, the
   carries and both pins in one commit and one transaction, twice at once
