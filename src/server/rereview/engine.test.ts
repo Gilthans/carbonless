@@ -364,6 +364,15 @@ describe("the engine", () => {
 		expect(answer.shape).toMatchObject({ code: "S4b", conflicts: ["a.txt"] });
 		expect(answer.toRead).toEqual({ files: 2, clusters: 3 });
 		expect(start.carried).toEqual([]);
+		// Nothing of a conflicted file carries, line by line either (new.txt's
+		// unchanged line does).
+		const conflictKeys = new Set(
+			r.files.find((f) => f.path === "a.txt")?.clusters.map((c) => c.key),
+		);
+		expect(conflictKeys.size).toBe(2);
+		const carriedKeys = (start.linesCarried?.states ?? []).map((e) => e.key);
+		expect(carriedKeys.length).toBeGreaterThan(0);
+		expect(carriedKeys.filter((k) => conflictKeys.has(k))).toEqual([]);
 		const hunks = interdiffFileHunks(traced, r, answer, 0);
 		const keyed = hunks.hunks.flatMap((hk) =>
 			hk.lines
@@ -1067,6 +1076,48 @@ describe("the engine", () => {
 		}
 	});
 
+	it("R1: a reviewed mode change the author undoes is gone, not absorbed: in a deleted file, and beside an edit", async () => {
+		// PS1 only changes modes. PS2 deletes a.txt (its lines, no
+		// file-level change) and turns b.txt back while editing a line:
+		// the interdiff shows both, so neither mode change went into a base.
+		const fx = createGitFixture([
+			{ message: "base", files: { "a.txt": "a1\na2\n", "b.txt": "b1\nb2\n" } },
+			{
+				message: "PR: modes",
+				files: {},
+				chmod: { "a.txt": "755", "b.txt": "755" },
+			},
+			{
+				message: "PR: drop a, edit b",
+				files: { "b.txt": "b1\nB2\n" },
+				delete: ["a.txt"],
+				chmod: { "b.txt": "644" },
+			},
+		]);
+		try {
+			const [b0, p1, h2] = fx.shas as [string, string, string];
+			const ps1 = await buildSnapshot(fx.path, b0, p1);
+			expect(ps1.files.map((f) => f.clusters.map((c) => c.kind))).toEqual([
+				["file"],
+				["file"],
+			]);
+			const result = await computeRereview(
+				fx.path,
+				since(1, ps1, marked(ps1)),
+				[],
+				targetOf(await buildSnapshot(fx.path, b0, h2)),
+			);
+			expect(result.absorbed).toEqual([]);
+			expect(
+				Object.values(kinds(result.answer))
+					.flat()
+					.filter((k) => k === "gone:1"),
+			).toHaveLength(2);
+		} finally {
+			fx.cleanup();
+		}
+	});
+
 	it("the cache key names the since and earlier snapshots, not their numbers", () => {
 		const a = "a".repeat(64);
 		const b = "b".repeat(64);
@@ -1645,6 +1696,63 @@ describe("toRead.withoutWhitespaceOnly (CAR-247)", () => {
 		);
 		return answer;
 	};
+
+	it("without an interdiff: every cluster is to read, and the switch on leaves out the whitespace-only ones", async () => {
+		const fx = createGitFixture([
+			{
+				message: "base",
+				files: { "a.ts": text(body("a")), "b.ts": text(body("b")) },
+			},
+			{
+				message: "head",
+				files: {
+					// a.ts: a re-indent at line 2, a real change at line 9.
+					"a.ts": text(
+						body("a").map((l, i) =>
+							i === 1 ? `  ${l}` : i === 8 ? "a nine!" : l,
+						),
+					),
+					// b.ts: only a re-indent.
+					"b.ts": text(body("b").map((l, i) => (i === 4 ? `  ${l}` : l))),
+				},
+			},
+		]);
+		try {
+			const [b0, h1] = fx.shas as [string, string];
+			const r = await buildSnapshot(fx.path, b0, h1);
+			const traced: Traced = {
+				shape: {
+					code: "S4c",
+					commits: 1,
+					identical: false,
+					conflicts: [],
+					virtualRebase: "unrelated",
+					virtualHead: null,
+				},
+				interdiff: { status: "unavailable", reason: "unrelated" },
+				traced: [],
+				lineKeys: { old: {}, new: {}, base: {}, baseLine: {} },
+			};
+			const { answer } = answerRereview(
+				traced,
+				since(1, r, new Map()),
+				[],
+				targetOf(r),
+			);
+			expect(answer.toRead).toEqual({
+				files: 2,
+				clusters: 3,
+				withoutWhitespaceOnly: { files: 1, clusters: 1 },
+			});
+			expect(
+				answer.files.map((f) =>
+					f.clusters.map((c) => c.whitespaceOnly === true),
+				),
+			).toEqual([[true, false], [true]]);
+		} finally {
+			fx.cleanup();
+		}
+	});
 
 	it("is absent when the count is the same: nothing whitespace-only to leave out", async () => {
 		const h = createRereviewHistory();

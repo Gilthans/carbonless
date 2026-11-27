@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+	all,
 	contains,
 	covers,
 	fromIndexes,
@@ -102,6 +103,13 @@ describe("line ranges", () => {
 		expect(covers([], 0)).toBe(false);
 		expect(within([[0, 5]], 5)).toBe(true);
 		expect(within([[0, 6]], 5)).toBe(false);
+		// A mark reaching before the first line, or an empty or reversed
+		// range, lies within nothing (fitRanges: principle 2, fail closed).
+		expect(within([[-1, 2]], 5)).toBe(false);
+		expect(within([[2, 2]], 5)).toBe(false);
+		expect(within([[3, 1]], 5)).toBe(false);
+		expect(all(3)).toEqual([[0, 3]]);
+		expect(all(0)).toEqual([]);
 		expect(fromIndexes([4, 0, 1, 2])).toEqual([
 			[0, 3],
 			[4, 5],

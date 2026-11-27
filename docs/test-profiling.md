@@ -300,3 +300,20 @@ the result. It refuses a run that looks filtered or partial (under 90% of
 the listed files, or many times below a third of the listed ones: a `-t`
 or flake-check run); `--force` writes it anyway. Keys use forward slashes
 on every OS.
+
+## Mutation testing (CAR-263)
+
+`pnpm mutation` runs Stryker (`stryker.config.mjs`) on the code that
+decides what is reviewed and unreviewed (CLAUDE.md principle 2): the
+coverage join and fold, the carry engine, clusters, pieces and the
+page's counts. It plants small bugs (a flipped condition, an off-by-one)
+and reports each one no unit test catches, in `reports/mutation/`
+(`mutation.html`, `mutation.json`; git-ignored). It takes the queue's
+full slot (`scripts/queue.mjs`), one Stryker runner per worker the slot
+gets, each running Vitest with one worker; `testFiles` keeps it to the
+unit tests of those files. Measured on the devbox, loaded, 5 runners: about
+5,300 mutants in 4 h 10 min. Too slow for CI or every PR: run it by hand
+after changing that logic, and read the survivors of the files you
+touched. A survivor that could make coverage look more complete is a
+missing test; one that can't (an equivalent mutant, a message, an order
+of display) needs none.

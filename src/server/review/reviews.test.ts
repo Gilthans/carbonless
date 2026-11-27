@@ -579,6 +579,28 @@ describe("recordStates", () => {
 			]);
 		});
 
+		it("takes a path as long as the limit", async () => {
+			await svc.recordStates(id, "dan", snap, [{ key: k1, state: "reviewed" }]);
+			const start: PatchsetStart = {
+				since: 1,
+				shape: "S1",
+				baseBranch: "main",
+				interdiff: "available",
+				carried: [],
+			};
+			const long = "a".repeat(4096);
+			const progress = await svc.recordStates(
+				id,
+				"dan",
+				otherSnap,
+				[change(1, long)],
+				start,
+			);
+			expect(progress.sinceMarks.get(otherSnap.revision)).toEqual([
+				mark(1, long),
+			]);
+		});
+
 		it("refuses a mark naming no earlier patch set, or its own", async () => {
 			await svc.recordStates(id, "dan", snap, [{ key: k1, state: "reviewed" }]);
 			const tip = await store.tip(progressRef());
@@ -605,6 +627,14 @@ describe("recordStates", () => {
 			[
 				"lines of a cluster too",
 				{ ...change(1), reviewedLines: [[0, 1]] as [number, number][] },
+			],
+			["a path past the limit", change(1, "a".repeat(4097))],
+			[
+				"a side missing",
+				{
+					...change(1),
+					sinceMark: { since: 1, path: "gone.ts", reviewed: mark(1).reviewed },
+				} as unknown as StateChange,
 			],
 			[
 				"a side that isn't ranges",

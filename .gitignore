@@ -14,3 +14,7 @@ playwright-report/
 
 # Machine-specific agent notes (never tracked)
 CLAUDE.local.md
+
+# Mutation testing (pnpm mutation)
+.stryker-tmp/
+reports/mutation/
