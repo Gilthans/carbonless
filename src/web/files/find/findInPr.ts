@@ -452,6 +452,12 @@ export function countsByFile(
 export interface Caret {
 	pos: HitPos;
 	shown: boolean;
+	/**
+	 * Set on a caret at the start of a file the reviewer opened (unshown,
+	 * `pos` the hit Next goes to): Previous goes to the last hit at or
+	 * before that file's end instead (caretAfterOpen, CAR-298).
+	 */
+	opened?: number;
 }
 
 const posOf = (h: Hit): HitPos => ({
@@ -485,9 +491,29 @@ export function caretAfterTyping(
 }
 
 /**
+ * The caret once the reviewer opens file `index` (CAR-298): at the file's
+ * start, between hits. Unshown on the hit Next goes to (the file's first,
+ * else the next file's, wrapping: caretAfterTyping's), and remembering the
+ * file, so Previous goes to the last hit at or before its end. Null
+ * without hits.
+ */
+export function caretAfterOpen(
+	hits: readonly Hit[],
+	order: readonly number[],
+	index: number,
+): Caret | null {
+	const next = caretAfterTyping(hits, order, index);
+	return next && { ...next, opened: index };
+}
+
+/**
  * A step: an unshown caret becomes shown where it is, unless the reviewer
  * already sees its hit (`seen`); a shown (or seen) one moves to the next
- * (`1`) or previous (`-1`) hit, wrapping at both ends. Null without hits.
+ * (`1`) or previous (`-1`) hit, wrapping at both ends. A caret at an
+ * opened file's start (caretAfterOpen) goes from there: Next to its hit,
+ * Previous to the last hit at or before the file's end, either passing
+ * over the hit painted current when the reviewer already sees it. Null
+ * without hits.
  */
 export function stepCaret(
 	hits: readonly Hit[],
@@ -496,6 +522,29 @@ export function stepCaret(
 	seen = false,
 ): Caret | null {
 	if (!caret || hits.length === 0) return null;
+	if (!caret.shown && caret.opened !== undefined) {
+		const at = hitIndex(hits, caret.pos);
+		// The hit painted current (Next's) is passed over when seen.
+		const past = (i: number): Caret => ({
+			pos: posOf(hits[(i + dir + hits.length) % hits.length] as Hit),
+			shown: true,
+		});
+		if (dir === 1)
+			return seen && at >= 0 ? past(at) : { pos: caret.pos, shown: true };
+		let last = -1;
+		for (let i = hits.length - 1; i >= 0; i--)
+			if ((hits[i] as Hit).index === caret.opened) {
+				last = i;
+				break;
+			}
+		if (last < 0) {
+			// None in the file: the hit before the one Next goes to.
+			last = at < 0 ? hits.length - 1 : (at - 1 + hits.length) % hits.length;
+		}
+		// The file's one hit is the painted one: passed over when seen.
+		if (seen && last === at) return past(at);
+		return { pos: posOf(hits[last] as Hit), shown: true };
+	}
 	if (!caret.shown && !seen) return { pos: caret.pos, shown: true };
 	const at = hitIndex(hits, caret.pos);
 	const next =

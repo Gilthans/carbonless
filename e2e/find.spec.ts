@@ -138,6 +138,14 @@ const currentSection = (page: Page) =>
 	page.locator("section[aria-label]:has([data-find-current])").last();
 const currentRow = (page: Page) => page.locator("tr[data-find-current]");
 
+/** Scrolls the current row to the middle of the screen: in plain view. */
+async function centerCurrent(page: Page) {
+	await currentRow(page).evaluate((el) =>
+		el.scrollIntoView({ block: "center" }),
+	);
+	await expect(currentRow(page)).toBeInViewport({ ratio: 1 });
+}
+
 async function expand(page: Page, path: string) {
 	const section = fileSection(page, path);
 	await section.getByRole("button", { name: "Expand file" }).click();
@@ -332,6 +340,97 @@ test("a term with no hit in the open file says the next file's hit and opens not
 	else await box(page).press("Enter");
 	await expect.poll(() => openPaths(page)).toEqual([DOC]);
 	await expect(count(page)).toHaveText(counted(DOC_HIT, ALL), VISIBLE);
+});
+
+test("opening a file moves the caret to its start: Next goes to its first hit, Previous to the last at or before its end; a file without hits goes on to its neighbours (CAR-298)", async ({
+	page,
+	pr,
+	startCrb,
+	isMobile,
+}) => {
+	await phone(page, isMobile);
+	// A phone taps the bar's ↓/↑ where they are: Playwright's click would
+	// first scroll the page (the hit mid-screen out of view).
+	const tap = async (name: RegExp) => {
+		const b = await bar(page).getByRole("button", { name }).boundingBox();
+		if (!b) throw new Error(`no ${name} button`);
+		await page.mouse.click(b.x + b.width / 2, b.y + b.height / 2);
+	};
+	const next = () => (isMobile ? tap(/^Next/) : box(page).press("Enter"));
+	const previous = () =>
+		isMobile ? tap(/^Previous/) : box(page).press("Shift+Enter");
+	await pr(fixture);
+	const s = await startCrb();
+	await openFiles(page, s.url);
+	await pickInTree(page, /\sa\.ts\s/);
+	await expect(
+		fileSection(page, A).getByTestId("diff-line").first(),
+	).toBeVisible();
+	await openBar(page, isMobile);
+	await search(page, "saveDraft");
+	// At a hit in src/a.ts.
+	await next();
+	await expect(count(page)).toHaveText(counted(A_FIRST + 1, ALL), VISIBLE);
+
+	// src/c.ts opened from the tree: the caret sits at its start, the count
+	// on the hit Next goes to (its line 15, painted current); nothing is
+	// stepped to. That hit is in view: Next passes over it, as after typing
+	// (owner, 2026-11-07), to src/ws.ts.
+	await pickInTree(page, /\sc\.ts\s/);
+	await expect.poll(() => openPaths(page)).toEqual([C]);
+	await expect(count(page)).toHaveText(counted(ALL - 2, ALL), VISIBLE);
+	await expect(currentRow(page)).toHaveAttribute("data-new-no", "15");
+	// In plain view, mid-screen (a phone's file can open with it at the very
+	// bottom, which doesn't count as seen).
+	await centerCurrent(page);
+	await next();
+	await expect(currentSection(page)).toHaveAttribute("aria-label", WS);
+	await expect(count(page)).toHaveText(counted(ALL - 1, ALL), VISIBLE);
+
+	// src/a.ts opened from the tree: Previous goes to its last hit (line 8),
+	// not back from src/ws.ts.
+	await pickInTree(page, /\sa\.ts\s/);
+	await expect.poll(() => openPaths(page)).toEqual([A]);
+	await previous();
+	await expect(currentSection(page)).toHaveAttribute("aria-label", A);
+	await expect(currentRow(page)).toHaveAttribute("data-new-no", "8");
+	await expect(count(page)).toHaveText(counted(A_FIRST + 2, ALL), VISIBLE);
+
+	// src/b.ts opened: its one hit (line 10) is in view, so Previous passes
+	// over it to src/a.ts's last. A step's own open (into src/a.ts) keeps
+	// the caret where it went: the next Previous goes on back from there.
+	await pickInTree(page, /\sb\.ts\s/);
+	await expect.poll(() => openPaths(page)).toEqual([B]);
+	await expect(currentRow(page)).toHaveAttribute("data-new-no", "10");
+	await centerCurrent(page);
+	await previous();
+	await expect(currentSection(page)).toHaveAttribute("aria-label", A);
+	await expect(currentRow(page)).toHaveAttribute("data-new-no", "8");
+	await expect(count(page)).toHaveText(counted(A_FIRST + 2, ALL), VISIBLE);
+	await previous();
+	await expect(currentRow(page)).toHaveAttribute("data-new-no", "6");
+	await expect(count(page)).toHaveText(counted(A_FIRST + 1, ALL), VISIBLE);
+
+	// docs/notes.md (no hit) opened from its header: Next goes to the next
+	// file's hit (docs/saveDraft.md's path)…
+	await expand(page, NOTES);
+	await expect.poll(() => openPaths(page)).toEqual([NOTES]);
+	await expect(count(page)).toHaveText(counted(DOC_HIT, ALL), VISIBLE);
+	await next();
+	await expect.poll(() => openPaths(page)).toEqual([DOC]);
+	await expect(count(page)).toHaveText(counted(DOC_HIT, ALL), VISIBLE);
+	// …and, opened again, Previous to the hit before it (the PNG's path).
+	await expand(page, NOTES);
+	await expect.poll(() => openPaths(page)).toEqual([NOTES]);
+	await previous();
+	await expect(count(page)).toHaveText(counted(1, ALL), VISIBLE);
+	await expect(currentSection(page)).toHaveAttribute("aria-label", PNG);
+	// Next and Previous across files work as before.
+	await next();
+	await expect(count(page)).toHaveText(counted(DOC_HIT, ALL), VISIBLE);
+	await next();
+	await expect(count(page)).toHaveText(counted(A_FIRST, ALL), VISIBLE);
+	await expect(currentSection(page)).toHaveAttribute("aria-label", A);
 });
 
 test("the header button opens and closes the bar", async ({
