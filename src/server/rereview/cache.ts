@@ -13,6 +13,8 @@ import { cacheDir } from "../paths.js";
  */
 export class RereviewCache<T> {
 	readonly #memory = new Map<string, T>();
+	/** Disk writes setInBackground started that haven't ended. */
+	readonly #writing = new Set<Promise<void>>();
 
 	constructor(private readonly dir: string = join(cacheDir(), "rereview")) {}
 
@@ -55,5 +57,22 @@ export class RereviewCache<T> {
 	async set(key: string, value: T): Promise<void> {
 		this.#memory.set(key, value);
 		await writeFileAtomic(this.#path(key), JSON.stringify({ key, value }));
+	}
+
+	/**
+	 * set, without waiting for the disk: the memory copy is there at once,
+	 * and a failed write only costs the next restart a computation. An
+	 * answer never waits on it (on Windows a busy file can hold a save for
+	 * seconds, CAR-181).
+	 */
+	setInBackground(key: string, value: T): void {
+		const done = this.set(key, value).catch(() => {});
+		this.#writing.add(done);
+		void done.then(() => this.#writing.delete(done));
+	}
+
+	/** Resolves once every setInBackground write has ended. */
+	async settled(): Promise<void> {
+		await Promise.all(this.#writing);
 	}
 }

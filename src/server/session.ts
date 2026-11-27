@@ -130,7 +130,7 @@ import {
 	ReviewService,
 	StaleSnapshotError,
 } from "./review/reviews.js";
-import { readSeen, type Seen, writeSeen } from "./seen.js";
+import { readSeen, recordSeen, type Seen, seenSettled } from "./seen.js";
 import { slugify } from "./slug.js";
 import { ThreadCodeSource } from "./threadCode.js";
 import {
@@ -621,6 +621,9 @@ export class Session {
 				// Its process, checkout and claim.
 				this.#agent?.close(),
 			]);
+			// Then the saves the answers didn't wait for: only now, as a job
+			// that ended above may just have started one.
+			await Promise.all([this.#cache.settled(), seenSettled(this.id)]);
 		})();
 		return this.#closed;
 	}
@@ -736,9 +739,10 @@ export class Session {
 		}
 		// What the reviewer saw last time, then this time's head in its place.
 		// Losing the note (an unwritable state dir) costs the toast its
-		// "since you last looked", never the review.
+		// "since you last looked", never the review; the open never waits on
+		// writing it.
 		const lastSeen = await readSeen(reviewId);
-		await writeSeen(reviewId, meta.headOid).catch(() => {});
+		recordSeen(reviewId, meta.headOid);
 		const { mergeBase, head } = state.patchset ?? fetched;
 		const snapshot = await step("crb: snapshot", () =>
 			buildSnapshot(repo, mergeBase, head),
@@ -2008,8 +2012,8 @@ export class Session {
 					),
 				);
 				// A cache that can't be written costs the next restart a
-				// computation, never the answer.
-				await this.#cache.set(key, traced).catch(() => {});
+				// computation, never the answer, which doesn't wait on it.
+				this.#cache.setInBackground(key, traced);
 				return traced;
 			});
 			this.#tracing.set(key, pending);
