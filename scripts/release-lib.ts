@@ -247,10 +247,14 @@ async function npmState(io: Io): Promise<NpmState> {
 		if (/E404|404 Not Found/.test(r.stderr + r.stdout)) return null;
 		throw new Error(`npm view ${PACKAGE} failed: ${r.stderr.trim()}`);
 	}
-	const data = JSON.parse(r.stdout) as {
+	type View = {
 		"dist-tags"?: Record<string, string>;
 		versions?: string[] | string;
 	};
+	// An object, or (npm 12, a package with a non-semver-ordered version
+	// such as 0.0.0-stage) an array of one.
+	const parsed = JSON.parse(r.stdout) as View | View[];
+	const data = (Array.isArray(parsed) ? parsed[0] : parsed) ?? {};
 	const versions = data.versions ?? [];
 	return {
 		distTags: data["dist-tags"] ?? {},
@@ -1013,7 +1017,10 @@ export const MIN_NPM = "12.2.0";
  * Fails unless this machine's npm is MIN_NPM or newer: an older one answers
  * `npm stage` with "Unknown command" halfway through. Says the fix.
  */
-async function checkNpmVersion(io: Io): Promise<void> {
+export async function checkNpmVersion(
+	io: Io,
+	command = "pnpm release publish",
+): Promise<void> {
 	const r = await io.run("npm", ["--version"]);
 	const found = r.code === 0 ? r.stdout.trim() : "";
 	const have = /^\d+\.\d+\.\d+$/.test(found) ? parseVersion(found) : null;
@@ -1024,7 +1031,7 @@ async function checkNpmVersion(io: Io): Promise<void> {
 			? `npm --version failed (${r.code}): ${r.stderr.trim() || r.stdout.trim()}`
 			: `this npm is ${found || "(no version)"}`;
 	throw new Error(
-		`pnpm release publish needs npm >= ${MIN_NPM} (npm stage); ${what}. Fix: npm install -g npm@12 (npm 12 needs Node ^22.22.2 or ^24.15.0, or newer)`,
+		`${command} needs npm >= ${MIN_NPM} (npm stage); ${what}. Fix: npm install -g npm@12 (npm 12 needs Node ^22.22.2 or ^24.15.0, or newer)`,
 	);
 }
 

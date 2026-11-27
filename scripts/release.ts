@@ -6,7 +6,8 @@
 //                                             carbonless-review-<version>-<sha7>[-dirty].tgz and
 //                                             installs it as the global crb; the last stdout line
 //                                             is the tarball's path
-//   pnpm release status                       master's next version, rc and latest on npm and in tags
+//   pnpm release status                       master's next version, rc and latest on npm and in tags,
+//                                             and the withdrawn versions
 //   pnpm release promote [<rc tag>] [--next patch|minor|major]
 //                                             collects the release's notes for exactly <rc tag>'s
 //                                             range from Linear (refusing while any is missing),
@@ -21,6 +22,13 @@
 //                                             (npm stage approve, with their two-factor OTP), or
 //                                             for the very first release publishes it; then
 //                                             starts release-finish; agents never run it
+//   pnpm release withdraw <version>... "<why>" [--deprecate-only]
+//                                             THE OWNER ONLY (npm asks for the OTP): deprecates
+//                                             each version with "withdrawn: <why>" (crb never
+//                                             offers it, and one running it shows a Withdrawn
+//                                             banner) and moves latest and rc off them to the
+//                                             newest good version; --deprecate-only moves no tag
+//                                             (when none good is left); safe to rerun
 //   pnpm release next <patch|minor|major|X.Y.Z>
 //                                             a branch and PR setting master's next release
 //   pnpm release merge-ok <pr>                fails while master is frozen (its version is
@@ -120,6 +128,7 @@ import {
 	workflowText,
 	writeNotes,
 } from "./release-notes.js";
+import { withdraw, withdrawnStatus } from "./release-withdraw.js";
 
 const runner: Runner = (cmd, args, opts) =>
 	new Promise((resolve, reject) => {
@@ -172,7 +181,7 @@ const publishIo: PublishIo = {
 
 function usage(): never {
 	console.error(
-		'usage: pnpm release local [--out <dir>] [--no-install] | status | promote [<rc tag>] [--next patch|minor|major] | publish [<run-id>] | next <patch|minor|major|X.Y.Z> | merge-ok <pr> | note <CAR-N> "<text>" [--kind new|improved|fixed] | note <CAR-N> --none "<why>" | notes [X.Y.Z] [--pr] | notes check',
+		'usage: pnpm release local [--out <dir>] [--no-install] | status | promote [<rc tag>] [--next patch|minor|major] | publish [<run-id>] | withdraw <version>... "<why>" [--deprecate-only] | next <patch|minor|major|X.Y.Z> | merge-ok <pr> | note <CAR-N> "<text>" [--kind new|improved|fixed] | note <CAR-N> --none "<why>" | notes [X.Y.Z] [--pr] | notes check',
 	);
 	process.exit(2);
 }
@@ -289,7 +298,26 @@ async function main(argv: string[]) {
 		case "local":
 			return localCommand(rest, usage);
 		case "status":
-			return status(io);
+			await status(io);
+			await withdrawnStatus(io);
+			return;
+		case "withdraw": {
+			// withdraw <version>... "<why>" [--deprecate-only]: the last
+			// positional is the reason.
+			const deprecateOnly = rest.includes("--deprecate-only");
+			const positional = rest.filter((a) => a !== "--deprecate-only");
+			if (positional.some((a) => a.startsWith("-"))) usage();
+			const why = positional.pop();
+			if (why === undefined || positional.length === 0) usage();
+			// The owner at a terminal, answering y/N and npm's OTP: never piped.
+			if (!process.stdin.isTTY || !process.stdout.isTTY) {
+				throw new Error(
+					"pnpm release withdraw needs the owner at a terminal (it asks y/N, and npm asks for the OTP)",
+				);
+			}
+			await withdraw(publishIo, { versions: positional, why, deprecateOnly });
+			return;
+		}
 		case "promote": {
 			let tag: string | undefined;
 			let kind: Kind = "minor";

@@ -43,6 +43,13 @@ export interface UpdateInfo {
 	checkError: string | null;
 	/** Why crb never checks; null: it does. */
 	checksOff: ChecksOff | null;
+	/**
+	 * The running version is withdrawn (CAR-212: npm deprecated it with
+	 * WITHDRAWN_PREFIX): the maintainer's reason, untrusted plain text
+	 * (withdrawnReason). Null when it isn't, and until a check said
+	 * (`lastChecked` null).
+	 */
+	withdrawn: { reason: string } | null;
 }
 
 /**
@@ -76,3 +83,36 @@ export interface UpdateRequest {
 /** The release page of `version`: its tag on GitHub. */
 export const releaseUrl = (version: string): string =>
 	`https://github.com/Gilthans/carbonless/releases/tag/v${encodeURIComponent(version)}`;
+
+/**
+ * How a withdrawal's npm deprecation message starts (`pnpm release
+ * withdraw`, CAR-212): any other deprecation is not a withdrawal.
+ */
+export const WITHDRAWN_PREFIX = "withdrawn: ";
+
+/** The longest withdrawal reason shown (in code points). */
+const MAX_REASON = 300;
+
+// C0 and C1 controls and DEL, and the bidi marks, embeddings, overrides
+// and isolates (as releaseNotes.ts's printable).
+const CONTROL_OR_BIDI =
+	// biome-ignore lint/suspicious/noControlCharactersInRegex: that's the point
+	/[\u0000-\u001f\u007f-\u009f؜‎‏‪-‮⁦-⁩]/g;
+
+/**
+ * Why a version was withdrawn, from its npm `deprecated` field: the text
+ * after WITHDRAWN_PREFIX on one line (whitespace runs as one space), other
+ * control and bidi characters as `?`, at most MAX_REASON characters. Null
+ * when the field isn't a string or isn't a withdrawal. The text is
+ * untrusted (npm's): plain text wherever it goes.
+ */
+export function withdrawnReason(deprecated: unknown): string | null {
+	if (typeof deprecated !== "string") return null;
+	if (!deprecated.startsWith(WITHDRAWN_PREFIX)) return null;
+	const text = deprecated
+		.slice(WITHDRAWN_PREFIX.length)
+		.replace(/\s+/g, " ")
+		.replace(CONTROL_OR_BIDI, "?")
+		.trim();
+	return Array.from(text).slice(0, MAX_REASON).join("");
+}

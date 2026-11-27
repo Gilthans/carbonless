@@ -38,7 +38,12 @@ import {
 	prepareUpdateNotes,
 	runningBuildNotes,
 } from "./notes.js";
-import { checkRegistry, RegistryError, registryUrl } from "./registry.js";
+import {
+	checkRegistry,
+	type RegistryAnswer,
+	RegistryError,
+	registryUrl,
+} from "./registry.js";
 import { channelOf, isNewer } from "./semver.js";
 import { detectService, type Service } from "./service.js";
 import {
@@ -94,10 +99,15 @@ export interface UpdaterOptions {
 	/** How crb was installed (null: unknown, the command instead). */
 	install: Install | null;
 	/**
-	 * The registry's newer version, or null (checkRegistry); rejects when
-	 * the registry can't be asked.
+	 * What the registry says (checkRegistry): the newer good version, the
+	 * running one's withdrawal, which of `offered` (the update on offer) is
+	 * deprecated now; rejects when the registry can't be asked.
 	 */
-	check?: (current: string, channel: Channel) => Promise<string | null>;
+	check?: (
+		current: string,
+		channel: Channel,
+		offered: string | null,
+	) => Promise<RegistryAnswer>;
 	/**
 	 * The notes a version carries (fetchOfferedNotes); rejects with a
 	 * RegistryError. Default: the registry's, unless `check` is faked (a
@@ -151,6 +161,8 @@ export interface UpdaterOptions {
  */
 export class Updater {
 	#available: string | null = null;
+	/** The running version's withdrawal reason (CAR-212); null: not withdrawn, or not known yet. */
+	#withdrawn: string | null = null;
 	#state: UpdateInfo["state"] = "idle";
 	/**
 	 * The helper being started (state still idle): "restarting" only once
@@ -222,27 +234,44 @@ export class Updater {
 			try {
 				const check =
 					this.#o.check ??
-					((current: string, channel: Channel) =>
+					((current: string, channel: Channel, offered: string | null) =>
 						checkRegistry(current, {
 							registry: registryUrl(this.#o.env),
 							channel,
+							also: offered ? [offered] : [],
 						}));
 				const current = this.#o.build.version;
-				let newer: string | null;
+				let answer: RegistryAnswer | null;
 				try {
-					newer = await check(current, this.#channel);
+					answer = await check(current, this.#channel, this.#available);
 					this.#checkError = null;
 				} catch (error) {
-					newer = null;
+					answer = null;
 					this.#checkError =
 						error instanceof RegistryError
 							? error.message
 							: "Registry check failed";
 				}
 				this.#lastChecked = this.#now();
+				const newer = answer?.newer ?? null;
+				// An offer npm now says is deprecated (withdrawn) is dropped,
+				// unless it is being installed already.
+				if (
+					this.#available !== null &&
+					this.#state === "idle" &&
+					!this.#starting &&
+					answer?.deprecated.includes(this.#available)
+				) {
+					this.#available = null;
+				}
 				// Only a strictly newer semver reaches the page or a command line.
 				if (newer !== null && newer.length <= 64 && isNewer(newer, current)) {
 					this.#available = newer;
+				}
+				// Unknown this time (undefined): the last answer stands.
+				if (answer && answer.withdrawn !== undefined) {
+					this.#withdrawn =
+						typeof answer.withdrawn === "string" ? answer.withdrawn : null;
 				}
 				// Fetched when an update is found, so What's new opens with
 				// its notes in place (a failure: once more per check).
@@ -351,6 +380,10 @@ export class Updater {
 			lastChecked: this.#lastChecked?.toISOString() ?? null,
 			checkError: this.#checkError,
 			checksOff: this.#o.enabled ? null : (this.#o.off ?? "local-build"),
+			withdrawn:
+				this.#o.enabled && this.#withdrawn !== null
+					? { reason: this.#withdrawn }
+					: null,
 		};
 	}
 

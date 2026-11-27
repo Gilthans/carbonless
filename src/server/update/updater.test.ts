@@ -10,7 +10,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { BOOT_ID } from "../version";
 import type { Install } from "./install";
-import { RegistryError } from "./registry";
+import { type RegistryAnswer, RegistryError } from "./registry";
 import type { HelperConfig } from "./updateHelper";
 import {
 	CHECK_EVERY_MS,
@@ -22,6 +22,11 @@ import {
 } from "./updater";
 
 const BUILD = { version: "0.2.0", commit: "a".repeat(40) };
+/** A check's answer: `newer` offered, the running version withdrawn or not. */
+const answer = (
+	newer: string | null,
+	over: Partial<RegistryAnswer> = {},
+): RegistryAnswer => ({ newer, withdrawn: null, deprecated: [], ...over });
 const NPM: Install = {
 	pm: "npm",
 	root: "/home/me/.npm-global/lib/node_modules/carbonless-review",
@@ -65,7 +70,7 @@ function updater(over: Partial<UpdaterOptions> = {}) {
 		check: async (current, channel) => {
 			checks.push(current);
 			channels.push(channel);
-			return "0.3.0";
+			return answer("0.3.0");
 		},
 		service: async () => null,
 		exit: (code) => exits.push(code),
@@ -132,6 +137,7 @@ describe("Updater", () => {
 			lastChecked: expect.any(String),
 			checkError: null,
 			checksOff: null,
+			withdrawn: null,
 		});
 		u.stop();
 	});
@@ -177,27 +183,87 @@ describe("Updater", () => {
 	it("checks again on the timer; a failed check keeps what was found", async () => {
 		vi.useFakeTimers();
 		try {
-			let answer: string | null = "0.3.0";
+			let newer: string | null = "0.3.0";
 			const { u, checks } = updater({
 				check: async (c) => {
 					checks.push(c);
-					return answer;
+					return answer(newer);
 				},
 				checkEveryMs: 1000,
 			});
 			await u.start();
 			await settle(u);
-			answer = null;
+			newer = null;
 			await vi.advanceTimersByTimeAsync(1000);
 			expect(checks).toHaveLength(2);
 			expect(u.info().available).toBe("0.3.0");
-			answer = "0.4.0";
+			newer = "0.4.0";
 			await vi.advanceTimersByTimeAsync(1000);
 			expect(u.info().available).toBe("0.4.0");
 			u.stop();
 		} finally {
 			vi.useRealTimers();
 		}
+	});
+
+	it("withdrawn (CAR-212): reaches info(); unknown this time keeps the last answer; a later answer clears it", async () => {
+		let next: RegistryAnswer = answer("0.2.1", { withdrawn: "bad thing" });
+		let fail = false;
+		const { u } = updater({
+			check: async () => {
+				if (fail) throw new RegistryError("Registry answered 503");
+				return next;
+			},
+		});
+		expect(u.info().withdrawn).toBe(null);
+		await u.checkNow();
+		expect(u.info()).toMatchObject({
+			available: "0.2.1",
+			withdrawn: { reason: "bad thing" },
+		});
+		// The running version's request failed: still withdrawn.
+		next = answer("0.2.1", { withdrawn: undefined });
+		await u.checkNow();
+		expect(u.info().withdrawn).toEqual({ reason: "bad thing" });
+		// The whole check failed: still withdrawn.
+		fail = true;
+		await u.checkNow();
+		expect(u.info().withdrawn).toEqual({ reason: "bad thing" });
+		fail = false;
+		next = answer(null, { withdrawn: null });
+		await u.checkNow();
+		expect(u.info().withdrawn).toBe(null);
+		// Checks off: never withdrawn.
+		const off = updater({ enabled: false });
+		await off.u.checkNow();
+		expect(off.u.info().withdrawn).toBe(null);
+	});
+
+	it("an earlier offer npm now says is deprecated is dropped; asked about with the next check", async () => {
+		const offered: (string | null)[] = [];
+		let next = answer("0.3.0");
+		const { u } = updater({
+			check: async (_c, _ch, o) => {
+				offered.push(o);
+				return next;
+			},
+		});
+		await u.checkNow();
+		expect(u.info().available).toBe("0.3.0");
+		// Withdrawn: latest moved back, nothing newer, 0.3.0 deprecated.
+		next = answer(null, { deprecated: ["0.3.0"] });
+		await u.checkNow();
+		expect(offered).toEqual([null, "0.3.0"]);
+		expect(u.info()).toMatchObject({ available: null, command: null });
+		await expect(u.update("0.3.0")).rejects.toBeInstanceOf(UpdateRefusedError);
+		// The fix: offered.
+		next = answer("0.3.1", { deprecated: [] });
+		await u.checkNow();
+		expect(u.info().available).toBe("0.3.1");
+		// Deprecated, but a good newer one: that one.
+		next = answer("0.3.2", { deprecated: ["0.3.1"] });
+		await u.checkNow();
+		expect(u.info().available).toBe("0.3.2");
 	});
 
 	it("checks every hour", () => {
@@ -210,7 +276,7 @@ describe("Updater", () => {
 		const { u } = updater({
 			check: async () => {
 				if (fail) throw new RegistryError("Registry answered 503");
-				return "0.3.0";
+				return answer("0.3.0");
 			},
 			now: () => new Date(t),
 		});
@@ -241,7 +307,7 @@ describe("Updater", () => {
 	});
 
 	it("checkNow: concurrent calls share one check", async () => {
-		let release: (v: string | null) => void = () => {};
+		let release: (v: RegistryAnswer) => void = () => {};
 		let asked = 0;
 		const { u } = updater({
 			check: () => {
@@ -254,13 +320,13 @@ describe("Updater", () => {
 		const a = u.checkNow();
 		const b = u.checkNow();
 		expect(asked).toBe(1);
-		release("0.3.0");
+		release(answer("0.3.0"));
 		await Promise.all([a, b]);
 		expect(u.info().available).toBe("0.3.0");
 		// Once done, the next asks again.
 		const c = u.checkNow();
 		expect(asked).toBe(2);
-		release(null);
+		release(answer(null));
 		await c;
 	});
 
@@ -287,7 +353,7 @@ describe("Updater", () => {
 
 	it("only a strictly newer semver is offered, whatever the check returns", async () => {
 		for (const bad of ["0.2.0", "0.1.0", "latest", "1.0.0 && rm -rf /"]) {
-			const { u } = updater({ check: async () => bad });
+			const { u } = updater({ check: async () => answer(bad) });
 			await u.checkNow();
 			expect(u.info().available).toBe(null);
 		}
@@ -303,6 +369,7 @@ describe("Updater", () => {
 			install: "npm",
 			byHand: false,
 			checksOff: null,
+			withdrawn: null,
 		});
 		u.stop();
 		const rc = updater({
