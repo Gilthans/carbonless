@@ -372,9 +372,21 @@ function failIfNotDone(item: Later) {
 /** Keeps an answer for an item; a wrong-shaped or missing one is a failure. */
 function keep(item: Later, marks: JobMarks | undefined) {
 	if (isGroup(item)) {
-		if (marks && "run" in marks) store3(groupDone, keyOf(item), marks);
-		else failIfNotDone(item);
-	} else if (marks && "old" in marks) {
+		if (
+			marks &&
+			"run" in marks &&
+			Array.isArray(marks.one) &&
+			Array.isArray(marks.run) &&
+			marks.run.length === item.run.length
+		) {
+			store3(groupDone, keyOf(item), marks);
+		} else failIfNotDone(item);
+	} else if (
+		marks &&
+		"old" in marks &&
+		Array.isArray(marks.old) &&
+		Array.isArray(marks.new)
+	) {
 		store(done, item[0], item[1], marks);
 	} else failIfNotDone(item);
 }

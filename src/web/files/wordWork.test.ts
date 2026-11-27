@@ -708,6 +708,27 @@ describe("groups (CAR-130)", () => {
 		expect(itemsWords(g.items, false).failed.size).toBe(3);
 	});
 
+	it("a malformed answer (a short run) fails every line of the group", async () => {
+		configureWordWork({
+			budgetMs: 0,
+			runner: async () => [{ one: [], run: [] }],
+		});
+		const g = split();
+		await new Promise<void>((resolve) => {
+			const cancel = requestLater(
+				itemsWords(g.items, false).later,
+				false,
+				() => {
+					cancel();
+					resolve();
+				},
+			);
+		});
+		const words = itemsWords(g.items, false);
+		expect(words.failed).toEqual(new Set([g.one, ...g.run]));
+		expect(words.pending.size).toBe(0);
+	});
+
 	it("a fresh HunkItems over the same lines needs no runner call", async () => {
 		const held = heldRunner();
 		configureWordWork({ budgetMs: 0, runner: held.runner });
