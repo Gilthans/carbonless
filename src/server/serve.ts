@@ -11,7 +11,9 @@ import {
 	rotateAccessKey,
 	writeServerState,
 } from "./serverState.js";
+import { startMailboxTimer } from "./telemetry/schedule.js";
 import { TEST_HOOKS_ENV, testHookToken } from "./testHooks.js";
+import { tracer } from "./trace.js";
 import { serveChecksOff, updaterFor } from "./update/updater.js";
 import { BUILD } from "./version.js";
 import { ViewerCache } from "./viewerCache.js";
@@ -136,6 +138,15 @@ export async function startServer(opts: {
 		version: BUILD,
 		...(key ? { keyed: true } : {}),
 		...(publicUrl ? { publicUrl } : {}),
+		...(tracer().dir ? { traceDir: tracer().dir as string } : {}),
+	});
+
+	// The telemetry mailbox (docs/telemetry-mailbox.md): off unless config
+	// names one; read anew each minute, so turning it on needs no restart.
+	const mailbox = startMailboxTimer({
+		readConfig,
+		traceDir: () => tracer().dir,
+		log,
 	});
 
 	// Asks npm in the background: never delays or fails a start.
@@ -149,6 +160,7 @@ export async function startServer(opts: {
 		close: () => {
 			closed ??= (async () => {
 				updater.stop();
+				mailbox.stop();
 				await removeServerState();
 				await app.close();
 				// Their background reads of GitHub and the clones stop with them.

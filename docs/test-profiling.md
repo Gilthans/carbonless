@@ -47,6 +47,10 @@ A path names a run directory or a directory of runs (its newest).
 `CRB_TRACE_DIR=<dir> crb serve` traces a real server the same way (no
 OpenTelemetry SDK: `src/server/trace.ts` writes the files). Unset, tracing
 is off and costs a property check per git or gh call.
+The telemetry mailbox ([telemetry-mailbox.md](telemetry-mailbox.md)), when
+on, makes crb serve trace into `<state dir>/traces` while `$CRB_TRACE_DIR`
+is unset, and pushes the files to a git repo you own; `pnpm telemetry pull`
+brings another device's here for `pnpm test-profile`.
 
 A server runs for weeks, so its tracing is meant to stay on (the service
 unit in [remote-machine.md](remote-machine.md) sets it):

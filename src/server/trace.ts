@@ -79,6 +79,8 @@ interface StartOptions {
 
 export interface Tracer {
 	readonly enabled: boolean;
+	/** The directory it writes to; null on the disabled tracer. */
+	readonly dir: string | null;
 	start(name: string, attrs?: Attrs, opts?: StartOptions): Span;
 	/** Writes a finished span with the ids given. */
 	record(span: RecordedSpan): void;
@@ -258,6 +260,7 @@ const NOOP_SPAN: Span = {
 
 const DISABLED: Tracer = {
 	enabled: false,
+	dir: null,
 	start: () => NOOP_SPAN,
 	record() {},
 	run: (_span, fn) => fn(),
@@ -514,6 +517,7 @@ export function createTracer(opts: TracerOptions): Tracer {
 
 	const tracer: Tracer = {
 		enabled: true,
+		dir,
 		start(name, attrs, startOpts = {}) {
 			const parent =
 				startOpts.parent !== undefined ? startOpts.parent : current();
@@ -590,10 +594,22 @@ export function createTracer(opts: TracerOptions): Tracer {
 }
 
 const KEY = Symbol.for("carbonless.tracer");
+const DEFAULT_DIR = Symbol.for("carbonless.traceDefaultDir");
 
 /**
- * This process's tracer, made on first use from $CRB_TRACE_DIR and
- * $TRACEPARENT. `service` names it (renamed until it first writes; default: the script's
+ * Where this process traces when $CRB_TRACE_DIR is unset (crb serve with
+ * the telemetry mailbox on, src/server/telemetry/traceDir.ts). Set before
+ * the tracer is first made (src/cli.ts); $CRB_TRACE_DIR still wins. Kept
+ * out of the environment, so the gits, ghs and agents crb starts don't
+ * trace into it.
+ */
+export function setDefaultTraceDir(dir: string | undefined): void {
+	(globalThis as { [DEFAULT_DIR]?: string })[DEFAULT_DIR] = dir;
+}
+
+/**
+ * This process's tracer, made on first use from $CRB_TRACE_DIR (else the
+ * default dir, setDefaultTraceDir) and $TRACEPARENT. `service` names it (renamed until it first writes; default: the script's
  * name).
  */
 export function tracer(service?: string): Tracer {
@@ -603,7 +619,9 @@ export function tracer(service?: string): Tracer {
 		return g[KEY];
 	}
 	g[KEY] = createTracer({
-		dir: process.env.CRB_TRACE_DIR,
+		dir:
+			process.env.CRB_TRACE_DIR ||
+			(globalThis as { [DEFAULT_DIR]?: string })[DEFAULT_DIR],
 		service:
 			service ?? basename(process.argv[1] ?? "node").replace(/\.\w+$/, ""),
 		traceparent: process.env.TRACEPARENT,

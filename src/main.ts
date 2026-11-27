@@ -9,6 +9,7 @@ import { BUILD, formatVersion } from "./server/version.js";
 
 const USAGE = `Usage: crb <pr> [options]
        crb serve [options]
+       crb telemetry on|off|status|send   (crb telemetry --help)
 
 crb <pr> prints the link to the pull request's review, served by this
 machine's crb serve (started in the background when none is running).
@@ -48,6 +49,12 @@ const CLIENT_ONLY = ["open", "head", "as-of", "viewer"] as const;
 async function main(): Promise<void> {
 	// A spawned agent's stdio MCP server (bridge.ts): crb's /mcp over stdio.
 	if (process.argv[2] === "mcp-bridge") return mcpBridge(process.argv.slice(3));
+	// The telemetry mailbox (docs/telemetry-mailbox.md).
+	if (process.argv[2] === "telemetry") {
+		const { telemetryCli } = await import("./server/telemetry/cli.js");
+		process.exitCode = await telemetryCli(process.argv.slice(3));
+		return;
+	}
 	const { values, positionals } = parseArgs({
 		allowPositionals: true,
 		allowNegative: true,
