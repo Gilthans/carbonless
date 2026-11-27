@@ -9,7 +9,6 @@ import {
 	compareVersions,
 	formatVersion,
 	type Io,
-	must,
 	npmState,
 	npmView,
 	PACKAGE,
@@ -59,6 +58,35 @@ function newestFirst(versions: readonly string[]): Version[] {
 		.sort((a, b) => compareVersions(b, a));
 }
 
+/**
+ * What is wrong with withdraw's arguments alone (checked before asking git
+ * or npm anything); null: nothing.
+ */
+function withdrawArgsProblem(
+	versions: readonly string[],
+	why: string,
+): string | null {
+	if (versions.length === 0) return "name at least one version";
+	for (const v of versions) {
+		const parsed = parseVersion(v);
+		if (!parsed || formatVersion(parsed) !== v) {
+			return `${v} is not a version (X.Y.Z or X.Y.Z-rc.N)`;
+		}
+	}
+	const reason = why.trim();
+	if (reason === "") return "give a reason (the last argument)";
+	if (CONTROL_OR_BIDI.test(reason)) {
+		return "the reason must be one line, with no control or bidi characters";
+	}
+	if (Array.from(reason).length > MAX_WHY) {
+		return `the reason must be at most ${MAX_WHY} characters`;
+	}
+	if (parseVersion(reason.replace(/^v/, ""))) {
+		return `the reason (the last argument) is a version, ${reason}: give the reason after the versions`;
+	}
+	return null;
+}
+
 /** `X.Y.Z-rc.N` is a candidate for the release `X.Y.Z`. */
 const rcOf = (v: Version, release: Version) =>
 	v.rc !== undefined &&
@@ -92,29 +120,12 @@ export function planWithdraw(
 		refused: null,
 	};
 	const refuse = (why: string): WithdrawPlan => ({ ...plan, refused: why });
-	if (versions.length === 0) return refuse("name at least one version");
+	const problem = withdrawArgsProblem(versions, why);
+	if (problem) return refuse(problem);
 	const reason = why.trim();
-	if (reason === "") return refuse("give a reason (the last argument)");
-	if (CONTROL_OR_BIDI.test(reason)) {
-		return refuse(
-			"the reason must be one line, with no control or bidi characters",
-		);
-	}
-	if (Array.from(reason).length > MAX_WHY) {
-		return refuse(`the reason must be at most ${MAX_WHY} characters`);
-	}
-	if (parseVersion(reason.replace(/^v/, ""))) {
-		return refuse(
-			`the reason (the last argument) is a version, ${reason}: give the reason after the versions`,
-		);
-	}
 	const published = new Set(state.versions);
 	const targets = new Set<string>();
 	for (const v of versions) {
-		const parsed = parseVersion(v);
-		if (!parsed || formatVersion(parsed) !== v) {
-			return refuse(`${v} is not a version (X.Y.Z or X.Y.Z-rc.N)`);
-		}
 		if (!published.has(v)) return refuse(`${v} is not on npm`);
 		targets.add(v);
 	}
@@ -194,43 +205,55 @@ export function sameBugCandidates(
 /**
  * Each release's promoted RC from the tags on GitHub (read only): the
  * `vX.Y.Z-rc.N` tag on the same commit as `vX.Y.Z` (an annotated tag by
- * the commit it points at). Releases without a tag are left out.
+ * the commit it points at). `missing`: releases with no tag on origin.
+ * Throws, saying why, when origin's tags can't be read.
  */
-async function promotedRcs(
+export async function promotedRcs(
 	io: Io,
 	releases: readonly string[],
-): Promise<Record<string, string>> {
+): Promise<{ found: Record<string, string>; missing: string[] }> {
 	const wanted = releases.filter((v) => parseVersion(v)?.rc === undefined);
-	if (wanted.length === 0) return {};
-	const out = await must(io, "git", [
+	if (wanted.length === 0) return { found: {}, missing: [] };
+	// An exact name never brings its peeled line: `vX.Y.Z^{}` asks for it
+	// (the glob takes the RCs' own).
+	const r = await io.run("git", [
 		"ls-remote",
 		"--tags",
 		"origin",
-		...wanted.flatMap((v) => [`v${v}`, `v${v}-rc.*`]),
+		...wanted.flatMap((v) => [`v${v}`, `v${v}^{}`, `v${v}-rc.*`]),
 	]);
+	if (r.code !== 0) {
+		throw new Error(
+			`can't read release tags from origin to find the RC ${wanted.join(", ")} was promoted from: ${r.stderr.trim() || r.stdout.trim() || `git exited ${r.code}`}`,
+		);
+	}
 	// name → commit: a peeled line (`^{}`) wins over the tag object's.
 	const commits = new Map<string, string>();
-	for (const line of out.split("\n")) {
+	for (const line of r.stdout.split("\n")) {
 		const [sha, ref] = line.trim().split(/\s+/);
 		if (!sha || !ref?.startsWith("refs/tags/")) continue;
 		const peeled = ref.endsWith("^{}");
 		const name = ref.slice("refs/tags/".length).replace(/\^\{\}$/, "");
 		if (peeled || !commits.has(name)) commits.set(name, sha);
 	}
-	const result: Record<string, string> = {};
+	const found: Record<string, string> = {};
+	const missing: string[] = [];
 	for (const release of wanted) {
 		const at = commits.get(`v${release}`);
-		const r = parseVersion(release);
-		if (!at || !r) continue;
+		const rel = parseVersion(release);
+		if (!at || !rel) {
+			missing.push(release);
+			continue;
+		}
 		const rcs = newestFirst(
 			[...commits]
 				.filter(([name, sha]) => sha === at && name !== `v${release}`)
 				.map(([name]) => name.slice(1)),
-		).filter((v) => rcOf(v, r));
+		).filter((v) => rcOf(v, rel));
 		const rc = rcs[0];
-		if (rc) result[release] = formatVersion(rc);
+		if (rc) found[release] = formatVersion(rc);
 	}
-	return result;
+	return { found, missing };
 }
 
 /**
@@ -297,11 +320,15 @@ export async function withdraw(
 	io: PublishIo,
 	args: { versions: string[]; why: string; deprecateOnly: boolean },
 ): Promise<void> {
+	// The arguments first: nothing asked of git or npm with a bad one.
+	const problem = withdrawArgsProblem(args.versions, args.why);
+	if (problem) throw new Error(`not withdrawing: ${problem}`);
 	await checkNpmVersion(io, "pnpm release withdraw");
+	const promoted = await promotedRcs(io, args.versions);
 	const state = await registryState(io);
 	const plan = planWithdraw(state, args.versions, args.why, {
 		deprecateOnly: args.deprecateOnly,
-		promoted: await promotedRcs(io, args.versions),
+		promoted: promoted.found,
 	});
 	if (plan.refused) throw new Error(`not withdrawing: ${plan.refused}`);
 	const candidates = sameBugCandidates(state, [
@@ -311,6 +338,12 @@ export async function withdraw(
 	if (candidates.length > 0) {
 		io.log("May carry the same bug (name any that do too):");
 		io.log(`  ${candidates.join(", ")}`);
+	}
+	io.log("Plan:");
+	for (const v of promoted.missing) {
+		io.log(
+			`  ${v}: no v${v} tag on origin, so the RC it was promoted from wasn't found`,
+		);
 	}
 	for (const a of plan.alongside) {
 		io.log(

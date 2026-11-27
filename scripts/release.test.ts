@@ -3001,7 +3001,7 @@ describe("pnpm release withdraw (the owner's, with npm's OTP)", () => {
 		answer = true,
 		deprecated = [] as { version: string; deprecated?: string }[],
 		codes = [] as number[],
-		tags = "",
+		tags = "" as Parameters<typeof fakeIo>[0][string],
 	} = {}) {
 		const fake = fakeIo({
 			"git ls-remote": tags,
@@ -3063,31 +3063,105 @@ describe("pnpm release withdraw (the owner's, with npm's OTP)", () => {
 		expect(w.lines.at(-1)).toBe("Now ship a fix: pnpm release hotfix v0.4.0");
 	});
 
-	it("withdraws the RC a release was promoted from (its tag on the same commit), and lists the release's other RCs", async () => {
-		const A = "a".repeat(40);
-		const w = withdrawIo({
-			tags: [
-				`${"1".repeat(40)}\trefs/tags/v0.4.0`,
-				// Annotated: the commit is the peeled line's.
-				`${A}\trefs/tags/v0.4.0^{}`,
-				`${"2".repeat(40)}\trefs/tags/v0.4.0-rc.0`,
-				`${A}\trefs/tags/v0.4.0-rc.1`,
-			].join("\n"),
-		});
+	/**
+	 * `git ls-remote --tags origin <patterns>` as git prints it: a pattern
+	 * matches a tag's name exactly, or as a glob (which also takes the
+	 * peeled `^{}` line); an exact name never brings its `^{}` line.
+	 */
+	const lsRemoteOf =
+		(refs: [sha: string, name: string][]) => (args: string[]) => {
+			const patterns = args.slice(3);
+			const matches = (name: string) =>
+				patterns.some((p) =>
+					p.includes("*")
+						? new RegExp(
+								`^${p.replace(/[.^${}()|[\]\\+?]/g, "\\$&").replace(/\*/g, ".*")}$`,
+							).test(name)
+						: name === p,
+				);
+			return refs
+				.filter(([, name]) => matches(name))
+				.map(([sha, name]) => `${sha}\trefs/tags/${name}`)
+				.join("\n");
+		};
+	const A = "a".repeat(40);
+	// v0.4.0 annotated (its object, then the commit), rc.1 on its commit.
+	const TAGS: [string, string][] = [
+		["1".repeat(40), "v0.4.0"],
+		[A, "v0.4.0^{}"],
+		["2".repeat(40), "v0.4.0-rc.0"],
+		[A, "v0.4.0-rc.1"],
+	];
+
+	it("withdraws the RC a release was promoted from (its tag on the same commit, an annotated release tag peeled), under a Plan heading after the same-bug list", async () => {
+		const w = withdrawIo({ tags: lsRemoteOf(TAGS) });
 		await withdraw(w.io, {
 			versions: ["0.4.0"],
 			why: "x",
 			deprecateOnly: false,
 		});
-		expect(w.calls).toContain("git ls-remote --tags origin v0.4.0 v0.4.0-rc.*");
-		expect(w.lines).toContain(
-			"  0.4.0-rc.1: 0.4.0 was promoted from it, withdrawn with it",
+		expect(w.calls).toContain(
+			"git ls-remote --tags origin v0.4.0 v0.4.0^{} v0.4.0-rc.*",
 		);
+		const at = (line: string) => w.lines.indexOf(line);
+		expect(
+			at("May carry the same bug (name any that do too):"),
+		).toBeGreaterThan(-1);
+		expect(at("Plan:")).toBeGreaterThan(
+			at("May carry the same bug (name any that do too):"),
+		);
+		expect(
+			at("  0.4.0-rc.1: 0.4.0 was promoted from it, withdrawn with it"),
+		).toBeGreaterThan(at("Plan:"));
 		expect(w.ran).toEqual([
 			["npm", "deprecate", "carbonless-review@0.4.0", "withdrawn: x"],
 			["npm", "deprecate", "carbonless-review@0.4.0-rc.1", "withdrawn: x"],
 			["npm", "dist-tag", "add", "carbonless-review@0.3.0", "latest"],
 		]);
+	});
+
+	it("a release with no tag on origin: says its promoted RC wasn't found, and goes on", async () => {
+		const w = withdrawIo({ tags: lsRemoteOf([]) });
+		await withdraw(w.io, {
+			versions: ["0.4.0"],
+			why: "x",
+			deprecateOnly: false,
+		});
+		expect(w.lines).toContain(
+			"  0.4.0: no v0.4.0 tag on origin, so the RC it was promoted from wasn't found",
+		);
+		expect(w.ran.map((r) => r.slice(0, 3).join(" "))).toEqual([
+			"npm deprecate carbonless-review@0.4.0",
+			"npm dist-tag add",
+		]);
+	});
+
+	it("can't read the tags: says why, and stops before npm", async () => {
+		const w = withdrawIo({
+			tags: { code: 128, stderr: "fatal: unable to access origin" },
+		});
+		await expect(
+			withdraw(w.io, { versions: ["0.4.0"], why: "x", deprecateOnly: false }),
+		).rejects.toThrow(
+			/can't read release tags from origin to find the RC 0\.4\.0 was promoted from: .*unable to access origin/,
+		);
+		expect(w.calls.some((c) => c.startsWith("npm view"))).toBe(false);
+		expect(w.asked).toEqual([]);
+		expect(w.ran).toEqual([]);
+	});
+
+	it("checks the arguments before any call: a bad reason or version asks nothing of git or npm", async () => {
+		for (const [versions, why] of [
+			[["0.4.0"], " "],
+			[["0.4.0"], "0.5.0"],
+			[["latest"], "x"],
+		] as const) {
+			const w = withdrawIo();
+			await expect(
+				withdraw(w.io, { versions: [...versions], why, deprecateOnly: false }),
+			).rejects.toThrow(/not withdrawing/);
+			expect(w.calls).toEqual([]);
+		}
 	});
 
 	it("a reason with shell characters reaches npm as it is, as one argument", async () => {

@@ -1,9 +1,20 @@
+import { execFileSync } from "node:child_process";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { WITHDRAWN_PREFIX, withdrawnReason } from "../src/shared/update";
+import {
+	createBareRepo,
+	GIT_TEST_TIMEOUTS,
+	testGitEnv,
+} from "../test/git-fixture";
+import type { Io } from "./release-lib";
 import {
 	laterVersions,
 	parseDeprecated,
 	planWithdraw,
+	promotedRcs,
 	type RegistryState,
 	sameBugCandidates,
 } from "./release-withdraw";
@@ -336,5 +347,68 @@ describe("parseDeprecated: npm view's deprecated and version over several versio
 		expect(parseDeprecated(undefined)).toEqual({});
 		// A deprecated field that isn't a string: not deprecated.
 		expect(parseDeprecated([{ deprecated: 1, version: "0.4.0" }])).toEqual({});
+	});
+});
+
+describe("promotedRcs against a real origin (git's own ls-remote output)", {
+	timeout: GIT_TEST_TIMEOUTS.testTimeout,
+}, () => {
+	it("finds the RC on an annotated release tag's commit, lightweight or annotated; none for a release without a tag", async () => {
+		const origin = createBareRepo();
+		const work = mkdtempSync(join(tmpdir(), "crb-withdraw-tags-"));
+		try {
+			const env = testGitEnv({
+				GIT_AUTHOR_NAME: "t",
+				GIT_AUTHOR_EMAIL: "t@example.com",
+				GIT_COMMITTER_NAME: "t",
+				GIT_COMMITTER_EMAIL: "t@example.com",
+			});
+			const git = (...args: string[]) =>
+				execFileSync("git", args, { cwd: work, env, encoding: "utf8" });
+			git("init", "--quiet");
+			git("remote", "add", "origin", origin.path);
+			git("commit", "--quiet", "--allow-empty", "-m", "one");
+			git("tag", "v0.3.0-rc.1");
+			git("tag", "-a", "v0.3.0", "-m", "0.3.0");
+			git("commit", "--quiet", "--allow-empty", "-m", "two");
+			git("tag", "v0.4.0-rc.1");
+			git("commit", "--quiet", "--allow-empty", "-m", "three");
+			// The promoted RC annotated too, and the release annotated.
+			git("tag", "-a", "v0.4.0-rc.2", "-m", "rc");
+			git("tag", "-a", "v0.4.0", "-m", "0.4.0");
+			git("push", "--quiet", "origin", "--tags");
+			const io: Io = {
+				repo: "owner/repo",
+				log: () => {},
+				now: () => new Date(),
+				sleep: async () => {},
+				run: async (cmd, args) => {
+					try {
+						const stdout = execFileSync(cmd, args, {
+							cwd: work,
+							env,
+							encoding: "utf8",
+						});
+						return { code: 0, stdout, stderr: "" };
+					} catch (error) {
+						const e = error as { status?: number; stderr?: string };
+						return {
+							code: e.status ?? 1,
+							stdout: "",
+							stderr: e.stderr ?? "",
+						};
+					}
+				},
+			};
+			expect(
+				await promotedRcs(io, ["0.4.0", "0.3.0", "0.2.0", "0.5.0-rc.1"]),
+			).toEqual({
+				found: { "0.4.0": "0.4.0-rc.2", "0.3.0": "0.3.0-rc.1" },
+				missing: ["0.2.0"],
+			});
+		} finally {
+			rmSync(work, { recursive: true, force: true });
+			origin.cleanup();
+		}
 	});
 });
