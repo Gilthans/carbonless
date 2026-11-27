@@ -1823,6 +1823,7 @@ const DISPATCH_GUARD = [
 	"github.ref == 'refs/heads/master'",
 ];
 const RELEASE_GUARDS: Record<string, string[]> = {
+	"rc-notes": WORKFLOW_RUN_GUARD,
 	"rc-build": WORKFLOW_RUN_GUARD,
 	"rc-publish": WORKFLOW_RUN_GUARD,
 	"promote-ci": DISPATCH_GUARD,
@@ -2241,7 +2242,12 @@ describe("release-finish: each step only once", () => {
 			.filter(([, job]) => /github\.token/.test(code(job)))
 			.map(([name]) => name)
 			.sort();
-		expect(withToken).toEqual(["promote-ci", "rc-build", "rc-publish"]);
+		expect(withToken).toEqual([
+			"promote-ci",
+			"rc-build",
+			"rc-notes",
+			"rc-publish",
+		]);
 		// The check catches each way a token could reach repo code.
 		const ciPassed = "      - name: CI passed on the RC's commit\n";
 		const ghApi = '            >"$RUNNER_TEMP/ci-runs.json"\n';
@@ -2552,10 +2558,21 @@ esac
 			// Linear is read only where its key is: no key in CI but the
 			// release-note check's (CAR-211: read only, one step, master's
 			// code; scripts/release-notes.test.ts checks that workflow), and
-			// no other workflow gains a secret of any kind.
+			// no other workflow gains a secret of any kind. And release.yml's
+			// rc-notes job (CAR-321: the same environment and key, one step;
+			// "an RC's notes so far" below checks it): no other job of it.
 			if (file === "release-note.yml") continue;
-			expect(code(workflow(file)), file).not.toMatch(/linear/i);
-			expect(code(workflow(file)), file).not.toMatch(/\bsecrets\./);
+			const text = code(workflow(file));
+			const rest =
+				file === "release.yml"
+					? text.slice(0, text.indexOf("\njobs:\n")) +
+						jobs(text)
+							.filter(([name]) => name !== "rc-notes")
+							.map(([, job]) => job)
+							.join("\n")
+					: text;
+			expect(rest, file).not.toMatch(/linear/i);
+			expect(rest, file).not.toMatch(/\bsecrets\./);
 		}
 		const check = code(
 			new Map(jobs(workflow("release.yml"))).get("promote-check") ?? "",
@@ -2682,7 +2699,13 @@ esac
 			expect(
 				[...text.matchAll(/\bsecrets\.(\w+)/g)].map((m) => m[1]),
 				file,
-			).toEqual(file === "release-note.yml" ? ["LINEAR_READ_API_KEY"] : []);
+			).toEqual(
+				// The same key in release.yml's rc-notes (CAR-321), which runs
+				// on CI's completion for a push to master, never a PR's code.
+				file === "release-note.yml" || file === "release.yml"
+					? ["LINEAR_READ_API_KEY"]
+					: [],
+			);
 			// npm makes provenance itself (trusted publishing, public repo).
 			expect(text, file).not.toContain("--provenance");
 		}
@@ -2775,7 +2798,7 @@ esac
 		for (const [mutated, problem] of [
 			[
 				release.replace(push, push.replace("'push' &&", "'push' || true &&")),
-				/rc-(build|publish): a top-level \|\|/,
+				/rc-(notes|build|publish): a top-level \|\|/,
 			],
 			[
 				release.replace(
@@ -2786,7 +2809,7 @@ esac
 			],
 			[
 				release.replace(HEAD_SHA, HEAD_SHA.replace("head_sha", "head_branch")),
-				/rc-build: checks out/,
+				/rc-(notes|build): checks out/,
 			],
 			[
 				release.replace(
@@ -2992,6 +3015,240 @@ esac
 			'import { execFileSync } from "node:child_process";',
 			'import { fileURLToPath } from "node:url";',
 		]);
+	});
+});
+
+describe("an RC's notes so far (CAR-321)", { timeout: 30_000 }, () => {
+	const release = () => new Map(jobs(workflow("release.yml")));
+
+	it("only rc-notes has the Linear key, in the environment release-note, in its last step after a script-less install; no npm job, nor rc-build, has it", () => {
+		const byName = release();
+		const withKey = [...byName]
+			.filter(([, job]) => /secrets\.|LINEAR/.test(code(job)))
+			.map(([name]) => name);
+		expect(withKey).toEqual(["rc-notes"]);
+		const job = byName.get("rc-notes") ?? "";
+		expect(code(job)).toMatch(/^ {4}environment: release-note$/m);
+		for (const [name, other] of byName) {
+			if (/^ {4}environment: npm$/m.test(other)) {
+				expect(code(other), name).not.toMatch(/LINEAR|secrets\.|release-note/);
+			}
+		}
+		expect(code(workflow("release-finish.yml"))).not.toMatch(
+			/LINEAR|secrets\./,
+		);
+		const steps = code(job)
+			.split(/\n(?= {6}- )/)
+			.slice(1);
+		const keyed = steps.filter((s) => s.includes("secrets."));
+		expect(keyed).toHaveLength(1);
+		expect(keyed[0]).toContain(
+			// biome-ignore lint/suspicious/noTemplateCurlyInString: GitHub expressions
+			"LINEAR_API_KEY: ${{ secrets.LINEAR_READ_API_KEY }}",
+		);
+		expect(steps.at(-1)).toBe(keyed[0]);
+		const install = steps.findIndex((s) => s.includes("pnpm install"));
+		expect(steps[install]).toContain("--frozen-lockfile --ignore-scripts");
+		expect(install).toBeLessThan(steps.indexOf(keyed[0] ?? ""));
+		// Read-only, no cache restored next to the key.
+		expect(code(job)).not.toMatch(/: write\b|id-token|cache:/);
+	});
+
+	it("best effort: every step of rc-notes may fail, rc-build runs whatever came of it, and the notes reach the build only through env", () => {
+		const byName = release();
+		const job = code(byName.get("rc-notes") ?? "");
+		const steps = job.split(/\n(?= {6}- )/).slice(1);
+		expect(steps.length).toBeGreaterThan(3);
+		for (const step of steps) {
+			expect(step).toMatch(/continue-on-error: true/);
+			expect(step).toMatch(/timeout-minutes: \d/);
+		}
+		// The steps' timeouts together stay under the job's: a step that
+		// times out fails (best effort), but a job that does is cancelled.
+		const jobMinutes = Number(/^ {4}timeout-minutes: (\d+)$/m.exec(job)?.[1]);
+		const stepMinutes = steps.map((st) =>
+			Number(/^ {8}timeout-minutes: (\d+)/m.exec(st)?.[1]),
+		);
+		expect(stepMinutes.every((m) => m > 0)).toBe(true);
+		const sum = stepMinutes.reduce((a, b) => a + b, 0);
+		expect(sum).toBeLessThan(jobMinutes);
+		// The RC waits at most this long for its notes.
+		expect(jobMinutes).toBeLessThanOrEqual(8);
+		const build = byName.get("rc-build") ?? "";
+		expect(build).toMatch(/^ {4}needs: rc-notes$/m);
+		expect(conjuncts(ifOf(build))).toContain("!cancelled()");
+		// rc-publish: only after rc-build succeeded, whatever rc-notes did.
+		const publish = byName.get("rc-publish") ?? "";
+		expect(conjuncts(ifOf(publish))).toEqual(
+			expect.arrayContaining([
+				"!cancelled()",
+				"needs.rc-build.result == 'success'",
+			]),
+		);
+		expect(code(build)).toContain(
+			// biome-ignore lint/suspicious/noTemplateCurlyInString: GitHub expressions
+			"RC_NOTES: ${{ needs.rc-notes.outputs.notes }}",
+		);
+		for (const run of runValues(workflow("release.yml"))) {
+			expect(run).not.toContain("${{");
+		}
+	});
+
+	it("fetches the PRs' descriptions by merge date since the previous release's range began, not the newest few created; with no release yet, all of them", () => {
+		const job = release().get("rc-notes") ?? "";
+		const step =
+			job
+				.split(/\n(?= {6}- )/)
+				.find((st) => st.includes("name: The PRs' descriptions")) ?? "";
+		expect(step).not.toContain("--limit 300");
+		const script = (runValues(step)[0] ?? "")
+			.replace(/^\s*run: \|\n/, "")
+			.replace(/^ {10}/gm, "");
+		expect(script).toContain("gh pr list");
+		const dir = mkdtempSync(join(tmpdir(), "crb-rc-prs-"));
+		try {
+			const repo = join(dir, "repo");
+			mkdirSync(repo);
+			const git = (...args: string[]) =>
+				execFileSync("git", args, { cwd: repo, encoding: "utf8" }).trim();
+			const commit = (subject: string, date: string) =>
+				execFileSync(
+					"git",
+					[
+						"-c",
+						"user.name=t",
+						"-c",
+						"user.email=t@e",
+						"commit",
+						"-q",
+						"--allow-empty",
+						"-m",
+						subject,
+					],
+					{
+						cwd: repo,
+						env: {
+							...process.env,
+							GIT_AUTHOR_DATE: date,
+							GIT_COMMITTER_DATE: date,
+						},
+					},
+				);
+			git("init", "-q", "-b", "master");
+			mkdirSync(join(dir, "bin"));
+			writeFileSync(
+				join(dir, "bin/gh"),
+				`#!/usr/bin/env bash\nprintf '%s\\n' "$@" >"${dir}/args"\necho '[]'\n`,
+				{ mode: 0o755 },
+			);
+			const run = () => {
+				execFileSync("bash", ["-eo", "pipefail", "-c", script], {
+					cwd: repo,
+					env: {
+						...process.env,
+						PATH: `${join(dir, "bin")}:${process.env.PATH}`,
+						RUNNER_TEMP: dir,
+						GITHUB_REPOSITORY: "owner/repo",
+					},
+				});
+				expect(readFileSync(join(dir, "prs.json"), "utf8")).toBe("[]\n");
+				return readFileSync(join(dir, "args"), "utf8").trim().split("\n");
+			};
+			commit("start (#1)", "2026-01-01T10:00:00Z");
+			// No release yet: every merged PR, no date bound.
+			const all = run();
+			expect(all).not.toContain("--search");
+			expect(all.join(" ")).toContain(
+				"pr list --repo owner/repo --state merged --base master --limit 1000 --json number,body",
+			);
+			commit("Feature (#2)", "2026-03-10T00:30:00Z");
+			git("tag", "v0.3.0");
+			git("tag", "v0.3.0-rc.9");
+			commit("After (#3)", "2026-04-01T00:00:00Z");
+			// The newest release (not an RC), from a day before its commit.
+			expect(run().join(" ")).toContain(
+				"--search merged:>=2026-03-09 --limit 1000",
+			);
+			git("tag", "v0.10.0");
+			expect(run().join(" ")).toContain("--search merged:>=2026-03-31");
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	it("ci:rc-notes never fails: with no key and no PR list it warns, writes no notes and says so in the summary", () => {
+		const dir = mkdtempSync(join(tmpdir(), "crb-rc-notes-"));
+		try {
+			const git = (...args: string[]) =>
+				execFileSync("git", args, { cwd: dir, encoding: "utf8" }).trim();
+			git("init", "-q", "-b", "master");
+			writeFileSync(
+				join(dir, "package.json"),
+				'{\n\t"name": "carbonless-review",\n\t"version": "0.4.0"\n}\n',
+			);
+			git("add", ".");
+			git(
+				"-c",
+				"user.name=t",
+				"-c",
+				"user.email=t@e",
+				"commit",
+				"-q",
+				"-m",
+				"Feature (CAR-1) (#1)",
+			);
+			const output = join(dir, "output");
+			const summary = join(dir, "summary");
+			writeFileSync(output, "");
+			const env: NodeJS.ProcessEnv = {
+				...process.env,
+				HOME: dir,
+				XDG_CONFIG_HOME: dir,
+			};
+			delete env.LINEAR_API_KEY;
+			const out = execFileSync(
+				join(import.meta.dirname, "../node_modules/.bin/tsx"),
+				[
+					join(import.meta.dirname, "release.ts"),
+					"ci:rc-notes",
+					join(dir, "missing-prs.json"),
+					output,
+					summary,
+				],
+				{ cwd: dir, encoding: "utf8", env },
+			);
+			expect(out).toMatch(/^::warning title=RC notes::no PR descriptions/m);
+			expect(out).toMatch(/^::warning title=RC notes::no Linear key/m);
+			// A description not fetched reads apart from a note not written.
+			expect(out).toMatch(
+				/^::warning title=RC notes::1 of the release's 1 PRs not in the fetched descriptions \(#1\)/m,
+			);
+			expect(readFileSync(output, "utf8")).toBe("");
+			expect(readFileSync(summary, "utf8")).toMatch(
+				/^RC notes: none collected \(1 warnings; 0\/1 PR descriptions fetched\)/,
+			);
+			// With #1's description fetched: no such warning, all counted.
+			const prs = join(dir, "prs.json");
+			writeFileSync(prs, JSON.stringify([{ number: 1, body: "" }]));
+			writeFileSync(summary, "");
+			const again = execFileSync(
+				join(import.meta.dirname, "../node_modules/.bin/tsx"),
+				[
+					join(import.meta.dirname, "release.ts"),
+					"ci:rc-notes",
+					prs,
+					output,
+					summary,
+				],
+				{ cwd: dir, encoding: "utf8", env },
+			);
+			expect(again).not.toMatch(/not in the fetched descriptions/);
+			expect(readFileSync(summary, "utf8")).toMatch(
+				/1\/1 PR descriptions fetched/,
+			);
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
 	});
 });
 

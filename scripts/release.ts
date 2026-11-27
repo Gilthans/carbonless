@@ -56,13 +56,14 @@
 // Steps the workflows run (not for people): ci:rc-version, ci:set-version,
 // ci:check-publish, ci:write-version, ci:promote-plan, ci:manifest,
 // ci:check-run, ci:finish-plan, ci:notes-input, ci:published-notes,
-// ci:changelog, ci:release-body, ci:bump, ci:pr-note. (CI passed on the
+// ci:changelog, ci:release-body, ci:bump, ci:pr-note, ci:rc-notes. (CI passed on the
 // RC's commit: scripts/ci-passed.mjs, with no dependencies.) They print KEY=value
 // lines for $GITHUB_OUTPUT and read the checkout's tags. (The rc fix-up is
 // scripts/rc-fixup.mjs, with no dependencies, for the jobs that hold npm's
 // OIDC credential.)
 import { execFileSync, spawn } from "node:child_process";
 import {
+	appendFileSync,
 	existsSync,
 	mkdirSync,
 	mkdtempSync,
@@ -72,7 +73,11 @@ import {
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { createInterface } from "node:readline/promises";
-import { NOTE_KINDS, type NoteKind } from "../src/shared/releaseNotes.js";
+import {
+	NOTE_KINDS,
+	type NoteKind,
+	type ReleaseNotesFile,
+} from "../src/shared/releaseNotes.js";
 import {
 	bump,
 	checkPromoteRun,
@@ -104,6 +109,8 @@ import {
 	auditNotes,
 	capLocal,
 	capShipped,
+	decodeNotesInput,
+	encodeNotesInput,
 	finishNotes,
 	formatNotesFile,
 	type Linear,
@@ -115,14 +122,18 @@ import {
 	notesFilesAt,
 	notesFromInput,
 	notesPath,
+	type PrBodies,
 	type PullForNotes,
 	postNote,
+	prBodiesIo,
 	prNotesOk,
 	promoteNotes,
+	rcNotes,
 	readNotesFile,
 	releaseRange,
 	renderNotesBody,
 	shippedNotes,
+	undescribedPrs,
 	withChangelogSection,
 	withReleaseNotes,
 	workflowText,
@@ -239,9 +250,15 @@ const packageVersion = (dir: string) =>
  * Works on any commit, also one whose build-info.mjs predates this. A
  * release's own notes come from `notesFile` (promote's, CAR-242: the
  * checked input, written by ci:notes-input) when given, else from its
- * release-notes/X.Y.Z.json at HEAD.
+ * release-notes/X.Y.Z.json at HEAD. An RC's notes so far (CAR-321) come
+ * as `rcGiven`, over that file.
  */
-async function setVersion(version: string, dir: string, notesFile?: string) {
+async function setVersion(
+	version: string,
+	dir: string,
+	notesFile?: string,
+	rcGiven?: ReleaseNotesFile,
+) {
 	const v = parseVersion(version);
 	if (!v) throw new Error(`not a version: ${version}`);
 	const file = join(dir, "package.json");
@@ -256,7 +273,7 @@ async function setVersion(version: string, dir: string, notesFile?: string) {
 	// every version into dist/release-notes.json from the git dir's file.
 	const given = notesFile
 		? readNotesFile(readFileSync(notesFile, "utf8"), notesFile)
-		: undefined;
+		: rcGiven;
 	const notes = await shippedNotes(io, version, dir, given);
 	// A release also carries its notes file whole (notes and none), which
 	// release-finish commits from the published package.
@@ -534,10 +551,84 @@ async function main(argv: string[]) {
 			return;
 		}
 		case "ci:set-version": {
-			// ci:set-version <version> [dir] [notes.json]
+			// ci:set-version <version> [dir] [notes.json]; an RC's notes so
+			// far from $RC_NOTES (ci:rc-notes' output; empty: none), best
+			// effort: unreadable ones only warn.
 			const [version, dir = process.cwd(), notesFile] = rest;
 			if (!version) usage();
-			await setVersion(version, dir, notesFile);
+			const rc = parseVersion(version);
+			const encoded = process.env.RC_NOTES?.trim() ?? "";
+			let rcGiven: ReleaseNotesFile | undefined;
+			if (rc?.rc !== undefined && !notesFile && encoded !== "") {
+				try {
+					rcGiven = decodeNotesInput(
+						encoded,
+						formatVersion({ ...rc, rc: undefined }),
+					);
+				} catch (error) {
+					console.log(
+						`::warning::$RC_NOTES unreadable, the RC ships without them: ${workflowText((error as Error).message)}`,
+					);
+				}
+			}
+			await setVersion(version, dir, notesFile, rcGiven);
+			return;
+		}
+		case "ci:rc-notes": {
+			// ci:rc-notes <prs.json> <output> <summary> (CAR-321): master's
+			// next release's notes so far, best effort: appends
+			// notes=<gzip+base64> to <output> ($GITHUB_OUTPUT) when it has
+			// some, a line to <summary> ($GITHUB_STEP_SUMMARY), warnings as
+			// annotations; never fails. Linear from $LINEAR_API_KEY; PR
+			// descriptions from <prs.json> (gh pr list --json number,body),
+			// never gh itself.
+			const [prsFile, output, summary] = rest;
+			if (!prsFile || !output || !summary || rest.length !== 3) usage();
+			const say = (line: string) => appendFileSync(summary, `${line}\n`);
+			const warn = (w: string) =>
+				console.log(`::warning title=RC notes::${workflowText(w)}`);
+			try {
+				let bodies: PrBodies = [];
+				try {
+					const parsed = JSON.parse(readFileSync(prsFile, "utf8")) as unknown;
+					if (!Array.isArray(parsed)) throw new Error("not a list");
+					bodies = parsed as PrBodies;
+				} catch (error) {
+					warn(
+						`no PR descriptions (${(error as Error).message}): only Linear's notes`,
+					);
+				}
+				const version = packageVersion(process.cwd());
+				const r = await rcNotes(
+					prBodiesIo(io, bodies),
+					findLinear(),
+					version,
+					"HEAD",
+				);
+				for (const w of r.warnings) warn(w);
+				// A description not fetched isn't a missing note: say which.
+				const undescribed = undescribedPrs(r.prs, bodies);
+				if (undescribed.length > 0) {
+					warn(
+						`${undescribed.length} of the release's ${r.prs.length} PRs not in the fetched descriptions (${undescribed.map((n) => `#${n}`).join(", ")}): a note there can't count`,
+					);
+				}
+				const fetched = `${r.prs.length - undescribed.length}/${r.prs.length} PR descriptions fetched`;
+				if (!r.file) {
+					say(
+						`RC notes: none collected (${r.warnings.length} warnings; ${fetched}): the RC shows ${notesPath(version)} and its PRs' titles`,
+					);
+				} else {
+					appendFileSync(output, `notes=${encodeNotesInput(r.file)}\n`);
+					say(
+						`RC notes so far for ${version}: ${r.file.notes.length} notes, ${r.file.none.length} none, ${r.missing} without a note yet (shown by title); ${fetched}`,
+					);
+				}
+			} catch (error) {
+				warn(`RC notes skipped: ${(error as Error).message}`);
+			}
+			// A Linear read left after a timeout keeps no RC waiting.
+			process.exit(0);
 			return;
 		}
 		case "ci:check-publish": {

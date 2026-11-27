@@ -80,10 +80,87 @@ defaults:
     shell: bash # -eo pipefail: `cmd | tee` fails when cmd does
 
 jobs:
-  rc-build:
-    # A push to master of this repository (not a PR whose branch is called
-    # master, not a fork), CI green.
+  rc-notes:
+    # CAR-321: the next release's notes written so far (Linear, else the
+    # PRs' descriptions; scripts/release-notes.ts, rcNotes), for the RC's
+    # What's new. Best effort: every step may fail, the RC then shows its
+    # PRs' titles as before. The Linear key (LINEAR_READ_API_KEY, read
+    # only) is a secret of the environment release-note (master only), so
+    # only this job has it; rc-build and rc-publish never see it. The
+    # token only fetches the PR descriptions, before any repo code runs.
     if: >-
+      github.event_name == 'workflow_run' &&
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'push' &&
+      github.event.workflow_run.head_repository.full_name == github.repository
+    runs-on: ubuntu-latest
+    # Over the steps' own timeouts together (7), so no step's timeout can
+    # turn into the job's (which would count as cancelled).
+    timeout-minutes: 8
+    environment: release-note
+    permissions:
+      contents: read
+      pull-requests: read # the PRs' descriptions
+    outputs:
+      notes: ${{ steps.notes.outputs.notes }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        continue-on-error: true
+        timeout-minutes: 1
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+          fetch-depth: 0 # the release's range, from its previous tag
+          persist-credentials: false
+      - name: The PRs' descriptions
+        # Every PR merged since the previous release's range began (by merge
+        # date, not creation: one opened long ago still counts), from a day
+        # before the oldest commit the range can hold (its merge base with
+        # that tag), so time zones can't drop one. ci:rc-notes warns about
+        # any PR of the range still missing.
+        continue-on-error: true
+        timeout-minutes: 1
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          search=()
+          prev="$(git tag -l 'v*' | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -1 || true)"
+          if [[ -n "$prev" ]]; then
+            base="$(git merge-base "refs/tags/$prev" HEAD)"
+            since="$(date -u -d "$(git log -1 --format=%cI "$base") - 1 day" +%Y-%m-%d)"
+            search=(--search "merged:>=$since")
+          fi
+          gh pr list --repo "$GITHUB_REPOSITORY" --state merged --base master \
+            "${search[@]}" --limit 1000 --json number,body >"$RUNNER_TEMP/prs.json"
+      - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v4.4.0
+        continue-on-error: true
+        timeout-minutes: 1
+        with:
+          version: 12.14.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        continue-on-error: true
+        timeout-minutes: 1
+        with:
+          node-version-file: .nvmrc
+          # No cache: a job with a secret restores nothing.
+      # No install scripts, before the key is in any env.
+      - run: pnpm install --frozen-lockfile --ignore-scripts
+        continue-on-error: true
+        timeout-minutes: 2
+      - name: Notes so far
+        id: notes
+        continue-on-error: true
+        timeout-minutes: 1 # rcNotes gives up after 40 s
+        env:
+          LINEAR_API_KEY: ${{ secrets.LINEAR_READ_API_KEY }}
+        run: pnpm exec tsx scripts/release.ts ci:rc-notes "$RUNNER_TEMP/prs.json" "$GITHUB_OUTPUT" "$GITHUB_STEP_SUMMARY"
+
+  rc-build:
+    needs: rc-notes
+    # A push to master of this repository (not a PR whose branch is called
+    # master, not a fork), CI green. Whatever came of rc-notes (best
+    # effort), unless the run was cancelled.
+    if: >-
+      !cancelled() &&
       github.event_name == 'workflow_run' &&
       github.event.workflow_run.conclusion == 'success' &&
       github.event.workflow_run.event == 'push' &&
@@ -145,11 +222,12 @@ jobs:
           echo "::warning::$REASON"
           echo "No RC: $REASON" >>"$GITHUB_STEP_SUMMARY"
       - name: Set the version and gitHead (the tree stays clean)
-        # And crbReleaseNotes (CAR-192): the notes so far, and the PRs with
-        # none yet, from release-notes/*.json and git.
+        # And crbReleaseNotes (CAR-192): the notes so far (rc-notes', over
+        # release-notes/*.json; CAR-321), and the PRs with none yet.
         if: steps.version.outputs.publish == 'true'
         env:
           VERSION: ${{ steps.version.outputs.version }}
+          RC_NOTES: ${{ needs.rc-notes.outputs.notes }}
         run: pnpm exec tsx scripts/release.ts ci:set-version "$VERSION"
       - name: Pack
         if: steps.version.outputs.publish == 'true'
@@ -181,8 +259,11 @@ jobs:
     # This run's RC (or, before the first release, only its tag); and the
     # rc fix-up, even when nothing is published (any merge heals rc). The
     # push-of-this-repository check again, not only through needs: this job
-    # gets npm's credential.
+    # gets npm's credential. rc-build itself succeeded: rc-notes (before
+    # it, best effort) never holds the RC back.
     if: >-
+      !cancelled() &&
+      needs.rc-build.result == 'success' &&
       github.event_name == 'workflow_run' &&
       github.event.workflow_run.event == 'push' &&
       github.event.workflow_run.head_repository.full_name == github.repository &&

@@ -261,6 +261,31 @@ describe("prepareUpdateNotes", () => {
 		expect(got.older).toBe(false);
 	});
 
+	it("a release offered the next release's RC: its notes so far (CAR-321) under the RC, with the changes still without one", () => {
+		const got = prepareUpdateNotes(
+			"0.3.0",
+			"0.4.0-rc.2",
+			parsed([
+				v("0.4.0", {
+					date: null,
+					notes: [note("CAR-1", 10), note("CAR-2", 12)],
+					uncovered: [11],
+				}),
+				v("0.3.0", { notes: [note("CAR-0", 5)] }),
+			]),
+			parsed([v("0.3.0", { notes: [note("CAR-0", 5)] })]),
+		);
+		expect(got.sections).toEqual([
+			{
+				version: "0.4.0-rc.2",
+				date: null,
+				notes: [note("CAR-1", 10), note("CAR-2", 12)],
+				uncovered: [11],
+				released: false,
+			},
+		]);
+	});
+
 	it("an RC offered the release: the release's notes past what the RC had, linked as a release", () => {
 		const got = prepareUpdateNotes(
 			"0.4.0-rc.3",

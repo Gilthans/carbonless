@@ -5,10 +5,11 @@
 // checks they cover the release from git alone and ships them in the
 // release's package (crbReleaseNotes, crbReleaseNotesFile in package.json,
 // dist/release-notes.json); release-finish commits what was published as
-// release-notes/X.Y.Z.json. `pnpm release notes` can still snapshot them
-// early (a "notes: X.Y.Z" PR), for RCs' What's new. The one Linear key in
-// CI is the release-note check's (CAR-211: read only, in that one step,
-// running master's code).
+// release-notes/X.Y.Z.json. Each RC carries the notes written so far,
+// best effort (CAR-321, rcNotes); `pnpm release notes` can still snapshot
+// them (a "notes: X.Y.Z" PR). The Linear key in CI is read only, in the
+// environment release-note, used in one step of the release-note check
+// (CAR-211) and of the RC run's rc-notes job, each running master's code.
 // Linear and git go through injected clients, so tests drive everything
 // with fakes.
 import { existsSync, readFileSync } from "node:fs";
@@ -845,7 +846,8 @@ export const LOCAL_NOTES_GIT_PATH = "crb-release-notes.json";
  * no note covers yet) and every earlier released version's (dated by
  * their file, else their tag), newest first, uncapped: `capShipped` for
  * the manifest, `capLocal` for dist. A release's own notes are `given`
- * when passed (promote's, CAR-242), else its file at HEAD.
+ * when passed (promote's, CAR-242), else its file at HEAD; an RC's
+ * `given` (its notes so far, CAR-321) go over its file at HEAD.
  */
 export async function shippedNotes(
 	io: Io,
@@ -857,14 +859,17 @@ export async function shippedNotes(
 	if (!v) throw new Error(`not a version: ${version}`);
 	const rc = v.rc !== undefined;
 	const release = formatVersion({ ...v, rc: undefined });
-	if (given && (rc || given.version !== release)) {
+	if (given && given.version !== release) {
 		throw new Error(
 			`notes for ${given.version} given to a build of ${version}: only that release takes them`,
 		);
 	}
 	const files = await notesFilesAt(io, "HEAD", dir);
 	const tags = new Set(await remoteTags(io, dir));
-	const own = given ?? files.get(release) ?? null;
+	const atHead = files.get(release) ?? null;
+	// An RC's are its notes so far (CAR-321, rcNotes), over any file at
+	// HEAD as promote's are; a release's replace the file.
+	const own = given && rc ? mergeNotes(given, atHead).file : (given ?? atHead);
 	if (!rc && !own) {
 		throw new Error(
 			`no ${notesPath(release)}: a release ships its notes (pnpm release promote sends them)`,
@@ -1992,4 +1997,128 @@ export async function promoteNotes(
 		`${release}'s notes up to ${tag}: ${collected.file.notes.length} notes, ${collected.file.none.length} none (sent to the run)`,
 	);
 	return encoded;
+}
+
+// ---------------------------------------------------------------------------
+// An RC's notes so far (CAR-321): best effort, never a failure.
+
+/** The PR descriptions the RC workflow fetched (gh pr list --json number,body). */
+export type PrBodies = readonly { number: number; body?: string | null }[];
+
+/**
+ * `io` with gh's PR-description reads answered from `bodies` (a PR not
+ * in it reads as an empty description), any other gh call refused: the
+ * collecting step runs with the Linear key and no GitHub token.
+ */
+export function prBodiesIo(io: Io, bodies: PrBodies): Io {
+	const byNumber = new Map(bodies.map((b) => [b.number, b.body ?? ""]));
+	return {
+		...io,
+		run: (cmd, args, opts) => {
+			if (cmd !== "gh") return io.run(cmd, args, opts);
+			const m = /^repos\/[^/]+\/[^/]+\/pulls\/(\d+)$/.exec(args[1] ?? "");
+			if (args[0] === "api" && m) {
+				return Promise.resolve({
+					code: 0,
+					stdout: byNumber.get(Number(m[1])) ?? "",
+					stderr: "",
+				});
+			}
+			return Promise.resolve({
+				code: 1,
+				stdout: "",
+				stderr: `gh ${args.join(" ")}: not in this step`,
+			});
+		},
+	};
+}
+
+/**
+ * How long an RC build waits for its notes (then ships without them):
+ * inside the workflow step's own timeout (release.yml, rc-notes).
+ */
+const RC_NOTES_TIMEOUT_MS = 40_000;
+
+/**
+ * The notes of release `version` written so far, for an RC build of it
+ * up to `to`: collectNotes's rules (the ticket's note in Linear, else its
+ * PRs' descriptions), best effort. A ticket or PR without a note is
+ * skipped (`missing` counts them; the RC lists its PR as having none yet),
+ * and no key, Linear or git failing, or the timeout give no notes and a
+ * warning: never a throw. `prs`: the release's PRs (not the exempt ones)
+ * once the range was read, so the caller can tell which descriptions it
+ * lacked. Reads only.
+ */
+export async function rcNotes(
+	io: Io,
+	found: { linear: Linear | null; tried: readonly string[] },
+	version: string,
+	to: string,
+	opts: { cwd?: string; timeoutMs?: number } = {},
+): Promise<{
+	file: ReleaseNotesFile | null;
+	missing: number;
+	prs: number[];
+	warnings: string[];
+}> {
+	const timeoutMs = opts.timeoutMs ?? RC_NOTES_TIMEOUT_MS;
+	let prs: number[] = [];
+	let timer: ReturnType<typeof setTimeout> | undefined;
+	const timeout = new Promise<never>((_, reject) => {
+		timer = setTimeout(
+			() => reject(new Error(`timed out after ${timeoutMs / 1000}s`)),
+			timeoutMs,
+		);
+		timer.unref?.();
+	});
+	try {
+		const collect = (async () => {
+			const v = parseVersion(version);
+			if (!v || v.rc !== undefined) {
+				throw new Error(`not a release X.Y.Z: ${version}`);
+			}
+			const range = await releaseRange(io, version, to, opts.cwd);
+			prs = range.prs.filter((p) => !p.exempt).map((p) => p.number);
+			const { linear } = found;
+			if (!linear) return null;
+			const files = await notesFilesAt(io, to, opts.cwd);
+			return collectNotes(io, linear, version, range, files);
+		})();
+		collect.catch(() => {}); // settled after a timeout: nobody waits
+		const collected = await Promise.race([collect, timeout]);
+		if (!collected) {
+			return {
+				file: null,
+				missing: 0,
+				prs,
+				warnings: [noLinearKey(found.tried)],
+			};
+		}
+		return {
+			file: collected.file,
+			missing: collected.missing.length,
+			prs,
+			warnings: collected.warnings,
+		};
+	} catch (error) {
+		return {
+			file: null,
+			missing: 0,
+			prs,
+			warnings: [
+				`${version}'s notes couldn't be collected: ${(error as Error).message}`,
+			],
+		};
+	} finally {
+		clearTimeout(timer);
+	}
+}
+
+/** The release's PRs `bodies` has no entry for (their descriptions weren't fetched). */
+export function undescribedPrs(
+	prs: readonly number[],
+	bodies: PrBodies,
+): number[] {
+	const have = new Set(bodies.map((b) => b.number));
+	return prs.filter((n) => !have.has(n));
 }
