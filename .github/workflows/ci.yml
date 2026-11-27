@@ -112,6 +112,8 @@ jobs:
       # What a git costs to start here (CAR-320): pnpm spawn-counts' counts
       # times this is a page's wait on processes on Windows.
       - name: Process cost
+        continue-on-error: true
+        timeout-minutes: 2
         run: node scripts/spawn-cost.mjs 30
       - id: tests
         run: pnpm exec vitest run src/server/agent/acp.test.ts src/server/agent/runner.test.ts src/server/update/updateHelper.test.ts src/server/update/install.test.ts src/server/catFile.test.ts src/server/review/refFiles.test.ts

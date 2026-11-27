@@ -168,12 +168,22 @@ interface Chain {
 	complete: boolean;
 }
 
+/**
+ * One batched diff's paths at most, by count and by their bytes on the
+ * command line: Windows caps a whole command line at 32 767 characters,
+ * and the clone's path and git's own arguments take some of it.
+ */
+export const DIFF_BATCH_PATHS = 200;
+export const DIFF_BATCH_BYTES = 12_000;
+
 /** How many of a base branch's newest commits one read takes (#chain). */
 const CHAIN_PAGE = 500;
 
 /** Paths asked of one diff, and its answer: each path's sections. */
 interface DiffBatch {
 	paths: Set<string>;
+	/** The paths' bytes on git's command line. */
+	bytes: number;
 	result: Promise<Map<string, string[]> | null>;
 }
 
@@ -317,21 +327,30 @@ export class ThreadCodeSource {
 	 * of its first-parent chain whose commit time is at or before `at`, as
 	 * `git rev-list -1 --first-parent --before=<at>` gives it. Read off the
 	 * chain's newest commits (#chain), one git for every comment's time
-	 * rather than one each (CAR-320); a deeper read only when they're all
-	 * newer.
+	 * rather than one each (CAR-320); git's own `--before` query for a
+	 * time older than them all.
 	 */
 	#tip(ref: string, at: string): Promise<string | null> {
 		const ms = Date.parse(at);
 		if (Number.isNaN(ms)) return Promise.resolve(null);
 		const seconds = Math.floor(ms / 1000);
 		return this.#tips.get(`${ref} ${at}`, async () => {
-			for (let n = CHAIN_PAGE; ; n *= 4) {
-				const chain = await this.#chain(ref, n);
-				if (!chain) return null;
-				const hit = chain.commits.find((c) => c.time <= seconds);
-				if (hit) return hit.oid;
-				if (chain.complete) return null;
-			}
+			const chain = await this.#chain(ref, CHAIN_PAGE);
+			if (!chain) return null;
+			const hit = chain.commits.find((c) => c.time <= seconds);
+			if (hit) return hit.oid;
+			if (chain.complete) return null;
+			// Older than the newest page: git's own query, once.
+			const out = await this.#git([
+				"rev-list",
+				"-1",
+				"--first-parent",
+				`--before=${at}`,
+				ref,
+				"--",
+			]);
+			const oid = out?.trim() ?? "";
+			return OID.test(oid) ? oid : null;
 		});
 	}
 
@@ -437,9 +456,21 @@ export class ThreadCodeSource {
 		}
 		const key = `${left} ${commit}`;
 		let batch = this.#batches.get(key);
+		// A full batch goes as it is; the path starts the next one.
+		const bytes = Buffer.byteLength(path) + 1;
+		if (
+			batch &&
+			!batch.paths.has(path) &&
+			(batch.paths.size >= DIFF_BATCH_PATHS ||
+				batch.bytes + bytes > DIFF_BATCH_BYTES)
+		) {
+			this.#batches.delete(key);
+			batch = undefined;
+		}
 		if (!batch) {
 			const made: DiffBatch = {
 				paths: new Set(),
+				bytes: 0,
 				result: new Promise((resolve) => {
 					// Paths join until the diff starts: the turn's, and any
 					// asked while it waits for a slot.
@@ -461,7 +492,10 @@ export class ThreadCodeSource {
 			batch = made;
 			this.#batches.set(key, batch);
 		}
-		batch.paths.add(path);
+		if (!batch.paths.has(path)) {
+			batch.paths.add(path);
+			batch.bytes += bytes;
+		}
 		return batch.result.then((sections) =>
 			sections === null ? null : (sections.get(path) ?? []),
 		);

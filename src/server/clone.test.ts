@@ -164,6 +164,11 @@ describe("private clone", () => {
 		["a", ".."],
 		["a", "."],
 		["", "c"],
+		["C:", "c"],
+		["a", "b:c"],
+		["a b", "c"],
+		["a", "b\0"],
+		["a", "~b"],
 	])("refuses owner %j repo %j as path segments", (owner, repo) => {
 		expect(() => clonePath(owner, repo)).toThrow();
 	});

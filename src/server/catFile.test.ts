@@ -1,4 +1,7 @@
 import { execFileSync } from "node:child_process";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { afterAll, afterEach, describe, expect, it, vi } from "vitest";
 import {
 	createGitFixture,
@@ -10,6 +13,7 @@ import {
 	catFileCount,
 	closeCatFiles,
 	IDLE_MS,
+	MAX_PROCESSES,
 	readBlob,
 	readObject,
 } from "./catFile";
@@ -36,11 +40,13 @@ const fx = createGitFixture([
 		binary: { "big.bin": big },
 	},
 ]);
+const tmp = mkdtempSync(join(tmpdir(), "crb-cat-file-"));
 afterEach(() => closeCatFiles());
 afterAll(async () => {
 	// Windows keeps a running process's directory: gone first.
 	await closeCatFiles();
 	fx.cleanup();
+	rmSync(tmp, { recursive: true, force: true });
 });
 const [commit = ""] = fx.shas;
 const git = (...args: string[]) =>
@@ -112,6 +118,42 @@ describe("catFile", () => {
 			"git cat-file --batch",
 			"git cat-file --batch",
 		]);
+	});
+
+	it("reads a relative path on its own: the reads queued beside it still answer", async () => {
+		// In a bare clone git exits on `<oid>:./x` ("relative path syntax
+		// can't be used outside working tree").
+		const bare = join(tmp, "bare.git");
+		git("clone", "--quiet", "--bare", fx.path, bare);
+		const [before, bad, worse, after] = await Promise.allSettled([
+			readBlob(bare, `${commit}:a.txt`),
+			readObject(bare, `${commit}:./a.txt`),
+			readObject(bare, `${commit}:../a.txt`),
+			readBlob(bare, `${commit}:dir/b.txt`),
+		]);
+		expect(before.status === "fulfilled" && before.value.toString()).toBe(
+			"one\ntwo\n",
+		);
+		expect(after.status === "fulfilled" && after.value.toString()).toBe(
+			"bee\n",
+		);
+		expect(bad.status).toBe("rejected");
+		expect(worse.status).toBe("rejected");
+	});
+
+	it(`keeps at most ${MAX_PROCESSES} processes, closing the least recently used idle one`, async () => {
+		const clones = Array.from({ length: MAX_PROCESSES + 2 }, (_, i) => {
+			const path = join(tmp, `clone${i}.git`);
+			git("clone", "--quiet", "--bare", fx.path, path);
+			return path;
+		});
+		for (const path of clones) {
+			expect((await readBlob(path, `${commit}:a.txt`)).toString()).toBe(
+				"one\ntwo\n",
+			);
+			expect(catFileCount()).toBeLessThanOrEqual(MAX_PROCESSES);
+		}
+		expect(catFileCount()).toBe(MAX_PROCESSES);
 	});
 
 	it("fails the reads out when its process dies, and starts another for the next", async () => {

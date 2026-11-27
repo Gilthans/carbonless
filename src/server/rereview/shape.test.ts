@@ -235,6 +235,18 @@ describe("CommitCounter", () => {
 		expect(spawns.shapes).toEqual(["git rev-list", "git rev-list"]);
 	});
 
+	it("a broken head fails only its own count, not those sharing its merge base", async () => {
+		const counter = new CommitCounter(h.path);
+		const [good, bad, other] = await Promise.allSettled([
+			counter.count(h.b0, h.p1),
+			counter.count(h.b0, "f".repeat(40)),
+			counter.count(h.b0, h.h3),
+		]);
+		expect(good).toEqual({ status: "fulfilled", value: count(h.b0, h.p1) });
+		expect(other).toEqual({ status: "fulfilled", value: count(h.b0, h.h3) });
+		expect(bad.status).toBe("rejected");
+	});
+
 	it("fails the counts of a git that fails", async () => {
 		const counter = new CommitCounter(h.path);
 		await expect(counter.count(h.b0, "f".repeat(40))).rejects.toThrow();

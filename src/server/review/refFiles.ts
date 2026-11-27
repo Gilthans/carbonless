@@ -47,11 +47,16 @@ async function findGitDir(repo: string): Promise<string | null> {
 	return null;
 }
 
+/** Kept once found; not found (no clone there yet) is looked for again. */
 function gitDirOf(repo: string): Promise<string | null> {
 	let known = gitDirs.get(repo);
 	if (!known) {
-		known = findGitDir(repo);
-		gitDirs.set(repo, known);
+		const looking = findGitDir(repo);
+		known = looking;
+		gitDirs.set(repo, looking);
+		void looking.then((dir) => {
+			if (dir === null && gitDirs.get(repo) === looking) gitDirs.delete(repo);
+		});
 	}
 	return known;
 }
@@ -89,12 +94,12 @@ export async function tipFromFiles(
 		} catch (error) {
 			return missing(error) ? null : undefined;
 		}
-		for (const line of packed.split("\n")) {
-			if (line.startsWith("#") || line.startsWith("^")) continue;
-			const space = line.indexOf(" ");
-			if (space < 0) continue;
-			if (line.slice(space + 1).trimEnd() !== ref) continue;
-			const oid = line.slice(0, space);
+		// The ref's line, found without splitting the file (a clone's
+		// packed-refs holds every branch and tag): "<oid> <ref>\n".
+		const at = packed.indexOf(` ${ref}\n`);
+		if (at >= 0) {
+			const start = packed.lastIndexOf("\n", at) + 1;
+			const oid = packed.slice(start, at);
 			return OID.test(oid) ? oid : undefined;
 		}
 		return null;

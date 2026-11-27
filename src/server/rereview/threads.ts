@@ -37,7 +37,7 @@ import type {
 	Snapshot,
 	ThreadAnchorRef,
 } from "../../shared/types.js";
-import { readBlob } from "../catFile.js";
+import { readObject } from "../catFile.js";
 import { touchesOldSide } from "../codeWindow.js";
 import { fileText } from "../diff/snapshot.js";
 import type { DiffBase, ThreadCodeSource } from "../threadCode.js";
@@ -400,9 +400,19 @@ export class ThreadPlacer {
 		const key = JSON.stringify([commit, path]);
 		let made = this.#texts.get(key);
 		if (!made) {
-			made = readBlob(this.repo, `${commit}:${path}`)
-				.then((bytes) => fileText(EMPTY, bytes).newLines)
-				.catch(() => null);
+			// Kept only when git answered: a file that isn't there (or isn't a
+			// blob) stays null; a read that failed (a git that died with
+			// others' reads) is asked again next time.
+			made = readObject(this.repo, `${commit}:${path}`).then(
+				(object) =>
+					object?.type === "blob"
+						? fileText(EMPTY, object.content).newLines
+						: null,
+				() => {
+					this.#texts.delete(key);
+					return null;
+				},
+			);
 			this.#texts.set(key, made);
 		}
 		return made;

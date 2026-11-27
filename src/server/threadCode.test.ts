@@ -19,6 +19,8 @@ vi.mock("./git.js", async (importOriginal) => {
 
 import { Activity, beginCall, runIn } from "./activity";
 import {
+	DIFF_BATCH_BYTES,
+	DIFF_BATCH_PATHS,
 	type DiffBase,
 	Memo,
 	splitSections,
@@ -634,6 +636,70 @@ describe("ThreadCodeSource's reads, batched (CAR-320)", () => {
 		).toEqual(alone);
 		expect(alone.map((r) => r !== null)).toEqual([true, false, true, true]);
 		expect(gitCalls("rev-list")).toBe(1);
+	});
+});
+
+describe("ThreadCodeSource's batched diffs stay within a command line", () => {
+	// Long paths, more than one command line holds (Windows: 32 767
+	// characters): 180 of about 200 bytes, 36 KB in all.
+	const long = (i: number) =>
+		`${"deep/".repeat(18)}${"segment-name-".repeat(6)}/file-${String(i).padStart(3, "0")}.txt`;
+	const files = Array.from({ length: 180 }, (_, i) => long(i));
+	const many = createGitFixture([
+		{
+			message: "base",
+			files: Object.fromEntries(files.map((f) => [f, numbered(8)])),
+		},
+		{
+			message: "pr",
+			files: Object.fromEntries(
+				files.map((f) => [
+					f,
+					numbered(8).replace("line 4\n", "line 4 changed\n"),
+				]),
+			),
+		},
+	]);
+	afterAll(() => many.cleanup());
+	const [mBase = "", mHead = ""] = many.shas;
+	const anchor = (path: string): CodeAnchor =>
+		at({ path, commit: mHead, line: 4, startLine: 4 });
+	const base: DiffBase = { snapshot: mBase, ref: mBase };
+
+	it("splits the paths of one commit pair into diffs each under the cap, every window as alone", async () => {
+		expect(files.reduce((n, f) => n + f.length + 1, 0)).toBeGreaterThan(32_767);
+		vi.mocked(runGit).mockClear();
+		const s = new ThreadCodeSource(many.path);
+		const windows = await Promise.all(
+			files.map((f) => s.window(anchor(f), base)),
+		);
+		const diffs = vi
+			.mocked(runGit)
+			.mock.calls.map(([, args]) => args)
+			.filter((args) => args.includes("--unified=100000000"));
+		expect(diffs.length).toBeGreaterThan(1);
+		for (const args of diffs) {
+			const paths = args.slice(args.indexOf("--") + 1);
+			expect(paths.length).toBeLessThanOrEqual(DIFF_BATCH_PATHS);
+			expect(
+				paths.reduce((n, p) => n + Buffer.byteLength(p) + 1, 0),
+			).toBeLessThanOrEqual(DIFF_BATCH_BYTES);
+		}
+		// Every path in exactly one diff.
+		expect(
+			diffs.flatMap((args) => args.slice(args.indexOf("--") + 1)).sort(),
+		).toEqual([...files].sort());
+		expect(
+			windows.every((w) => w?.some((r) => r.text === "line 4 changed")),
+		).toBe(true);
+		for (const i of [0, 77, 179]) {
+			expect(windows[i]).toEqual(
+				await new ThreadCodeSource(many.path).window(
+					anchor(files[i] as string),
+					base,
+				),
+			);
+		}
 	});
 });
 

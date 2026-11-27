@@ -2,6 +2,7 @@ import type { ChildProcess } from "node:child_process";
 import type { Socket } from "node:net";
 import { beginCall } from "./activity.js";
 import { GitError, runGitBuffer, spawnLongGit } from "./git.js";
+import { tracer } from "./trace.js";
 
 /*
  * Object reads through one `git cat-file --batch` per clone that stays up
@@ -10,17 +11,21 @@ import { GitError, runGitBuffer, spawnLongGit } from "./git.js";
  * code), so each read starting its own `git cat-file` was what made opening
  * a review there slow.
  *
- * Bounded: one process per clone, closed after IDLE_MS without a read, on
- * a reset (closeCatFiles) and when crb exits (spawnLongGit). A process that
+ * Bounded: one process per clone, at most MAX_PROCESSES (the least
+ * recently used idle one closes for a new one), closed after IDLE_MS
+ * without a read, on a reset (closeCatFiles) and when crb exits
+ * (spawnLongGit). A process that
  * fails or exits fails the reads it had (a GitError: the caller's own
  * failure path, never an empty answer) and the next read starts a new one.
  *
  * Only names that start with a full OID (`<oid>`, `<oid>:<path>`) go
  * through it: what they name never changes, so a process started before a
  * fetch or a ref update can't answer from a stale view (git rereads its
- * packs when an object isn't found). Anything else, and a name with a
- * newline (git echoes a missing name back, and the answer would be read
- * wrong), is read by a `cat-file` of its own.
+ * packs when an object isn't found). Anything else, a name with a newline
+ * (git echoes a missing name back, and the answer would be read wrong),
+ * and a relative path (`<oid>:./x`, which git refuses in a bare clone by
+ * exiting, failing every read queued beside it) is read by a `cat-file`
+ * of its own.
  */
 
 /** A read object: its OID, type (`blob`, `commit`, ...) and bytes. */
@@ -33,7 +38,15 @@ export interface GitObject {
 /** How long a clone's process stays up after its last read. */
 export const IDLE_MS = 30_000;
 
+/** Clones with a process up at once (a Home pass reads many). */
+export const MAX_PROCESSES = 16;
+
 const BY_OID = /^[0-9a-f]{40}([0-9a-f]{24})?(:|$)/;
+/** A path part git takes as relative to a work tree: `.`, `..`, `./…`, `../…`. */
+const RELATIVE = /^[0-9a-f]+:\.\.?(\/|$)/;
+
+/** Spans of each read, when $CRB_TRACE_DIR is set (trace.ts). */
+const traced = tracer();
 const HEADER = /^([0-9a-f]{40}(?:[0-9a-f]{24})?) (\S+) (\d+)$/;
 
 interface Pending {
@@ -58,12 +71,19 @@ class CatFile {
 	#idle: ReturnType<typeof setTimeout> | undefined;
 	/** Settles once its process has exited (Windows holds its directory till then). */
 	readonly exited: Promise<void>;
+	/** Its lifetime's span (tracing on), each read's under none: steps say those. */
+	readonly #span: ReturnType<typeof traced.start> | null;
+	/** Reads answered, for its span. */
+	#reads = 0;
 
 	constructor(
 		repo: string,
 		private readonly onExit: () => void,
 	) {
 		this.#child = spawnLongGit(repo, ["cat-file", "-z", "--batch"]);
+		this.#span = traced.enabled
+			? traced.start("git cat-file", { batch: "process" }, { kind: "client" })
+			: null;
 		this.exited = new Promise((resolve) => {
 			this.#child.on("close", () => resolve());
 			// Never started: no exit to wait for.
@@ -89,6 +109,11 @@ class CatFile {
 
 	get dead(): boolean {
 		return this.#dead;
+	}
+
+	/** No read out. */
+	get idle(): boolean {
+		return this.#queue.length === 0;
 	}
 
 	read(name: string, signal?: AbortSignal): Promise<GitObject | null> {
@@ -157,6 +182,7 @@ class CatFile {
 	#fail(message: string): void {
 		if (this.#dead) return;
 		this.#dead = true;
+		this.#span?.end({ reads: this.#reads });
 		ending.add(this.exited);
 		void this.exited.then(() => ending.delete(this.exited));
 		clearTimeout(this.#idle);
@@ -223,9 +249,14 @@ class CatFile {
 					return;
 				}
 				this.#need = 0;
-				this.#take(eol + 1);
-				const content = this.#take(size);
-				this.#take(1);
+				// One copy of the bytes out of what's buffered (`peek`, the
+				// chunks joined once), the rest kept as it is.
+				const start = eol + 1;
+				const content = Buffer.allocUnsafeSlow(size);
+				peek.copy(content, 0, start, start + size);
+				const rest = peek.subarray(start + size + 1);
+				this.#chunks = rest.length > 0 ? [rest] : [];
+				this.#size = rest.length;
 				answer = {
 					oid: match[1] as string,
 					type: match[2] as string,
@@ -240,6 +271,7 @@ class CatFile {
 				return;
 			}
 			this.#queue.shift();
+			this.#reads++;
 			if (!head.dropped) {
 				head.dropped = true;
 				head.end();
@@ -259,10 +291,26 @@ const processes = new Map<string, CatFile>();
 /** Processes ended (idle, failed, closed) that haven't exited yet. */
 const ending = new Set<Promise<void>>();
 
-/** The clone's process, started if none runs. */
+/**
+ * The clone's process, started if none runs; most recently used last. A
+ * new one past MAX_PROCESSES closes the least recently used idle one (none
+ * idle: it goes over for now, the idle timeout brings it back).
+ */
 function processOf(repo: string): CatFile {
 	const known = processes.get(repo);
-	if (known && !known.dead) return known;
+	if (known && !known.dead) {
+		processes.delete(repo);
+		processes.set(repo, known);
+		return known;
+	}
+	if (processes.size >= MAX_PROCESSES) {
+		for (const [key, p] of processes) {
+			if (!p.idle) continue;
+			processes.delete(key);
+			p.close();
+			break;
+		}
+	}
 	const made: CatFile = new CatFile(repo, () => {
 		if (processes.get(repo) === made) processes.delete(repo);
 	});
@@ -301,12 +349,17 @@ async function readAlone(
  * The object `name` names (`<oid>` or `<oid>:<path>`); null when the clone
  * hasn't it (or the path isn't there). A git failure rejects (GitError).
  */
-export function readObject(
+export async function readObject(
 	repo: string,
 	name: string,
 	signal?: AbortSignal,
 ): Promise<GitObject | null> {
-	if (!BY_OID.test(name) || name.includes("\n") || name.includes("\0")) {
+	if (
+		!BY_OID.test(name) ||
+		RELATIVE.test(name) ||
+		name.includes("\n") ||
+		name.includes("\0")
+	) {
 		return readAlone(repo, name, signal);
 	}
 	return processOf(repo).read(name, signal);

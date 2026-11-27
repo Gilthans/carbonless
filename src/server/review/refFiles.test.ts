@@ -110,6 +110,15 @@ describe("tipFromFiles", () => {
 		expect(await tipFromFiles(odd, "refs/crb/x")).toBeUndefined();
 	});
 
+	it("looks for a clone's git directory again when there was none yet", async () => {
+		const later = join(tmp, "later.git");
+		const ref = "refs/crb/reviews/r3/meta";
+		expect(await tipFromFiles(later, ref)).toBeUndefined();
+		run(tmp, "clone", "--quiet", "--bare", fx.path, later);
+		run(later, "update-ref", ref, one);
+		expect(await tipFromFiles(later, ref)).toBe(one);
+	});
+
 	it("RefStore reads tips with no process", async () => {
 		const ref = "refs/crb/reviews/r2/meta";
 		run(bare, "update-ref", ref, one);

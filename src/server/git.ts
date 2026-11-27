@@ -135,6 +135,8 @@ export function spawnLongGit(repoPath: string, args: string[]): ChildProcess {
 	const child = spawn("git", ["-C", repoPath, ...args], {
 		env: inheritedEnv(),
 		stdio: ["pipe", "pipe", "pipe"],
+		// No console window flashing up on Windows.
+		windowsHide: true,
 	});
 	long.add(child);
 	child.on("close", () => long.delete(child));

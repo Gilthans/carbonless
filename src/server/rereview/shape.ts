@@ -55,8 +55,8 @@ async function countBetween(
  * counts it had.
  */
 export class CommitCounter {
-	#pending = new Map<string, Map<string, ((n: number) => void)[]>>();
-	#fails = new Map<string, ((e: unknown) => void)[]>();
+	/** Counts asked and not yet run: by merge base, by head, their waiters. */
+	#pending = new Map<string, Map<string, Waiter[]>>();
 	#scheduled = false;
 
 	constructor(
@@ -73,12 +73,10 @@ export class CommitCounter {
 			if (!heads) {
 				heads = new Map();
 				this.#pending.set(mergeBase, heads);
-				this.#fails.set(mergeBase, []);
 			}
 			const waiting = heads.get(head) ?? [];
-			waiting.push(resolve);
+			waiting.push({ resolve, reject });
 			heads.set(head, waiting);
-			this.#fails.get(mergeBase)?.push(reject);
 			if (!this.#scheduled) {
 				this.#scheduled = true;
 				setImmediate(() => this.#run());
@@ -89,31 +87,66 @@ export class CommitCounter {
 	#run(): void {
 		this.#scheduled = false;
 		const pending = this.#pending;
-		const fails = this.#fails;
 		this.#pending = new Map();
-		this.#fails = new Map();
 		for (const [mergeBase, heads] of pending) {
-			const failed = fails.get(mergeBase) ?? [];
-			countAll(this.repo, mergeBase, [...heads.keys()], this.signal).then(
-				(counts) => {
-					for (const [head, waiting] of heads) {
-						const n = counts.get(head);
-						for (const w of waiting) {
-							if (n === undefined) continue;
-							w(n);
-						}
-						if (n === undefined) {
-							const error = new Error(`No count for ${head}`);
-							for (const f of failed) f(error);
-						}
+			void this.#settle(mergeBase, heads);
+		}
+	}
+
+	/**
+	 * One git for the heads; when it fails and there were several, each
+	 * head alone, so one broken head fails only its own count.
+	 */
+	async #settle(
+		mergeBase: string,
+		heads: Map<string, Waiter[]>,
+	): Promise<void> {
+		const settle = (head: string, n: number | Error) => {
+			for (const w of heads.get(head) ?? []) {
+				if (typeof n === "number") w.resolve(n);
+				else w.reject(n);
+			}
+		};
+		const asError = (e: unknown) =>
+			e instanceof Error ? e : new Error(String(e));
+		try {
+			const counts = await countAll(
+				this.repo,
+				mergeBase,
+				[...heads.keys()],
+				this.signal,
+			);
+			for (const head of heads.keys()) {
+				const n = counts.get(head);
+				settle(head, n ?? new Error(`No count for ${head}`));
+			}
+		} catch (error) {
+			if (heads.size === 1) {
+				for (const head of heads.keys()) settle(head, asError(error));
+				return;
+			}
+			await Promise.all(
+				[...heads.keys()].map(async (head) => {
+					try {
+						const counts = await countAll(
+							this.repo,
+							mergeBase,
+							[head],
+							this.signal,
+						);
+						settle(head, counts.get(head) ?? new Error(`No count for ${head}`));
+					} catch (e) {
+						settle(head, asError(e));
 					}
-				},
-				(error: unknown) => {
-					for (const f of failed) f(error);
-				},
+				}),
 			);
 		}
 	}
+}
+
+interface Waiter {
+	resolve: (n: number) => void;
+	reject: (e: unknown) => void;
 }
 
 /** Each head's commits over `mergeBase`, from one `rev-list --parents`. */
