@@ -162,11 +162,14 @@ loading never looking empty, interdiffs first-class, checking against a real PR)
     (uncommitted ones without it). `pnpm test <path or name>` for one file.
   - `pnpm test:e2e e2e/files.spec.ts -g "<title>" --project=chromium`: builds,
     then runs the given specs only.
-- Agent worktrees: `scripts/agent-worktree.sh <name> [base]` makes
-  `.worktrees/<name>` on branch `<name>` and installs from the shared pnpm
-  store. Playwright browsers are global. Tests take random ports and their own
-  temp dirs and `XDG_CACHE_HOME`/`XDG_STATE_HOME`/`XDG_CONFIG_HOME`, so
-  `pnpm verify` runs in parallel worktrees; for `pnpm dev` in two at once, set
+- Agent worktrees: `scripts/agent-worktree.sh <name> [base]` fetches
+  `origin`, makes `.worktrees/<name>` on branch `<name>` from `base`
+  (default `origin/master`; any branch, ref or SHA; printed as `Base:`, with
+  its date) and installs from the shared pnpm store. A failed fetch warns
+  and goes on from the local refs. Playwright browsers are global. Tests
+  take random ports and their own temp dirs and
+  `XDG_CACHE_HOME`/`XDG_STATE_HOME`/`XDG_CONFIG_HOME`, so `pnpm verify`
+  runs in parallel worktrees; for `pnpm dev` in two at once, set
   `CRB_API_PORT`. Before running `crb` by hand in a worktree, `source` its
   `.envrc` (the script writes it): a private state and config dir, so its
   `crb <pr>` never finds or starts a server in the owner's.
@@ -420,10 +423,11 @@ After the first release (0.1.0) the owner adds the trusted publisher
   session that coordinates writes briefs, reviews and integrates; it doesn't
   implement features itself.
 - One implementing agent per brief, each in its own git worktree (Agent
-  `isolation: "worktree"`, or `scripts/agent-worktree.sh`), on a branch from the
-  feature branch. Agents don't spawn agents. Agents in worktrees can't write to
-  the main checkout's `.superpowers/`: they write reports to the session
-  scratchpad, and the coordinator copies them over.
+  `isolation: "worktree"`, or `scripts/agent-worktree.sh` with the feature
+  branch as `base`), on a branch from the feature branch. Agents don't
+  spawn agents. Agents in worktrees can't write to the main checkout's
+  `.superpowers/`: they write reports to the session scratchpad, and the
+  coordinator copies them over.
 - Every change gets a fresh reviewer with the brief, the report and the diff
   (`git log --stat` + `git diff -U10` of the range, saved to a file). Findings
   go back to the same implementer as fix rounds, then a scoped re-review; small
