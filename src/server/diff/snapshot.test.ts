@@ -1161,9 +1161,9 @@ describe("the block cut and cluster identity (CAR-167)", () => {
 	const hunksOf = (patch: string) =>
 		parseU0Patch(patch).map((c) => ({ ...c, kind: "lines" as const }));
 
-	it("cuts an added Markdown file at its blocks and then at blank lines (CAR-235)", () => {
+	it("cuts an added Markdown file at its blocks, never at a blank line inside one (CAR-235, CAR-318)", () => {
 		// A fence holding a blank line: the block cut keeps it one piece,
-		// the blank-line cut ends a piece after that blank line too.
+		// and the blank-line cut leaves it so (one box for the fence).
 		const newLines = ["# T", "", "```", "a", "", "b", "```", "", "- x"];
 		const hunks = hunksOf(
 			`@@ -0,0 +1,9 @@\n${newLines.map((l) => `+${l}`).join("\n")}\n`,
@@ -1179,19 +1179,23 @@ describe("the block cut and cluster identity (CAR-167)", () => {
 			["```", "a", "", "b", "```", ""],
 			["- x"],
 		]);
-		expect(both.map((c) => c.added)).toEqual([
-			["# T", ""],
-			["```", "a", ""],
-			["b", "```", ""],
-			["- x"],
-		]);
+		expect(both.map((c) => c.added)).toEqual(md.map((c) => c.added));
 		// Every piece is the git hunk's, at its place in it (the split carry).
 		const [whole] = keyed(newLines)(hunks);
 		expect(both.map((c) => [c.split?.key, c.split?.addedAt])).toEqual([
 			[whole, 0],
 			[whole, 2],
-			[whole, 5],
 			[whole, 8],
+		]);
+		// The same file not Markdown: cut at every blank line.
+		const plain = cutClusters(hunks, keyed(newLines), text, {
+			blankLines: true,
+		});
+		expect(plain.map((c) => c.added)).toEqual([
+			["# T", ""],
+			["```", "a", ""],
+			["b", "```", ""],
+			["- x"],
 		]);
 	});
 
@@ -1280,53 +1284,78 @@ describe("the block cut and cluster identity (CAR-167)", () => {
 		]);
 	});
 
-	it("costs linear CPU in the file's size: 300 KiB against four cuts of its quarter", () => {
-		// A README of sections, each one hunk across three list items and a
-		// table row. The 4x file against four runs of the quarter does the
-		// same work: linear reads about 1x, quadratic 4x.
-		const readme = (bytes: number) => {
-			const oldLines: string[] = [];
-			const newLines: string[] = [];
-			let patch = "";
-			let size = 0;
-			for (let s = 0; size < bytes; s++) {
-				const head = [`## Section ${s}`, "", `Some words about part ${s}.`, ""];
-				const body = (v: string) => [
-					`- item one of ${s}${v}`,
-					`- item two of ${s}${v}`,
-					`  - nested ${s}${v}`,
-					`| ${s} | cell${v} |`,
-				];
-				const at = oldLines.length + head.length + 1;
-				oldLines.push(...head, ...body(""), "");
-				newLines.push(...head, ...body(" (edited)"), "");
-				patch += `@@ -${at},4 +${at},4 @@\n${body("")
-					.map((l) => `-${l}\n`)
-					.join("")}${body(" (edited)")
-					.map((l) => `+${l}\n`)
-					.join("")}`;
-				for (const l of oldLines.slice(-9)) size += l.length + 1;
+	it.each([
+		["", false],
+		[
+			", each hunk with a re-indented line (whitespace pieces cut again, CAR-318)",
+			true,
+		],
+	])(
+		"costs linear CPU in the file's size: 300 KiB against four cuts of its quarter%s",
+		(_, ws) => {
+			// A README of sections, each one hunk across three list items and a
+			// table row (with `ws`, the first item's second line only
+			// re-indented: the whitespace cut parts it, and the block cut cuts
+			// those pieces again, each checked against the view's matching). The
+			// 4x file against four runs of the quarter does the same work:
+			// linear reads about 1x, quadratic 4x.
+			const readme = (bytes: number) => {
+				const oldLines: string[] = [];
+				const newLines: string[] = [];
+				let patch = "";
+				let size = 0;
+				for (let s = 0; size < bytes; s++) {
+					const head = [
+						`## Section ${s}`,
+						"",
+						`Some words about part ${s}.`,
+						"",
+					];
+					const body = (v: string) => [
+						`- item one of ${s}${v}`,
+						...(ws ? [`${v ? "    " : "  "}its second line ${s}`] : []),
+						`- item two of ${s}${v}`,
+						`  - nested ${s}${v}`,
+						`| ${s} | cell${v} |`,
+					];
+					const at = oldLines.length + head.length + 1;
+					const n = body("").length;
+					oldLines.push(...head, ...body(""), "");
+					newLines.push(...head, ...body(" (edited)"), "");
+					patch += `@@ -${at},${n} +${at},${n} @@\n${body("")
+						.map((l) => `-${l}\n`)
+						.join("")}${body(" (edited)")
+						.map((l) => `+${l}\n`)
+						.join("")}`;
+					for (const l of oldLines.slice(-(n + 5))) size += l.length + 1;
+				}
+				const hunks = hunksOf(patch);
+				const keysOf = keyed(newLines);
+				return () =>
+					cutClusters(
+						hunks,
+						keysOf,
+						{ oldLines, newLines, noNewlineAtEnd: false },
+						{ markdown: true },
+					);
+			};
+			if (ws) {
+				// The re-indent is a piece of its own, flagged whitespace-only.
+				const cut = readme(2000)();
+				expect(cut.some((c) => c.whitespaceOnly)).toBe(true);
+				expect(cut.some((c) => !c.whitespaceOnly)).toBe(true);
 			}
-			const hunks = hunksOf(patch);
-			const keysOf = keyed(newLines);
-			return () =>
-				cutClusters(
-					hunks,
-					keysOf,
-					{ oldLines, newLines, noNewlineAtEnd: false },
-					{ markdown: true },
-				);
-		};
-		const big = readme(300 * 1024);
-		const quarter = readme(75 * 1024);
-		const { best, ref, ratio } = bestCpuRatio(big, () => {
-			for (let i = 0; i < 4; i++) quarter();
-		});
-		console.info(
-			`cutClusters of a 300 KiB README: ${best} µs, ${ratio.toFixed(2)}x four cuts of its quarter (${ref} µs)`,
-		);
-		expect(ratio).toBeLessThan(2);
-	});
+			const big = readme(300 * 1024);
+			const quarter = readme(75 * 1024);
+			const { best, ref, ratio } = bestCpuRatio(big, () => {
+				for (let i = 0; i < 4; i++) quarter();
+			});
+			console.info(
+				`cutClusters of a 300 KiB README${ws ? " with whitespace pieces" : ""}: ${best} µs, ${ratio.toFixed(2)}x four cuts of its quarter (${ref} µs)`,
+			);
+			expect(ratio).toBeLessThan(2);
+		},
+	);
 });
 
 describe("added files cut at blank lines (CAR-235)", () => {

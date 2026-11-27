@@ -467,7 +467,8 @@ export function cutsMarkdown(
  *
  * With `blankLines` (an added file, CAR-235), each piece with no removed
  * lines is cut further after its blank lines (splitAtBlankLines), the same
- * way: the pieces remember the whole hunk's key. That key (`keysOf(hunks)`)
+ * way: the pieces remember the whole hunk's key. A Markdown file cut at
+ * its blocks isn't (CAR-318): never inside a block. That key (`keysOf(hunks)`)
  * is the key the whole file had before CAR-235 only because an added file
  * is never cut for whitespace (no old side, so no twins): the uncut hunk
  * was its one cluster. Should either cut change so that an added file's
@@ -535,10 +536,13 @@ export function cutClusters(
 				split,
 			}));
 		});
-		// An added file (CAR-235): each piece, a Markdown block's included,
-		// ends after its blank lines. Its pieces stay the git hunk's, with
-		// their places in it, as the block cut's are.
-		if (opts.blankLines && hunk.kind === "lines") {
+		// An added file (CAR-235): each piece ends after its blank lines. Its
+		// pieces stay the git hunk's, with their places in it, as the block
+		// cut's are. Not a Markdown file's (CAR-318): its block cut already
+		// ends a piece at each block, blank lines after it included, so a
+		// blank line left inside a piece is inside its block (a code fence,
+		// an item's second paragraph), and the block keeps one box.
+		if (opts.blankLines && !blocks && hunk.kind === "lines") {
 			pieces = pieces.flatMap((piece) =>
 				splitAtBlankLines(piece.cluster).map((p) => ({
 					...piece,
