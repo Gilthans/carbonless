@@ -337,6 +337,7 @@ jobs:
     permissions:
       contents: read
       actions: read # CI's runs on the RC's commit
+      pull-requests: read # a hotfix's PRs (only merged PRs enter it)
     timeout-minutes: 5
     env:
       # Inputs reach the shell as variables, never pasted into scripts.
@@ -364,6 +365,12 @@ jobs:
             echo "sha=$sha" >>"$GITHUB_OUTPUT"
             echo "RC_SHA=$sha" >>"$GITHUB_ENV"
             echo "BRANCH=$HOTFIX_INPUT" >>"$GITHUB_ENV"
+            # The newest release tag below it (hotfix-prs.mjs's range start;
+            # promote-check checks it is the newest release, of its line).
+            ver="v${HOTFIX_INPUT#hotfix/}"
+            start="$({ git tag -l 'v*' | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' || true; echo "$ver"; } | sort -uV | grep -B1 -x "$ver" | head -1)"
+            [[ "$start" != "$ver" ]] || { echo "::error::no release below $ver"; exit 1; }
+            echo "START=$start" >>"$GITHUB_ENV"
             exit 0
           fi
           tag="$RC_INPUT"
@@ -384,6 +391,9 @@ jobs:
             # A hotfix branch: its pushes or dispatches (ci-passed.mjs checks).
             gh api "repos/$GITHUB_REPOSITORY/actions/workflows/ci.yml/runs?head_sha=$RC_SHA&per_page=100" \
               >"$RUNNER_TEMP/ci-runs.json"
+            # Its merged PRs, and the rules protecting it (hotfix-prs.mjs judges).
+            gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/pulls?state=closed&base=$BRANCH&per_page=100" >"$RUNNER_TEMP/pulls.json"
+            gh api "repos/$GITHUB_REPOSITORY/rules/branches/${BRANCH//\//%2F}" >"$RUNNER_TEMP/rules.json"
           else
             gh api "repos/$GITHUB_REPOSITORY/actions/workflows/ci.yml/runs?head_sha=$RC_SHA&event=push&branch=master&per_page=100" \
               >"$RUNNER_TEMP/ci-runs.json"
@@ -399,6 +409,13 @@ jobs:
           out="$(node scripts/ci-passed.mjs "$RC_SHA" "$RUNNER_TEMP/ci-runs.json" ${BRANCH:+"$BRANCH"})"
           echo "$out"
           [[ "$out" == "CI passed on $RC_SHA ("* ]] || { echo "::error::ci-passed.mjs gave no verdict for $RC_SHA"; exit 1; }
+      - name: Only merged PRs enter a hotfix
+        # Every first-parent commit from the start tag to the head is the
+        # merge of a PR merged into the branch at that commit, and the
+        # Master ruleset protects the branch (setup step 12). No
+        # dependencies, no token.
+        if: env.BRANCH != ''
+        run: node scripts/hotfix-prs.mjs "$BRANCH" "$START" "$RC_SHA" "$RUNNER_TEMP/pulls.json" "$RUNNER_TEMP/rules.json"
 
   promote-check:
     needs: promote-ci
@@ -431,7 +448,8 @@ jobs:
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version-file: .nvmrc
-          cache: pnpm
+          # No cache: this job installs a hotfix branch's tree, which must
+          # not write the cache master's jobs restore.
       - run: pnpm install --frozen-lockfile
       - name: Plan
         id: plan

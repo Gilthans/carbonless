@@ -798,12 +798,21 @@ export type Manifest = {
 };
 
 /**
- * A hotfix's start: the release tag `version`'s line it follows, one patch
- * below it (`v0.4.0` for 0.4.1).
+ * A hotfix's start: the newest release tag below `version` (a release),
+ * of its line (`v0.4.0` for 0.4.1; for 0.4.2 too when npm has a 0.4.1 we
+ * didn't build, with no tag); null when the line has none.
  */
-export function hotfixStartOf(version: Version): string | null {
-	if (version.rc !== undefined || version.patch === 0) return null;
-	return tagOf({ ...releaseOf(version), patch: version.patch - 1 });
+export function hotfixStartFor(
+	version: Version,
+	tags: readonly string[],
+): string | null {
+	const start = parseTag(previousRelease(tags, version) ?? "");
+	return start &&
+		version.rc === undefined &&
+		start.major === version.major &&
+		start.minor === version.minor
+		? tagOf(start)
+		: null;
 }
 
 /** promote's manifest.json, checked field by field. */
@@ -819,7 +828,9 @@ export function parseManifest(text: string): Manifest {
 				version !== null &&
 				tag !== null &&
 				tag.rc === undefined &&
-				hotfixStartOf(version) === m.tag;
+				tag.major === version.major &&
+				tag.minor === version.minor &&
+				tag.patch < version.patch;
 	if (
 		!version ||
 		version.rc !== undefined ||
@@ -975,12 +986,17 @@ async function compareStatus(io: Io, base: string, head: string) {
  * Fails unless a hotfix manifest's commit is on its branch on GitHub and
  * strictly after the release tag it starts from.
  */
-async function checkHotfixCommit(io: Io, m: Manifest): Promise<void> {
+export async function checkHotfixCommit(io: Io, m: Manifest): Promise<void> {
 	const onBranch = await compareStatus(io, m.sha, m.hotfix ?? "");
 	if (!["ahead", "identical"].includes(onBranch)) {
 		throw new Error(`${m.sha} is not on ${m.hotfix} (${onBranch})`);
 	}
-	const afterStart = await compareStatus(io, m.tag, m.sha);
+	// By the tag's commit, never its name (a branch could share the name).
+	const tagSha = await tagCommit(io, m.tag);
+	if (tagSha === m.sha) {
+		throw new Error(`${m.sha} is ${m.tag} itself: nothing on top of it`);
+	}
+	const afterStart = await compareStatus(io, tagSha, m.sha);
 	if (afterStart !== "ahead") {
 		throw new Error(
 			`${m.sha} is not on top of ${m.tag} (${afterStart}): a hotfix starts from that release`,
@@ -1433,8 +1449,16 @@ export async function finishPlan(
 		throw new Error(`git merge-base failed: ${r.stderr.trim()}`);
 	};
 	if (m.hotfix !== undefined) {
-		// A hotfix (CAR-212): its commit is on its branch (this checkout has
-		// every branch) and after the release it starts from.
+		// A hotfix (CAR-212): it starts from the newest release tag below
+		// it, its commit is on its branch (this checkout has every branch)
+		// and after that release.
+		const v = parseVersion(m.version) as Version;
+		const start = hotfixStartFor(v, await remoteTags(io));
+		if (start !== m.tag) {
+			throw new Error(
+				`${m.version} starts from ${start ?? "no release"}, not ${m.tag}`,
+			);
+		}
 		if (!(await isAncestor(m.sha, `refs/remotes/origin/${m.hotfix}`))) {
 			throw new Error(`${m.sha} is not on ${m.hotfix}`);
 		}

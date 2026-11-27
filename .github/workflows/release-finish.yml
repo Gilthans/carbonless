@@ -151,36 +151,6 @@ jobs:
             gh pr create --base master --head "$branch" --title "next: $next" \
               --body "Released **$VERSION** from $RC_TAG (npm \`latest\`). This sets master's next release to $next and adds $VERSION to docs/changelog.md."
           fi
-      - name: A hotfix's fix and changelog to master (the port PR)
-        # git (cherry-picks onto master in a worktree) and the published
-        # notes; the repository's code runs without the token or git's auth
-        # header. The PR's title and body come from files ci:port wrote
-        # (PR titles from git escaped there), never pasted into the script.
-        # A rerun leaves an existing port branch alone and only opens the PR.
-        if: steps.plan.outputs.hotfix != ''
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          git config --global user.name "github-actions[bot]"
-          git config --global user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          crb_release() { env -u GH_TOKEN -u GIT_CONFIG_COUNT -u GIT_CONFIG_KEY_0 -u GIT_CONFIG_VALUE_0 pnpm exec tsx scripts/release.ts "$@"; }
-          branch="hotfix-port/$VERSION"
-          out="$RUNNER_TEMP/port"
-          crb_release ci:port "$VERSION" "$out/tree" "$RUNNER_TEMP/release-notes.json" "$out" | tee -a "$GITHUB_STEP_SUMMARY"
-          auth="$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)"
-          echo "::add-mask::$auth"
-          export GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=http.https://github.com/.extraheader \
-            GIT_CONFIG_VALUE_0="AUTHORIZATION: basic $auth"
-          if git ls-remote --exit-code --heads origin "$branch" >/dev/null; then
-            echo "$branch is already on origin: not pushed again"
-          else
-            git -C "$out/tree" push origin "HEAD:refs/heads/$branch"
-          fi
-          unset GIT_CONFIG_COUNT GIT_CONFIG_KEY_0 GIT_CONFIG_VALUE_0
-          open="$(gh pr list --head "$branch" --state open --json url --jq '.[0].url // ""')"
-          if [[ -z "$open" ]]; then
-            gh pr create --base master --head "$branch" --title "$(cat "$out/title")" --body-file "$out/body.md"
-          fi
       - name: Rerun open PRs' release gate
         # The release freeze (CAR-191): a PR whose release-gate passed before
         # the release would stay green and could be merged with the button.
@@ -225,7 +195,46 @@ jobs:
           else
             gh release create "v$VERSION" --repo "$GITHUB_REPOSITORY" --verify-tag --title "v$VERSION" --notes-file "$RUNNER_TEMP/release-body.md"
           fi
+      - name: A hotfix's fix and changelog to master (the port PR)
+        # git (cherry-picks onto master in a worktree) and the published
+        # notes; the repository's code runs without the token or git's auth
+        # header. The PR's title and body come from files ci:port wrote
+        # (PR titles from git escaped there), never pasted into the script.
+        # A rerun leaves an existing port branch alone and only opens the PR.
+        # After the GitHub release: a refused push never holds it up.
+        if: ${{ !cancelled() && steps.plan.outputs.hotfix != '' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          crb_release() { env -u GH_TOKEN -u GIT_CONFIG_COUNT -u GIT_CONFIG_KEY_0 -u GIT_CONFIG_VALUE_0 pnpm exec tsx scripts/release.ts "$@"; }
+          branch="hotfix-port/$VERSION"
+          out="$RUNNER_TEMP/port"
+          crb_release ci:port "$VERSION" "$out/tree" "$RUNNER_TEMP/release-notes.json" "$out" | tee -a "$GITHUB_STEP_SUMMARY"
+          auth="$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)"
+          echo "::add-mask::$auth"
+          export GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=http.https://github.com/.extraheader \
+            GIT_CONFIG_VALUE_0="AUTHORIZATION: basic $auth"
+          if git ls-remote --exit-code --heads origin "$branch" >/dev/null; then
+            echo "$branch is already on origin: not pushed again"
+          elif ! git -C "$out/tree" push origin "HEAD:refs/heads/$branch"; then
+            # GITHUB_TOKEN can't push a change to .github/workflows.
+            {
+              echo "### The port PR wasn't pushed"
+              echo
+              echo "Push it by hand: in a checkout of master, \`git fetch origin --tags\`, cherry-pick each PR above (\`git cherry-pick -x -m 1 <merge>\`) onto a branch \`$branch\`, add v$VERSION's section of its GitHub release to docs/changelog.md, push it and open its PR to master (a close and reopen gives it CI)."
+            } >>"$GITHUB_STEP_SUMMARY"
+            echo "::error::the port branch $branch couldn't be pushed (a workflow file change needs a person's push): see the summary"
+            exit 1
+          fi
+          unset GIT_CONFIG_COUNT GIT_CONFIG_KEY_0 GIT_CONFIG_VALUE_0
+          open="$(gh pr list --head "$branch" --state open --json url --jq '.[0].url // ""')"
+          if [[ -z "$open" ]]; then
+            gh pr create --base master --head "$branch" --title "$(cat "$out/title")" --body-file "$out/body.md"
+          fi
       - name: Summary
+        if: ${{ !cancelled() }}
         env:
           TAG_DONE: ${{ steps.plan.outputs.push_tag == 'true' && 'pushed' || 'already there' }}
           PR_DONE: ${{ steps.plan.outputs.hotfix != '' && 'none, a hotfix opens the port PR instead' || steps.plan.outputs.next_pr == 'true' && 'opened or updated' || 'not needed (master moved on)' }}

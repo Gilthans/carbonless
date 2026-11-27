@@ -128,53 +128,76 @@ without master's other changes and without an RC on `rc` first (the owner,
 any point in master with a specific hotfix. That would be the fastest
 path"; 2026-11-24, release tags only: "If it's simpler, let's do (b)").
 
+**Before the first hotfix:** setup step 12 (the rulesets on `hotfix/*`).
+Promote refuses a branch they don't protect.
+
 1. **Withdraw** (the owner's): `pnpm release withdraw <version>... "<why>"`
    (above). crbs running it show the red Withdrawn banner at once.
-2. **Start the hotfix** (an agent may, on the owner's word): `pnpm release
-   hotfix [vX.Y.Z]` creates `hotfix/X.Y.Z+1` on origin at the newest
-   release tag's commit, through GitHub's API (no clone, no commit; the
-   version is set at pack time). The newest by semver is the only start
-   accepted: after a withdraw `latest` has moved back, but the withdrawn
-   release is still the newest tag, and its hotfix is what crbs on it are
-   offered. A second hotfix of the line starts from the first one's tag
-   (`v0.4.1` -> `hotfix/0.4.2`). Refused: an RC tag, any other commit, an
-   older release or line (they'd need per-line dist-tags), a version
-   master's `package.json` is about to release, a version npm has without
-   a tag. A rerun with the branch at that commit does nothing.
+2. **Start the hotfix** (the owner's word; creating `hotfix/*` is the
+   bypass list's, so the owner's login: the owner, or an agent through
+   `pnpm release hotfix` on the owner's token): `pnpm release hotfix
+   [vX.Y.Z]` creates `hotfix/<version>` on origin at the newest release
+   tag's commit, through GitHub's API (no clone, no commit; the version is
+   set at pack time). The newest by semver is the only start accepted:
+   after a withdraw `latest` has moved back, but the withdrawn release is
+   still the newest tag, and its hotfix is what crbs on it are offered.
+   The version is the next patch that is neither tagged nor on npm: a
+   second hotfix of the line follows the first one's tag (`v0.4.1` ->
+   `hotfix/0.4.2`), and a version npm has with no tag (one we didn't
+   build) is skipped (npm has an untagged 0.4.1: `hotfix/0.4.2` from
+   `v0.4.0`). Refused: an RC tag, any other commit, an older release or
+   line (they'd need per-line dist-tags), and a master whose next release
+   isn't after the hotfix (move it on first: `pnpm release next minor`).
+   A rerun with the branch at that commit does nothing.
 3. **The fix goes in as a PR into `hotfix/X.Y.Z`** (usually a cherry-pick of
-   the fix PR to master), with a ticket and its release note. PRs into a
+   the fix PR to master), with a ticket and its release note, merged by
+   the owner (merge commits, as on master). Only merged PRs enter: no
+   pushes (the ruleset), and promote refuses any other commit. PRs into a
    hotfix branch run that branch's own CI (its tree's `ci.yml`). The
    `release-note` and `release-gate` checks don't run there (they are
-   master's: `release-note` takes its workflow file from the PR's base
-   and its environment is master-only): promote checks the notes instead.
+   master's: `release-note` is `pull_request_target`, whose workflow file
+   comes from the PR's base, the hotfix branch's old tree, and its
+   environment is master-only): promote checks the notes instead.
 4. **Promote** (an agent may, on the owner's word): `pnpm release promote
    --hotfix X.Y.Z`. It refuses unless the branch's head is on top of the
-   newest release tag (`X.Y.Z` its next patch, not released), CI passed on
-   that very commit (a push or a dispatch of the branch; with no run there
-   it starts one, `gh workflow run ci.yml --ref hotfix/X.Y.Z`, and asks to
-   promote again once it passes: a branch cut from a tag older than this
-   change runs CI on dispatch only), and every PR from the start tag to
-   the head has a release note (collected from Linear as for an RC: the
-   notes cover only the branch's PRs). Then master's `release.yml` runs
+   newest release tag (`X.Y.Z` the version step 2 made, not released),
+   master's next release is after it, the rulesets protect the branch,
+   every first-parent commit since the start tag is the merge of a PR
+   GitHub says was merged into the branch at that very commit, CI passed
+   on the head (a push or a dispatch of the branch; with no run there it
+   **starts one** (`gh workflow run ci.yml --ref hotfix/X.Y.Z`) and stops:
+   **run promote again once it passes**; a branch cut from a tag older
+   than this change runs CI on dispatch only), and every PR from the start
+   tag to the head has a release note (collected from Linear as for an RC:
+   the notes cover only the branch's PRs). release.yml's promote-ci checks
+   the PRs and rulesets again (`scripts/hotfix-prs.mjs`). Then master's
+   `release.yml` runs
    the promote with the input `hotfix`: master's workflow and scripts pack
    the hotfix branch's tree (its own old workflows never publish),
    smoke-test it and stage it on `latest`.
 5. **Publish** (the owner's): `pnpm release publish` as for any release. It
-   checks the commit is on the hotfix branch and on top of its start tag
-   (instead of on master).
+   checks the commit is on the hotfix branch and after its start tag's
+   commit (instead of on master).
 6. **release-finish** tags `vX.Y.Z` on the hotfix branch's head, moves `rc`
    only if it is older (semver) than X.Y.Z (the fix-up's rule: `rc` on
    `0.5.0-rc.3` stays), opens **no** "next" PR, so master is **not**
    frozen, and opens the **port PR** instead: branch `hotfix-port/X.Y.Z`
    from master with each of the hotfix's PRs master lacks cherry-picked
    (`git cherry-pick -x`), plus the changelog section and
-   `release-notes/X.Y.Z.json`. A PR's change counts as on master when a
-   master commit since the two parted names one of its tickets (`CAR-N`
-   in the title), or `git cherry` finds the same patch there. PRs that
-   don't apply cleanly are listed in the port PR and the run's summary:
-   port each by hand in its own PR. The port PR merges on the owner's
-   approval like any other; `pnpm release status` lists a hotfix while
-   master lacks any of its PRs.
+   `release-notes/X.Y.Z.json` (titled "Hotfix X.Y.Z: changelog to master"
+   when nothing needs picking). A PR's change counts as on master when
+   `git cherry` finds each of its commits' patches there, or its pick onto
+   master comes out empty (master has the change in another shape, e.g.
+   through an earlier port PR). A master PR whose title's own ticket
+   (the trailing `(CAR-N)`) matches never counts alone: such a PR is
+   listed as "on master by CAR-N (#M)? check", not picked. PRs that don't
+   apply cleanly are listed too: port each by hand in its own PR. The step
+   runs after the GitHub release; if GITHUB_TOKEN can't push the port
+   branch (a pick that changes `.github/workflows`), the summary says how
+   to make it by hand. The port PR shows no CI checks until someone closes
+   and reopens it ("What GITHUB_TOKEN can't do"); it merges on the
+   owner's approval like any other. `pnpm release status` lists a hotfix
+   while master lacks any of its PRs.
 
 Version numbers: master keeps its next release (0.5.0) through the hotfix.
 0.5.0's notes start after the newest release tag below it, `v0.4.1`, which
@@ -207,7 +230,9 @@ job): first stop more of it, then withdraw.
 3. Withdraw every version that wasn't ours (one `pnpm release withdraw`),
    and the releases that may carry the cause.
 4. Ship the fix as a hotfix (above), or through master if `latest` isn't
-   affected.
+   affected. A version that wasn't ours has no tag, and npm never takes
+   its number again: `pnpm release hotfix` skips it (npm has a 0.4.1 we
+   didn't build: `hotfix/0.4.2`, from `v0.4.0`).
 
 The settings that protect hotfix branches are setup step 12.
 
@@ -633,7 +658,8 @@ Tags and PRs created with the workflow's `GITHUB_TOKEN` start no workflows.
 So an RC tag starts no CI run (promote relies on CI's run for the push
 to master at the RC's commit instead), and the "next" PR shows no CI checks until
 someone pushes to it or closes and reopens it (a rerun of release-finish
-leaves such pushes alone). CI and the release gate are required checks on master, so that PR
+leaves such pushes alone). The same holds for a hotfix's port PR
+(`hotfix-port/X.Y.Z`): close and reopen it to get CI. CI and the release gate are required checks on master, so that PR
 needs one of those before it can merge (or the workflows a token of the
 owner's).
 
@@ -949,11 +975,13 @@ machine.
     required checks (step 3). Without the key the check still runs, passing only
     PRs whose description has a note.
 
-12. **Hotfix branches** (CAR-212, "Withdraw and hotfix"): add the target
-    `hotfix/*` (Include by pattern) to the `Master` ruleset (step 3: only
-    the owner's login updates them, only through a PR, no force push or
-    deletion; creating one stays open, `pnpm release hotfix` points it at
-    a commit already released). Required checks: a third ruleset, `Hotfix
+12. **Hotfix branches** (CAR-212, "Withdraw and hotfix"), before the first
+    hotfix (promote refuses a branch these rules don't cover): add the
+    target `hotfix/*` (Include by pattern) to the `Master` ruleset (step 3:
+    only the owner's login updates them, only through a PR, no force push
+    or deletion) and the rule Restrict creations (creating `hotfix/*` is
+    the bypass list's too: the owner, or an agent running `pnpm release
+    hotfix` with the owner's token). Required checks: a third ruleset, `Hotfix
     checks`, Active, target `hotfix/*`, no bypass list, Require status
     checks to pass with `checks`, `windows-agent` and `e2e` only:
     `release-gate` and `release-note` never run on PRs into a hotfix

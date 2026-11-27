@@ -414,22 +414,25 @@ After the first release (0.1.0) the owner adds the trusted publisher
 (`docs/releasing.md`, "Setup").
 
 **Withdraw and hotfix** (a vulnerability, a serious bug, a version we
-didn't build; `docs/releasing.md`, "Withdraw and hotfix", with the runbook):
+didn't build; `docs/releasing.md`, "Withdraw and hotfix", with the runbook).
+Before the first hotfix, the owner's setup step 12 (rulesets on `hotfix/*`).
 1. **The owner** runs `pnpm release withdraw <version>... "<why>"` (npm
    OTP): crbs on it show a red Withdrawn banner; `latest`/`rc` move back.
-2. On the owner's word: `pnpm release hotfix` creates `hotfix/X.Y.Z+1` at
-   the newest release tag (the only start accepted; after a withdraw, the
-   withdrawn release).
+2. On the owner's word: `pnpm release hotfix` creates `hotfix/X.Y.Z` at
+   the newest release tag (the only start; after a withdraw, the withdrawn
+   release; versions npm has without a tag are skipped).
 3. The fix goes in as a PR into `hotfix/X.Y.Z` (a ticket, a release note,
-   the branch's CI); the owner merges it, as into master.
-4. On the owner's word: `pnpm release promote --hotfix X.Y.Z` (CI passed on
-   the head, notes from Linear; no RC first). When green, **the owner**
-   runs `pnpm release publish`.
+   the branch's CI); the owner merges it. Only merged PRs enter.
+4. On the owner's word: `pnpm release promote --hotfix X.Y.Z` (no RC
+   first). With no CI run on the head it starts one and stops: run it
+   again once CI passes. When green, **the owner** runs `pnpm release
+   publish`.
 5. release-finish tags it, moves `rc` only if older, opens no "next" PR
    (no freeze) and opens the port PR (`hotfix-port/X.Y.Z`: the fix and the
-   changelog to master; PRs that don't apply are listed: port them by
-   hand). Merge it on the owner's approval; `pnpm release status` lists a
-   hotfix master still lacks.
+   changelog to master; what doesn't apply, or matches only by ticket, is
+   listed to port or check by hand). Close and reopen it to get CI; merge
+   it on the owner's approval. `pnpm release status` lists a hotfix
+   master still lacks.
 Agents never run `withdraw` or `publish`, never push to a `hotfix/*`
 branch (PRs only), and never create or move a `v*` tag.
 
@@ -495,8 +498,10 @@ branch (PRs only), and never create or move a `v*` tag.
   itself and refuses while one is missing; no "notes: X.Y.Z" PR is needed
   (`docs/releasing.md`, "Release notes").
 - On the owner's word only: `pnpm release promote` (starts the promote run,
-  which checks, packs and stages; nothing goes live) and `pnpm release
-  next` (pushes a `next/*` branch, opens its PR) on Gilthans/carbonless.
+  which checks, packs and stages; nothing goes live; `--hotfix X.Y.Z` for a
+  hotfix), `pnpm release hotfix` (creates a `hotfix/*` branch at the newest
+  release tag) and `pnpm release next` (pushes a `next/*` branch, opens its
+  PR) on Gilthans/carbonless.
   `pnpm release status` only reads. `pnpm release publish` (approving a
   staged release, or the first publish) is the owner's alone (their npm
   OTP): agents never run it, never run `npm stage approve`, and never ask

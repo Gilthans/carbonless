@@ -2111,7 +2111,9 @@ describe("release-finish: each step only once", () => {
 				.exec(text)?.[1]
 				?.replace(/ +#.*$/gm, "");
 		// Least privilege: only promote-ci reads CI's runs.
-		expect(permissions(ci)).toBe("      contents: read\n      actions: read\n");
+		expect(permissions(ci)).toBe(
+			"      contents: read\n      actions: read\n      pull-requests: read\n",
+		);
 		expect(permissions(job)).toBe("      contents: read\n");
 		expect(job).toMatch(/^ {4}needs: promote-ci$/m);
 		/** Each text's index in `text`, which must be increasing. */
@@ -2630,7 +2632,12 @@ esac
 			expect(at(before), before).toBeGreaterThan(-1);
 			expect(at(before), before).toBeLessThan(at("The GitHub release's text"));
 		}
-		expect(at("GitHub release")).toBe(at("Summary") - 1);
+		// Then only a hotfix's port PR (after the release: a refused push
+		// never holds it up), and the summary.
+		expect(at("GitHub release")).toBe(at("Summary") - 2);
+		expect(at("A hotfix's fix and changelog to master (the port PR)")).toBe(
+			at("Summary") - 1,
+		);
 		// The next PR step runs the repository's code without the token or
 		// git's auth header.
 		const nextPr = finish[at("Next version and changelog PR")] ?? "";

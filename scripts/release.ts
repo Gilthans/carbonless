@@ -17,9 +17,10 @@
 //                                             it), packed as X.Y.Z with those notes, the tarball
 //                                             smoke-tested, and staged on npm (hidden until
 //                                             approved); prints the run's URL
-//   pnpm release hotfix [vX.Y.Z]              ON THE OWNER'S WORD: creates hotfix/X.Y.Z+1 on origin
-//                                             at the newest release tag's commit (the only one
-//                                             accepted; after a withdraw, the withdrawn release);
+//   pnpm release hotfix [vX.Y.Z]              ON THE OWNER'S WORD: creates hotfix/<next patch> on
+//                                             origin at the newest release tag's commit (the only
+//                                             one accepted; after a withdraw, the withdrawn
+//                                             release; a version npm has with no tag is skipped);
 //                                             the fix goes in as a PR into it
 //   pnpm release promote --hotfix X.Y.Z       ON THE OWNER'S WORD: promotes hotfix/X.Y.Z's head
 //                                             as promote does an RC (CI passed on the head, its
