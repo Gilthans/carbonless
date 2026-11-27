@@ -69,6 +69,25 @@ prints the processes behind each of the page's first reads, and
 `src/server/spawnCounts.test.ts` fails when one grows with the PR
 (`docs/test-profiling.md`, "Processes per request").
 
+Nor with the reviews that pile up (the owner, 2026-11-27: "I want it to
+stay stable over time"). A review's own page starts the same processes
+however many other reviews its clone holds (`spawnCounts.test.ts`, K vs 4K
+other started reviews). Home and the MCP `reviews` tool count coverage only
+for what they show: Home a repo's rows (its PRs with facts), the tool the
+reviews it answers with, never every review ever started (CAR-324). Counted
+coverage is kept across restarts in `$XDG_CACHE_HOME/carbonless/coverage/`
+(one small JSON file per clone, reviewer and crb build), valid only at the
+meta and progress tips it was counted at and for the build that counted it
+(version and commit, `buildKey` in `src/server/home/started.ts`): a restart
+of the same build counts no review again whose refs didn't move, and an
+update counts each shown review once, so a fix to how lines are counted
+is never hidden behind older counts. A build its commit doesn't name (a
+dev tree with changes) keeps nothing. The file is derived, never the
+truth: one that can't be read, of another build, clone or reviewer, or
+with an entry that doesn't check out (done over total, an unknown unit,
+other tips) is counted again, so it can never show more coverage than the
+refs say (principle 2). Files not written for two weeks are deleted.
+
 A repo's first open waits on crb's clone of it (`gh repo clone --bare`: 27 s
 of a 29 s open on a large repo), which no later open pays. The owner,
 2026-11-24: "If the backend is cloning the repo, UI should show a message

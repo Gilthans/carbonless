@@ -1,6 +1,7 @@
 import type {
 	AnnotationOp,
 	Annotations,
+	Coverage,
 	HomeRow,
 	HomeView,
 	Person,
@@ -35,7 +36,7 @@ import {
 	turnOf,
 	turnWithWaiting,
 } from "./sections.js";
-import { StartedReviews } from "./started.js";
+import { prKey, StartedReviews } from "./started.js";
 
 /**
  * Home's state: GitHub's PR facts per view repo (a PR started elsewhere
@@ -121,16 +122,21 @@ function refreshReason(error: unknown): string {
 	return message.replace(/^gh: /, "");
 }
 
-interface StartedSource {
+export interface StartedSource {
 	/**
-	 * Coverage only for the repos `withCoverage` names; `only`: that repo's
-	 * clone alone (StartedReviews.list).
+	 * Coverage only for the PRs `withCoverage` names (`prKey`); `only`: that
+	 * repo's clone alone (StartedReviews.list).
 	 */
 	list(
 		slug: string,
 		withCoverage?: ReadonlySet<string>,
 		only?: string,
 	): Promise<StartedReview[]>;
+	/** The coverage of reviews the last list gave, by id (StartedReviews.coverage). */
+	coverage?(
+		slug: string,
+		reviews: readonly StartedReview[],
+	): Promise<Map<string, Coverage | null>>;
 	/** Forgets what it cached (the test hook's reset). */
 	reset?(): void;
 }
@@ -478,8 +484,10 @@ export class HomeService {
 	/**
 	 * A repo's answer as of now, from its facts, the inbox ref and the
 	 * clock. Its started reviews are listed again on every answer (one
-	 * for-each-ref, snapshots cached): coverage is never staler than the
-	 * progress refs, and a review started since the last read shows at once.
+	 * for-each-ref, coverage kept by the refs' tips): coverage is never
+	 * staler than the progress refs, and a review started since the last
+	 * read shows at once. Coverage is asked only for the PRs it has facts
+	 * of (its rows), never for a review of a PR long merged (CAR-324).
 	 */
 	async #repoView(name: string, state: RepoState): Promise<RepoHome> {
 		const now = this.#now();
@@ -488,7 +496,15 @@ export class HomeService {
 		if (viewer.login) {
 			try {
 				state.started = (
-					await this.#started.list(slug, new Set([name]), name)
+					await this.#started.list(
+						slug,
+						new Set(
+							[...state.facts.values()].map(({ facts: f }) =>
+								prKey(f.owner, f.repo, f.number),
+							),
+						),
+						name,
+					)
 				).filter((s) => `${s.owner}/${s.repo}`.toLowerCase() === name);
 			} catch {
 				// Keep the last list.
@@ -789,6 +805,14 @@ export class HomeService {
 	/** The viewer's started reviews as of the last view. */
 	startedReviews(): readonly StartedReview[] {
 		return this.#startedList;
+	}
+
+	/**
+	 * The scan of started reviews Home reads with, for another reader of
+	 * them (the MCP `reviews` tool) to share its memos and coverage cache.
+	 */
+	startedSource(): StartedSource {
+		return this.#started;
 	}
 
 	/**

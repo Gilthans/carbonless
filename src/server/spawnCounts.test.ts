@@ -6,6 +6,7 @@ import {
 	measureOpen,
 	type StepCount,
 } from "../../test/spawn-count";
+import { seedStartedReviews } from "../../test/started-seed";
 
 // Real git and fake-gh processes: see GIT_TEST_TIMEOUTS; a whole open three times.
 vi.setConfig({ ...GIT_TEST_TIMEOUTS, testTimeout: 240_000 });
@@ -53,6 +54,30 @@ describe.skipIf(table)("spawn counts don't grow with the PR", () => {
 		const large = await measureOpen({ files: 60, threads: 60 });
 		for (const phase of ["first", "restart", "reload"] as const) {
 			expect(byStep(large[phase]), phase).toEqual(byStep(small[phase]));
+		}
+	});
+});
+
+describe.skipIf(table)("spawn counts don't grow with other reviews", () => {
+	// Principle 3: working on one review doesn't get slower as others pile
+	// up. The review's page reads (and Home's view) after a restart, with
+	// K and 4K other started reviews of the same reviewer in its clone
+	// (CAR-324).
+	it("4x the other started reviews in the clone: the same processes per step", async () => {
+		const withOthers = (k: number) =>
+			measureOpen({ files: 15, threads: 15 }, (clone, slug) => {
+				seedStartedReviews(clone, {
+					owner: "acme",
+					repo: "widget",
+					slug,
+					k,
+					from: 5000,
+				});
+			});
+		const few = await withOthers(10);
+		const many = await withOthers(40);
+		for (const phase of ["restart", "reload"] as const) {
+			expect(byStep(many[phase]), phase).toEqual(byStep(few[phase]));
 		}
 	});
 });
