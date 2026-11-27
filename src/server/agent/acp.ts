@@ -137,17 +137,76 @@ const MAX_TURN_ERROR = 300;
 const WINDOWS = process.platform === "win32";
 
 /**
- * Names never passed to the agent: secrets of the server's environment
- * (GH_TOKEN, GITHUB_TOKEN, AWS_SECRET_ACCESS_KEY, ANTHROPIC_API_KEY, …).
- * The agent's harness uses its own login, which lives under HOME.
- * Any name with TOKEN, SECRET or PASSWORD; KEY only at the end.
+ * Words that mark a secret anywhere in a name, even run together
+ * (GITHUBTOKEN, clientSecret, OPENAI_APIKEY).
  */
-const SECRET_ENV = /TOKEN|SECRET|PASSWORD|(?:KEY$)/i;
+const SECRET_WORDS =
+	/TOKEN|SECRET|PASSWORD|PASSWD|PASSPHRASE|CREDENTIAL|APIKEY|PRIVATEKEY|ACCESSKEY/i;
+
+/**
+ * Parts of a name (split on `_`, other separators and camelCase) that mark
+ * a secret only as a whole part: API_KEY_ID and GH_PAT, but not KEYBOARD,
+ * MONKEY, PATH or XAUTHORITY.
+ */
+const SECRET_PARTS = new Set([
+	"KEY",
+	"KEYS",
+	"PAT",
+	"PASS",
+	"PWD",
+	"AUTH",
+	"CREDS",
+	"COOKIE",
+	"COOKIES",
+	"DSN",
+	"JWT",
+	"BEARER",
+]);
+
+/** Parts that, together, name a connection string (DATABASE_URL). */
+const CONNECTION_PARTS = [
+	["DATABASE", "URL"],
+	["DB", "URL"],
+	["CONNECTION", "STRING"],
+];
+
+/** Live password-manager sessions (Bitwarden, 1Password's OP_SESSION_<account>). */
+const SESSION_NAME = /^(?:BW_SESSION|OP_SESSION_.*)$/i;
+
+/**
+ * Names the agent needs as they are, whatever the rules above say.
+ * SSH_AUTH_SOCK is a socket path: the checkout may fetch over SSH.
+ */
+const ALWAYS_KEPT = new Set(["HOME", "PATH", "PWD", "OLDPWD", "SSH_AUTH_SOCK"]);
+
+/** A URL with a password in it: scheme://user:pass@host… */
+const URL_WITH_PASSWORD = /[a-z][a-z0-9+.-]*:\/\/[^\s/@:]*:[^\s/@]+@/i;
+
+/**
+ * Whether a name of the server's environment is a secret never passed to
+ * the agent (GH_TOKEN, AWS_SECRET_ACCESS_KEY, ANTHROPIC_API_KEY, GH_PAT,
+ * NPM_CONFIG__AUTH, DATABASE_URL, …). The agent's harness uses its own
+ * login, which lives under HOME.
+ */
+function isSecretEnvName(name: string): boolean {
+	if (ALWAYS_KEPT.has(name.toUpperCase())) return false;
+	if (SECRET_WORDS.test(name) || SESSION_NAME.test(name)) return true;
+	const parts = name
+		.replace(/([a-z0-9])([A-Z])/g, "$1_$2")
+		.toUpperCase()
+		.split(/[^A-Z0-9]+/)
+		.filter(Boolean);
+	if (parts.some((p) => SECRET_PARTS.has(p))) return true;
+	return CONNECTION_PARTS.some((words) =>
+		words.every((w) => parts.includes(w)),
+	);
+}
 
 /**
  * The agent's environment: the server's (without the GIT_* variables that
- * redirect git, inheritedEnv) minus secrets, HOME and PATH as they are, and
- * the config's `env` on top.
+ * redirect git, inheritedEnv) minus secrets (by name, or a value that is a
+ * URL with a password), HOME and PATH as they are, and the config's `env`
+ * on top, passed as written.
  */
 export function agentEnv(
 	extra: Record<string, string>,
@@ -159,7 +218,7 @@ export function agentEnv(
 	const env: Record<string, string> = {};
 	for (const [key, value] of Object.entries(inheritedEnv())) {
 		if (value === undefined || replaced.has(fold(key))) continue;
-		if (SECRET_ENV.test(key) && key !== "HOME" && key !== "PATH") continue;
+		if (isSecretEnvName(key) || URL_WITH_PASSWORD.test(value)) continue;
 		env[key] = value;
 	}
 	return { ...env, ...extra };
