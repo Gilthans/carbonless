@@ -269,7 +269,8 @@ async function readAlone(
 	const header = out.toString("utf8", 0, eol < 0 ? out.length : eol);
 	const match = HEADER.exec(header);
 	if (!match) {
-		if (header.endsWith(" missing")) return null;
+		// The one name asked, echoed back (a newline in it and all).
+		if (out.toString("utf8").startsWith(`${name} missing`)) return null;
 		throw new GitError(`git cat-file: ${header.slice(0, 200)}`);
 	}
 	const size = Number(match[3]);

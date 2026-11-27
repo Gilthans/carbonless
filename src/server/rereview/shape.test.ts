@@ -8,7 +8,8 @@ import {
 	createRereviewHistory,
 	type RereviewHistory,
 } from "../../../test/rereview-fixture";
-import { checkOid, detectShape, type Endpoints } from "./shape";
+import { countSpawns } from "../../../test/spawn-count";
+import { CommitCounter, checkOid, detectShape, type Endpoints } from "./shape";
 
 // Real git processes: see GIT_TEST_TIMEOUTS.
 vi.setConfig(GIT_TEST_TIMEOUTS);
@@ -191,5 +192,52 @@ describe("detectShape", () => {
 		await expect(
 			detectShape(h.path, ps(), ep(h.b0, h.h3), controller.signal),
 		).rejects.toThrow(/stopped/);
+	});
+});
+
+describe("CommitCounter", () => {
+	let h: History;
+	beforeAll(() => {
+		h = createRereviewHistory();
+	});
+	afterAll(() => h.cleanup());
+
+	const count = (a: string, b: string) =>
+		Number(
+			execFileSync("git", ["rev-list", "--count", `${a}..${b}`, "--"], {
+				cwd: h.path,
+				encoding: "utf8",
+				env: testGitEnv(),
+			}).trim(),
+		);
+
+	it("counts as rev-list --count does, one git per merge base however many heads", async () => {
+		const counter = new CommitCounter(h.path);
+		const heads = [h.p1, h.p2, h.h3, h.merged, h.mergedPlus, h.reworked];
+		const spawns = countSpawns();
+		let got: number[];
+		try {
+			got = await Promise.all([
+				...heads.map((head) => counter.count(h.b0, head)),
+				counter.count(h.b1, h.mergedPlus),
+				counter.count(h.b0, h.b0),
+			]);
+		} finally {
+			spawns.stop();
+		}
+		expect(got).toEqual([
+			...heads.map((head) => count(h.b0, head)),
+			count(h.b1, h.mergedPlus),
+			0,
+		]);
+		// A merge of the base counts every commit it brings (S3).
+		expect(got[3]).toBeGreaterThan(got[1] as number);
+		expect(spawns.shapes).toEqual(["git rev-list", "git rev-list"]);
+	});
+
+	it("fails the counts of a git that fails", async () => {
+		const counter = new CommitCounter(h.path);
+		await expect(counter.count(h.b0, "f".repeat(40))).rejects.toThrow();
+		expect(await counter.count(h.b0, h.p1)).toBe(count(h.b0, h.p1));
 	});
 });

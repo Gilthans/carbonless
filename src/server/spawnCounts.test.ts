@@ -43,9 +43,12 @@ describe.runIf(table)("spawn counts table", () => {
 });
 
 describe.skipIf(table)("spawn counts don't grow with the PR", () => {
+	// Both with the listed-first ten threads and the rest each on all three
+	// commits: GitHub's thread texts come in two reads (those ten, then the
+	// rest), and the threads' code in a batch for each, per commit.
 	it("4x the files and threads: the same processes per step", async () => {
-		const small = await measureOpen({ files: 4, threads: 6 });
-		const large = await measureOpen({ files: 16, threads: 24 });
+		const small = await measureOpen({ files: 6, threads: 18 });
+		const large = await measureOpen({ files: 24, threads: 72 });
 		for (const phase of ["first", "restart", "reload"] as const) {
 			expect(byStep(large[phase]), phase).toEqual(byStep(small[phase]));
 		}

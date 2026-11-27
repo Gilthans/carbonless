@@ -10,6 +10,7 @@ import {
 	windowRows,
 } from "./codeWindow.js";
 import { runGit } from "./git.js";
+import { limiter } from "./limiter.js";
 
 /** What the PR's diff is taken against. */
 export interface DiffBase {
@@ -105,6 +106,12 @@ const tryGit = (repo: string, signal: AbortSignal, args: string[]) =>
 		() => null,
 	);
 
+/** Gits one source runs at once: its reads batch, but many commits still make many. */
+export const CODE_GITS = 8;
+
+/** The most gits a source ran at once since `most` was reset (tests). */
+export const codeGits = { running: 0, most: 0 };
+
 /** Paths are GitHub's, not patterns: `[id].tsx` must not match `i.tsx`. */
 const LITERAL = "--literal-pathspecs";
 
@@ -121,12 +128,11 @@ interface Renames {
  * (as the Files page pairs them). Null when git fails.
  */
 async function renamedPaths(
-	repo: string,
-	signal: AbortSignal,
+	git: (args: string[]) => Promise<string | null>,
 	left: string,
 	right: string,
 ): Promise<Renames | null> {
-	const out = await tryGit(repo, signal, [
+	const out = await git([
 		LITERAL,
 		"diff",
 		"--no-color",
@@ -183,7 +189,7 @@ const PLAIN_PATH = /^[^\x00-\x1f\x7f"\\]+$/;
  * exactly `diff --git a/<path> b/<path>` (renames are off, so both sides
  * name it). Every asked path gets a list, empty when git listed none.
  */
-function splitSections(
+export function splitSections(
 	out: string,
 	paths: readonly string[],
 ): Map<string, string[]> {
@@ -199,11 +205,18 @@ function splitSections(
 		const eol = text.indexOf("\n");
 		const header = eol === -1 ? text : text.slice(0, eol);
 		const path = byHeader.get(header);
-		// A section no asked path's header names: counted against every
-		// path, so none is taken for a single file's diff (never a guess).
-		if (path === undefined) {
-			for (const list of sections.values()) list.push(text);
-		} else sections.get(path)?.push(text);
+		if (path !== undefined) {
+			sections.get(path)?.push(text);
+			return;
+		}
+		// A section no asked path's header names (a file under an asked
+		// path that is a directory there): counted against that path, or
+		// against every path when none is it, so none is taken for a single
+		// file's diff (never a guess).
+		const under = paths.filter((p) => header.includes(`a/${p}/`));
+		for (const p of under.length > 0 ? under : paths) {
+			sections.get(p)?.push(text);
+		}
 	});
 	return sections;
 }
@@ -231,6 +244,24 @@ export class ThreadCodeSource {
 
 	/** Stops every git call (close). */
 	readonly #stop = new AbortController();
+	/** Its gits, at most CODE_GITS at a time. */
+	readonly #limit = limiter(CODE_GITS);
+
+	/** git output, or null when git fails; waits for a slot (#limit). */
+	#git(args: string[]): Promise<string | null> {
+		return this.#limit(() => this.#counted(args));
+	}
+
+	/** git output, or null, counted in codeGits (inside a slot). */
+	async #counted(args: string[]): Promise<string | null> {
+		codeGits.running++;
+		codeGits.most = Math.max(codeGits.most, codeGits.running);
+		try {
+			return await tryGit(this.repo, this.#stop.signal, args);
+		} finally {
+			codeGits.running--;
+		}
+	}
 
 	constructor(
 		private readonly repo: string,
@@ -275,11 +306,7 @@ export class ThreadCodeSource {
 
 	#mergeBase(commit: string, other: string): Promise<string | null> {
 		return this.#bases.get(`${commit} ${other}`, async () => {
-			const out = await tryGit(this.repo, this.#stop.signal, [
-				"merge-base",
-				commit,
-				other,
-			]);
+			const out = await this.#git(["merge-base", commit, other]);
 			const oid = out?.trim() ?? "";
 			return OID.test(oid) ? oid : null;
 		});
@@ -311,7 +338,7 @@ export class ThreadCodeSource {
 	/** The newest `n` commits of `ref`'s first-parent chain, with their commit times. */
 	#chain(ref: string, n: number): Promise<Chain | null> {
 		return this.#chains.get(`${ref} ${n}`, async () => {
-			const out = await tryGit(this.repo, this.#stop.signal, [
+			const out = await this.#git([
 				"rev-list",
 				"--first-parent",
 				"--timestamp",
@@ -365,7 +392,7 @@ export class ThreadCodeSource {
 		const { repo } = this;
 		return this.#files.get(JSON.stringify([left, commit, path]), async () => {
 			const renames = await this.#renames.get(`${left} ${commit}`, () =>
-				renamedPaths(repo, this.#stop.signal, left, commit),
+				renamedPaths((args) => this.#git(args), left, commit),
 			);
 			if (!renames) return null;
 			const from = renames.from.get(path);
@@ -403,8 +430,9 @@ export class ThreadCodeSource {
 		path: string,
 	): Promise<string[] | null> {
 		if (!PLAIN_PATH.test(path)) {
-			return this.#diffPaths(left, commit, [path]).then((out) =>
-				out === null ? null : (splitSections(out, [path]).get(path) ?? []),
+			return this.#limit(() => this.#diffPaths(left, commit, [path])).then(
+				(out) =>
+					out === null ? null : (splitSections(out, [path]).get(path) ?? []),
 			);
 		}
 		const key = `${left} ${commit}`;
@@ -413,15 +441,21 @@ export class ThreadCodeSource {
 			const made: DiffBatch = {
 				paths: new Set(),
 				result: new Promise((resolve) => {
-					setImmediate(() => {
-						if (this.#batches.get(key) === made) this.#batches.delete(key);
-						const paths = [...made.paths];
+					// Paths join until the diff starts: the turn's, and any
+					// asked while it waits for a slot.
+					setImmediate(() =>
 						resolve(
-							this.#diffPaths(left, commit, paths).then((out) =>
-								out === null ? null : splitSections(out, paths),
-							),
-						);
-					});
+							this.#limit(() => {
+								if (this.#batches.get(key) === made) {
+									this.#batches.delete(key);
+								}
+								const paths = [...made.paths];
+								return this.#diffPaths(left, commit, paths).then((out) =>
+									out === null ? null : splitSections(out, paths),
+								);
+							}),
+						),
+					);
 				}),
 			};
 			batch = made;
@@ -433,13 +467,16 @@ export class ThreadCodeSource {
 		);
 	}
 
-	/** The whole-file diff of `paths` between `left` and `commit`; null when git fails. */
+	/**
+	 * The whole-file diff of `paths` between `left` and `commit`; null when
+	 * git fails. Run inside a slot (#limit).
+	 */
 	#diffPaths(
 		left: string,
 		commit: string,
 		paths: string[],
 	): Promise<string | null> {
-		return tryGit(this.repo, this.#stop.signal, [
+		return this.#counted([
 			LITERAL,
 			"-c",
 			"core.quotePath=false",
@@ -467,7 +504,7 @@ export class ThreadCodeSource {
 		to: string,
 	): Promise<HunkLine[] | null> {
 		const { repo } = this;
-		const diff = await tryGit(repo, this.#stop.signal, [
+		const diff = await this.#git([
 			LITERAL,
 			"diff",
 			"--no-color",

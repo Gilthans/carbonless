@@ -1062,7 +1062,13 @@ read forever, would spread the old cut through every reader of states.
 4. Cache the parsed events in memory, keyed by the ref and its tip OID
    (`RefStore.readEvents`, a bounded map). A commit's history never changes,
    so an unchanged tip skips `git log`; folding the cached events again is
-   cheap.
+   cheap. The tip itself is read off git's ref files (the loose ref, else
+   its `packed-refs` line, `src/server/review/refFiles.ts`), no process:
+   a page reads its progress ref many times, and a `git rev-parse` each
+   cost ~90 ms on Windows (CAR-320). Anything it can't be sure of (a
+   reftable repository, a symbolic ref, an unknown layout) asks `git
+   rev-parse` as before. Nothing is cached, so a write by anyone shows at
+   once.
 5. A caller that reads many refs at once (Home's started-reviews scan,
    `StartedReviews.list`) never starts a git per ref: one `git for-each-ref`
    lists the tips it needs (`RefStore.tips`), and the tips that moved since

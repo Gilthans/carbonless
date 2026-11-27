@@ -18,7 +18,12 @@ vi.mock("./git.js", async (importOriginal) => {
 });
 
 import { Activity, beginCall, runIn } from "./activity";
-import { type DiffBase, Memo, ThreadCodeSource } from "./threadCode";
+import {
+	type DiffBase,
+	Memo,
+	splitSections,
+	ThreadCodeSource,
+} from "./threadCode";
 
 const numbered = (n: number, tag = "") =>
 	`${Array.from({ length: n }, (_, i) => `line ${i + 1}${tag}`).join("\n")}\n`;
@@ -569,6 +574,98 @@ describe("ThreadCodeSource.code", () => {
 		s.forgetFailures();
 		await fill(s, comments);
 		expect(fetchCommit).toHaveBeenCalledTimes(1);
+	});
+});
+
+describe("ThreadCodeSource's reads, batched (CAR-320)", () => {
+	const gitCalls = (match: string) =>
+		vi.mocked(runGit).mock.calls.filter(([, args]) => args.includes(match))
+			.length;
+	const anchors = [
+		at({ line: 10, startLine: 10 }),
+		at({ path: "new.txt", line: 2, startLine: 2 }),
+		at({ path: "i.tsx", line: 2, startLine: 2 }),
+		at({ path: "[id].tsx", line: 1, startLine: 1 }),
+		at({ path: "crlf.txt", line: 2, startLine: 2 }),
+		at({ path: "eof.txt", line: 2, startLine: 2 }),
+		at({ path: "keep.txt", line: 3, startLine: 3 }),
+		at({ path: "missing.txt", line: 1, startLine: 1 }),
+		at({ commit: droppedA, line: 3, startLine: 3 }),
+	];
+
+	it("one diff per commit pair for every thread built together, the same rows as one at a time", async () => {
+		const alone: (CodeRow[] | null)[] = [];
+		for (const a of anchors) alone.push(await source().window(a, BASE));
+		vi.mocked(runGit).mockClear();
+		const together = await Promise.all(
+			anchors.map((a) => source().window(a, BASE)),
+		);
+		expect(together).toEqual(alone);
+		vi.mocked(runGit).mockClear();
+		const s = source();
+		const batched = await Promise.all(anchors.map((a) => s.window(a, BASE)));
+		expect(batched).toEqual(alone);
+		expect(alone.filter((r) => r !== null).length).toBe(anchors.length - 1);
+		// Two commits (the head, the dropped one): a whole-file diff each.
+		expect(gitCalls("--unified=100000000")).toBe(2);
+	});
+
+	it("the base branch at each comment's time off one rev-list, as rev-list --before gives it", async () => {
+		const left = (when: string) =>
+			at({
+				side: "LEFT",
+				startSide: "LEFT",
+				line: 10,
+				startLine: 10,
+				at: when,
+			});
+		const times = [
+			now(),
+			"2000-01-01T00:00:00Z",
+			now(),
+			"2099-01-01T00:00:00Z",
+		];
+		const alone: (CodeRow[] | null)[] = [];
+		for (const t of times) alone.push(await source().window(left(t), BASE));
+		vi.mocked(runGit).mockClear();
+		const s = source();
+		expect(
+			await Promise.all(times.map((t) => s.window(left(t), BASE))),
+		).toEqual(alone);
+		expect(alone.map((r) => r !== null)).toEqual([true, false, true, true]);
+		expect(gitCalls("rev-list")).toBe(1);
+	});
+});
+
+describe("splitSections", () => {
+	const section = (a: string, b = a) =>
+		`diff --git a/${a} b/${b}\nindex 1..2 100644\n--- a/${a}\n+++ b/${b}\n@@ -1 +1 @@\n-x\n+y\n`;
+
+	it("gives each asked path its own sections, none when git listed none", () => {
+		const out = section("a.txt") + section("b c.txt");
+		const got = splitSections(out, ["a.txt", "b c.txt", "none.txt"]);
+		expect(got.get("a.txt")).toEqual([section("a.txt")]);
+		expect(got.get("b c.txt")).toEqual([section("b c.txt")]);
+		expect(got.get("none.txt")).toEqual([]);
+	});
+
+	it("counts a section no asked path names against every path: never a single file's diff", () => {
+		const out = section("a.txt") + section("x.txt", "y.txt");
+		const got = splitSections(out, ["a.txt", "b.txt"]);
+		expect(got.get("a.txt")?.length).toBe(2);
+		expect(got.get("b.txt")?.length).toBe(1);
+	});
+
+	it("counts a file under an asked path that is a directory against that path only", () => {
+		const out = section("a.txt") + section("lib/x.ts");
+		const got = splitSections(out, ["a.txt", "lib"]);
+		expect(got.get("a.txt")?.length).toBe(1);
+		expect(got.get("lib")?.length).toBe(1);
+	});
+
+	it("keeps two sections of one path (a type change) as two", () => {
+		const out = section("a.txt") + section("a.txt");
+		expect(splitSections(out, ["a.txt"]).get("a.txt")?.length).toBe(2);
 	});
 });
 

@@ -57,6 +57,18 @@ Commits the threads sit on that the clone lacks (a force-push dropped them)
 come in one `git fetch` for the whole read, not one per commit (CAR-289: five
 such commits took 10.7 s one by one on a real PR).
 
+Count processes, not just time: starting a `git` or `gh` costs ~90 ms on
+Windows (more under load) against a few ms on Linux, so a page that runs 50
+feels fine here and takes 4-5 s there (CAR-320). No request may start a
+number of gits that grows with the PR (files, threads, commits) or the
+review (patch sets, refs): object reads go through one long-running `git
+cat-file --batch` per clone (`src/server/catFile.ts`), threads' code takes
+one `git diff` per commit pair, ref tips are read off git's files, and
+patch sets' commit counts come from one `rev-list`. `pnpm spawn-counts`
+prints the processes behind each of the page's first reads, and
+`src/server/spawnCounts.test.ts` fails when one grows with the PR
+(`docs/test-profiling.md`, "Processes per request").
+
 A repo's first open waits on crb's clone of it (`gh repo clone --bare`: 27 s
 of a 29 s open on a large repo), which no later open pays. The owner,
 2026-11-24: "If the backend is cloning the repo, UI should show a message

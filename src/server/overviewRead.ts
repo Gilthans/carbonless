@@ -19,6 +19,7 @@ import {
 	NODE_ID,
 	type PrRef,
 } from "./gh.js";
+import { limiter } from "./limiter.js";
 import { mapComments, mapThreads, openerOf, withContent } from "./overview.js";
 import type { DiffBase, ThreadCodeSource } from "./threadCode.js";
 import { buildTimeline } from "./timeline.js";
@@ -735,28 +736,4 @@ function listedFirst(threads: ReviewThread[]): ReviewThread[] {
 		taken.set(list, n + 1);
 		return n < THREADS_FIRST;
 	});
-}
-
-/** Runs the tasks given to it at most `max` at a time, in the order given. */
-function limiter(max: number) {
-	let running = 0;
-	const queue: (() => void)[] = [];
-	const next = () => {
-		if (running >= max) return;
-		const start = queue.shift();
-		if (start) start();
-	};
-	return <T>(task: () => Promise<T>): Promise<T> =>
-		new Promise<T>((resolve, reject) => {
-			queue.push(() => {
-				running++;
-				task()
-					.then(resolve, reject)
-					.finally(() => {
-						running--;
-						next();
-					});
-			});
-			next();
-		});
 }

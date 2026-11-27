@@ -42,7 +42,7 @@ import { newEvent } from "./review/events";
 import { RefStore } from "./review/refStore";
 import { ReviewService, StaleSnapshotError } from "./review/reviews";
 import { refusal, Session, UnknownReadError } from "./session";
-import { ThreadCodeSource } from "./threadCode";
+import { CODE_GITS, codeGits, ThreadCodeSource } from "./threadCode";
 
 // The engine as is, its answer counted (a batch computes it once).
 vi.mock("./rereview/engine", async (original) => {
@@ -638,7 +638,7 @@ describe("Session", () => {
 			expect((await s.overview(0)).title).toBe("Back");
 		});
 
-		it("builds thread code, checks and fallbacks included, at most eight at a time", async () => {
+		it("builds thread code, checks and fallbacks included, at most eight at a time, and at most CODE_GITS gits", async () => {
 			const head = pr.head();
 			pr.scenario({
 				threadContentDelayMs: 100,
@@ -680,12 +680,12 @@ describe("Session", () => {
 						running--;
 					}
 				};
+			// The builds all start at once (their reads batch: CAR-320); the
+			// checks and fallbacks a few at a time, and the source's gits too.
 			const proto = ThreadCodeSource.prototype;
-			const { window: build, code } = proto;
-			const spies = [
-				vi.spyOn(proto, "window").mockImplementation(counted(build)),
-				vi.spyOn(proto, "code").mockImplementation(counted(code)),
-			];
+			const { code } = proto;
+			const spies = [vi.spyOn(proto, "code").mockImplementation(counted(code))];
+			codeGits.most = 0;
 			try {
 				const s = await Session.open(pr.arg, process.cwd());
 				const { threads } = await s.threads(
@@ -700,6 +700,8 @@ describe("Session", () => {
 				);
 				expect(most).toBeGreaterThan(1);
 				expect(most).toBeLessThanOrEqual(8);
+				expect(codeGits.most).toBeGreaterThan(0);
+				expect(codeGits.most).toBeLessThanOrEqual(CODE_GITS);
 			} finally {
 				for (const spy of spies) spy.mockRestore();
 			}
