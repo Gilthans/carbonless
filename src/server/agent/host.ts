@@ -52,6 +52,7 @@ import type {
 	Snapshot,
 	ThreadComment,
 } from "../../shared/types.js";
+import { missingCommits } from "../clone.js";
 import { readConfig } from "../config.js";
 import { loadFileHunks, readBlobs, statBlob } from "../diff/snapshot.js";
 import { chooseEncoding, decodeLines } from "../diff/text.js";
@@ -1246,7 +1247,7 @@ export class AgentHost {
 			thread.anchor.subject === "thread"
 				? await sessionThreadTurn(facts, thread, messages, moved, pr)
 				: await sessionSpanTurn(facts, thread, messages, moved, pr);
-		const { envelope } = turn;
+		const envelope = await withMissingCommits(facts, turn.envelope);
 		const anchor = envelope.thread.anchor;
 		// The head this question showed.
 		this.#seen = {
@@ -2358,6 +2359,72 @@ async function sessionThreadTurn(
 	return { envelope, anchored, hunk: github?.code ?? null };
 }
 
+/**
+ * The commits a code envelope names (full OIDs, each once, with where it
+ * names it): the review's base, head and merge base, the anchor's
+ * commit, a thread conversation's openedOn, view, `current` and its
+ * patch sets' heads and merge bases.
+ */
+function envelopeCommits(env: PromptCodeEnvelope): [string, string][] {
+	const anchor = env.thread.anchor;
+	const named: [string | undefined, string][] = [
+		[env.review.head.commit, "review.head"],
+		[env.review.mergeBase, "review.mergeBase"],
+		[env.review.base.commit, "review.base"],
+		[anchor.subject === "review" ? undefined : anchor.commit, "thread.anchor"],
+		[env.github?.openedOn, "github.openedOn"],
+		[env.view?.right, "view.right"],
+		[env.view?.left, "view.left"],
+		[env.current, "current"],
+		...(env.patchsets ?? []).flatMap((p): [string, string][] => [
+			[p.head, `patch set ${p.number}'s head`],
+			[p.mergeBase, `patch set ${p.number}'s mergeBase`],
+		]),
+	];
+	const out = new Map<string, string>();
+	for (const [oid, what] of named) {
+		if (oid && OID.test(oid) && !out.has(oid)) out.set(oid, what);
+	}
+	return [...out];
+}
+
+/**
+ * The notice for commits missing from the review's clone (CAR-140), the
+ * same for a joined and a spawned session: their OIDs and where the
+ * envelope names them, never a path; undefined when none is missing.
+ */
+export function missingCommitsNotice(
+	missing: readonly [string, string][],
+): string | undefined {
+	return joinNotices(
+		missing.map(
+			([oid, what]) =>
+				`Commit ${oid} (${what}) is missing from carbonless's clone of the repo: it was never fetched (a force-push may have dropped it before carbonless saw it), so carbonless can't read or diff it, and your checkout may not have it either.`,
+		),
+	);
+}
+
+/**
+ * The envelope with the missing-commit notice added after its own: one
+ * git read for all its commits (RunnerFacts.missing). A failed check adds
+ * nothing.
+ */
+async function withMissingCommits(
+	facts: RunnerFacts,
+	env: PromptCodeEnvelope,
+): Promise<PromptCodeEnvelope> {
+	const named = envelopeCommits(env);
+	if (named.length === 0) return env;
+	const gone = new Set(
+		await facts.missing(named.map(([oid]) => oid)).catch(() => []),
+	);
+	const notice = joinNotices([
+		env.notice,
+		missingCommitsNotice(named.filter(([oid]) => gone.has(oid))),
+	]);
+	return notice ? { ...env, notice } : env;
+}
+
 /** The notices that are set, one per line; undefined when none is. */
 /**
  * A file's coverage by line for `progress`: its clusters' reviewed,
@@ -2859,6 +2926,7 @@ export function reviewAgentHost(src: ReviewAgentSource): AgentHost {
 		}),
 		// Read-only towards GitHub: it asks for the head and fetches.
 		checkHead: () => src.checkHead(),
+		missing: (oids) => missingCommits(src.repo, oids),
 	};
 	const code = async (anchor: AgentAnchor, at: string) => {
 		if (anchor.subject !== "line") return undefined;

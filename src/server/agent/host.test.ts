@@ -45,6 +45,7 @@ import {
 	CoverageError,
 	commentPostsOf,
 	type HostRunner,
+	missingCommitsNotice,
 	NotHandedError,
 	NotHoldingError,
 	OwnThreadError,
@@ -539,7 +540,15 @@ describe("AgentHost with a session joined through MCP", () => {
 		github: async () => ghThread,
 		views: () => ({ patchsets, current: head }),
 		checkHead: async () => {},
+		missing: async (oids) => {
+			missingAsked.push([...oids]);
+			return oids.filter((o) => gone.includes(o));
+		},
 	};
+	/** Commits the stub clone doesn't have. */
+	let gone: string[];
+	/** Each `missing` call's OIDs, in order. */
+	let missingAsked: string[][];
 	/** GitHub's thread as the stub facts read it (thread conversations). */
 	let ghThread: GithubThreadFacts | null;
 	/** The PR's files as the stub facts list them. */
@@ -670,6 +679,8 @@ describe("AgentHost with a session joined through MCP", () => {
 		onThread = undefined;
 		ghComments = undefined;
 		head = "d".repeat(40);
+		gone = [];
+		missingAsked = [];
 		patchsets = PATCHSETS;
 		mergeBase = "c".repeat(40);
 		codeWindow = undefined;
@@ -2666,6 +2677,58 @@ describe("AgentHost with a session joined through MCP", () => {
 			const facts = await host.sessionReview(token, true);
 			expect(facts).not.toHaveProperty("tree");
 			expect(facts).toMatchObject({ title: "Cache", head: { ref: "feat-x" } });
+		});
+
+		it("a head missing from the clone is noticed by OID only, in one check per turn; all present: no notice (CAR-140)", async () => {
+			const x = await host.open({ clientId: "c1", text: "Why?", span });
+			const token = await approve();
+			const first = await host.sessionNext(token);
+			expect(first?.envelope.notice).toBeUndefined();
+			expect(missingAsked).toHaveLength(1);
+			// Every commit the envelope names, each once.
+			expect([...(missingAsked[0] ?? [])].sort()).toEqual(
+				["a", "b", "c", "d"].map((c) => c.repeat(40)),
+			);
+			await host.sessionReply(token, {
+				thread: x.id,
+				replyTo: first?.replyTo as string,
+				text: "Because.",
+			});
+			await host.message(x.id, { clientId: "c2", text: "And now?" });
+			gone = ["d".repeat(40)];
+			const q = await host.sessionNext(token);
+			expect(q?.thread).toBe(x.id);
+			expect(missingAsked).toHaveLength(2);
+			const notice = codeOf(q)?.notice ?? "";
+			expect(notice).toBe(
+				missingCommitsNotice([["d".repeat(40), "review.head"]]),
+			);
+			expect(notice).toMatch(
+				new RegExp(`^Commit ${"d".repeat(40)} \\(review\\.head\\) is missing`),
+			);
+			expect(notice).not.toContain("a".repeat(40));
+			for (const path of [dir, bare.path, "/"]) {
+				expect(notice).not.toContain(path);
+			}
+		});
+
+		it("a GitHub thread conversation: each missing commit once, by where the envelope first names it (CAR-140)", async () => {
+			listGh(false);
+			await store.open({
+				anchor: ghAnchor,
+				text: "Is this fixed?",
+				by: "human",
+				clientId: "g1",
+			});
+			gone = ["c".repeat(40), "d".repeat(40)];
+			const q = await host.sessionNext(await approve());
+			expect(q?.envelope.kind).toBe("github_thread_conversation");
+			expect(codeOf(q)?.notice).toBe(
+				missingCommitsNotice([
+					["d".repeat(40), "review.head"],
+					["c".repeat(40), "review.mergeBase"],
+				]),
+			);
 		});
 
 		it("an agent message's posted comment blocks reach the envelope as { block, text } (CAR-83)", async () => {

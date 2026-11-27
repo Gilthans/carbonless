@@ -25,12 +25,17 @@ import {
 	type AgentStatus,
 	JOINED_PREAMBLE,
 } from "../../shared/agent.js";
+import { missingCommits } from "../clone.js";
 import { registerMcp } from "../mcp/routes.js";
 import type { SessionRegistry } from "../registry.js";
 import { RefStore } from "../review/refStore.js";
 import { agentsDir, createCheckout } from "./checkout.js";
 import { ReviewClaim } from "./claim.js";
-import { type AgentHost, buildAgentHost } from "./host.js";
+import {
+	type AgentHost,
+	buildAgentHost,
+	missingCommitsNotice,
+} from "./host.js";
 import { JoinBroker } from "./join.js";
 import {
 	AgentRunner,
@@ -137,6 +142,7 @@ const facts = (): RunnerFacts => ({
 	github: async () => null,
 	views: () => ({ patchsets: [], current: prHead }),
 	checkHead: async () => {},
+	missing: (oids) => missingCommits(cache.path, oids),
 });
 
 const dir = () => join(agentsDir(), REVIEW);
@@ -450,6 +456,33 @@ describe("AgentRunner: a spawned agent works through MCP", () => {
 		await ask("two?", 2);
 		await answered(2);
 		expect(treeHead()).toBe(at);
+	});
+
+	it("a head missing from the cache clone: the spawned agent's next names it, by OID only; all present: no notice (CAR-140)", async () => {
+		await ask("one?", 1);
+		makeRunner().poke();
+		await answered(1);
+		// A head the clone never fetched (force-pushed away).
+		const gone = "f".repeat(40);
+		prHead = gone;
+		await ask("two?", 2);
+		await answered(2);
+		const notices = mcpCalls("next")
+			.map(
+				(e) =>
+					(e.response as { value: { envelope?: { notice?: string } } }).value,
+			)
+			.filter((v) => v.envelope)
+			.map((v) => v.envelope?.notice);
+		expect(notices[0]).toBeUndefined();
+		// After the head-moved notice, which names it too.
+		expect(notices[1]?.split("\n")).toEqual([
+			expect.stringMatching(/^The PR's head moved from /),
+			missingCommitsNotice([[gone, "review.head"]]),
+		]);
+		for (const path of [cache.path, tmp, dir(), mcpUrl]) {
+			expect(notices[1]).not.toContain(path);
+		}
 	});
 
 	it("wake: a question on an idle agent sends one short wake prompt, never the question's text", async () => {

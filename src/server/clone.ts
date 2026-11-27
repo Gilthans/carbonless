@@ -640,16 +640,30 @@ async function answerBatch(path: string, batch: CommitBatch): Promise<void> {
 	}
 }
 
+/**
+ * Which of `oids` aren't commits in the clone at `path`: one `git cat-file
+ * --batch-check`, the names on its stdin. Only full OIDs are asked; any
+ * other string is left out of the answer.
+ */
+export async function missingCommits(
+	path: string,
+	oids: readonly string[],
+): Promise<string[]> {
+	const wanted = [...new Set(oids)].filter((o) => OID.test(o));
+	const present = await presentCommits(path, wanted);
+	return wanted.filter((o) => !present.has(o));
+}
+
 /** Which of `oids` are commits in the clone: one `cat-file --batch-check`. */
 async function presentCommits(
 	path: string,
 	oids: string[],
-	signal: AbortSignal,
+	signal?: AbortSignal,
 ): Promise<Set<string>> {
 	if (oids.length === 0) return new Set();
 	const out = await runGit(path, ["cat-file", "--batch-check"], {
 		input: oids.map((oid) => `${oid}^{commit}\n`).join(""),
-		signal,
+		...(signal ? { signal } : {}),
 	});
 	// One line per input line, in order: "<oid> commit <size>" or "<input> missing".
 	const lines = out.split(/\r?\n/);

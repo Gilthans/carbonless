@@ -78,6 +78,11 @@ export interface RunnerFacts {
 	views(): { patchsets: PromptPatchset[]; current: string };
 	/** Asks GitHub for the PR's head, fetching a new one into the cache clone. */
 	checkHead(): Promise<void>;
+	/**
+	 * Which of `oids` (full OIDs) aren't commits in the review's cache
+	 * clone: one git read for all (CAR-140).
+	 */
+	missing(oids: string[]): Promise<string[]>;
 }
 
 /** What the runner asks of the review's join broker: its agent joins through it. */
