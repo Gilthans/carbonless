@@ -196,7 +196,7 @@ export function sameBugCandidates(
  * `vX.Y.Z-rc.N` tag on the same commit as `vX.Y.Z` (an annotated tag by
  * the commit it points at). Releases without a tag are left out.
  */
-export async function promotedRcs(
+async function promotedRcs(
 	io: Io,
 	releases: readonly string[],
 ): Promise<Record<string, string>> {
