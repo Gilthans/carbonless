@@ -20,7 +20,8 @@ import {
 	matchDisplayHunk,
 	whitespaceLines,
 } from "../../shared/whitespace.js";
-import { GitError, runGit, runGitBuffer } from "../git.js";
+import { closeCatFiles, readObject } from "../catFile.js";
+import { GitError, runGit } from "../git.js";
 import { BlobCache } from "./blobCache.js";
 import {
 	buildAllClusters,
@@ -58,6 +59,10 @@ const BLOB_CACHE_BYTES = 32 * 1024 * 1024;
 
 const blobCache = new BlobCache(BLOB_CACHE_BYTES);
 
+/** `<oid>:<path>` names' blob OIDs (resolveBlobs), by repo; never stale. */
+const nameCache = new Map<string, string>();
+const MAX_CACHED_NAMES = 50_000;
+
 const MAX_CACHED_HEADINGS = 8;
 
 /**
@@ -77,12 +82,15 @@ const HEADING_WAIT_MS = 500;
 const headingRuns = new Map<string, Promise<GitHunkHeading[][] | null>>();
 
 /**
- * Empties the blob and heading caches, as a fresh process has them (the
+ * Empties the blob and heading caches and ends the clones' `cat-file`
+ * processes (catFile.ts), as a fresh process has them (the
  * test hook's reset): tests' fixture repos share blob ids, so a warm cache
  * would hide a first open's cost from the next test.
  */
 export function clearSnapshotCaches(): void {
 	blobCache.clear();
+	nameCache.clear();
+	closeCatFiles();
 	headingRuns.clear();
 }
 
@@ -115,7 +123,10 @@ function within<T>(run: Promise<T | null>, ms: number): Promise<T | null> {
 
 const isZeroOid = (oid: string) => /^0+$/.test(oid);
 
-/** Reads blobs by OID with one `git cat-file --batch` for all cache misses. */
+/**
+ * Reads blobs by OID, the cache misses through the clone's long-running
+ * `git cat-file --batch` (catFile.ts: no process per read).
+ */
 export async function readBlobs(
 	repo: string,
 	oids: string[],
@@ -126,48 +137,45 @@ export async function readBlobs(
 		if (cached) result.set(oid, cached);
 		return !cached;
 	});
-	if (missing.length === 0) return result;
-	const out = await runGitBuffer(repo, ["cat-file", "--batch"], {
-		input: `${missing.join("\n")}\n`,
+	const read = await Promise.all(missing.map((oid) => readObject(repo, oid)));
+	missing.forEach((oid, i) => {
+		const object = read[i];
+		if (object?.type !== "blob" || object.oid !== oid) {
+			throw new GitError(`Could not read blob ${oid}`);
+		}
+		blobCache.set(oid, object.content);
+		result.set(oid, object.content);
 	});
-	let pos = 0;
-	for (const oid of missing) {
-		const eol = out.indexOf(0x0a, pos);
-		const header = out.toString("utf8", pos, eol < 0 ? out.length : eol);
-		const match = /^([0-9a-f]+) (\w+) (\d+)$/.exec(header);
-		if (eol < 0 || !match || match[1] !== oid) {
-			throw new GitError(`Could not read blob ${oid}: ${header}`);
-		}
-		const start = eol + 1;
-		const end = start + Number(match[3]);
-		// A short read would leave allocUnsafeSlow's bytes uninitialized.
-		if (end > out.length) {
-			throw new GitError(`Could not read blob ${oid}: output cut short`);
-		}
-		// Its own allocation: a slice of Node's shared pool (Buffer.from of a
-		// small blob) would pin the whole 64 KiB slab while cached.
-		const bytes = Buffer.allocUnsafeSlow(end - start);
-		out.copy(bytes, 0, start, end);
-		blobCache.set(oid, bytes);
-		result.set(oid, bytes);
-		pos = end + 1;
-	}
 	return result;
 }
 
-/** Resolves `<rev>:<path>` names to blob OIDs (NUL-separated, any path). */
+/**
+ * Resolves `<rev>:<path>` names to blob OIDs (any path), reading each blob
+ * on the way (catFile.ts) into the blob cache, so readBlobs needs no other
+ * read. `<rev>` and the path never change what an OID-led name gives, so
+ * the answers are kept too.
+ */
 async function resolveBlobs(repo: string, names: string[]): Promise<string[]> {
-	const out = await runGit(
-		repo,
-		["cat-file", "-z", "--batch-check=%(objectname) %(objecttype)"],
-		{ input: names.map((n) => `${n}\0`).join("") },
+	return Promise.all(
+		names.map(async (name) => {
+			const key = `${repo}\0${name}`;
+			const known = nameCache.get(key);
+			if (known && blobCache.get(known)) return known;
+			const object = await readObject(repo, name);
+			if (object?.type !== "blob") {
+				throw new GitError(`Could not find blob ${name}`);
+			}
+			blobCache.set(object.oid, object.content);
+			if (/^[0-9a-f]{40}([0-9a-f]{24})?:/.test(name)) {
+				nameCache.set(key, object.oid);
+				if (nameCache.size > MAX_CACHED_NAMES) {
+					const oldest = nameCache.keys().next().value;
+					if (oldest !== undefined) nameCache.delete(oldest);
+				}
+			}
+			return object.oid;
+		}),
 	);
-	const lines = out.split("\n");
-	return names.map((name, i) => {
-		const match = /^([0-9a-f]+) blob$/.exec(lines[i] ?? "");
-		if (!match) throw new GitError(`Could not find blob ${name}`);
-		return match[1] as string;
-	});
 }
 
 /**

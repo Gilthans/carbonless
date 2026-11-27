@@ -1,6 +1,7 @@
 import { type HunkLine, parseDiffHunk } from "../shared/diffHunk.js";
 import type { CodeAnchor, CodeRow, CodeWindow } from "../shared/types.js";
 import { Activity, runIn, waitOn } from "./activity.js";
+import { readBlob, readObject } from "./catFile.js";
 import { ensureCommit } from "./clone.js";
 import {
 	hunkWindowRows,
@@ -154,6 +155,59 @@ async function renamedPaths(
 	return renames;
 }
 
+/** The newest commits of a first-parent chain, newest first. */
+interface Chain {
+	commits: { oid: string; time: number }[];
+	/** The chain has no more (fewer than asked for). */
+	complete: boolean;
+}
+
+/** How many of a base branch's newest commits one read takes (#chain). */
+const CHAIN_PAGE = 500;
+
+/** Paths asked of one diff, and its answer: each path's sections. */
+interface DiffBatch {
+	paths: Set<string>;
+	result: Promise<Map<string, string[]> | null>;
+}
+
+/**
+ * A path git writes as is in `diff --git a/<path> b/<path>` (with
+ * core.quotePath off): no control characters, quotes or backslashes.
+ */
+// biome-ignore lint/suspicious/noControlCharactersInRegex: what git quotes
+const PLAIN_PATH = /^[^\x00-\x1f\x7f"\\]+$/;
+
+/**
+ * A whole diff cut into each asked path's sections: those whose header is
+ * exactly `diff --git a/<path> b/<path>` (renames are off, so both sides
+ * name it). Every asked path gets a list, empty when git listed none.
+ */
+function splitSections(
+	out: string,
+	paths: readonly string[],
+): Map<string, string[]> {
+	const byHeader = new Map<string, string>();
+	for (const p of paths) byHeader.set(`diff --git a/${p} b/${p}`, p);
+	const sections = new Map<string, string[]>(paths.map((p) => [p, []]));
+	const starts: number[] = [];
+	const re = /^diff --git /gm;
+	for (let m = re.exec(out); m; m = re.exec(out)) starts.push(m.index);
+	starts.forEach((start, i) => {
+		const end = starts[i + 1] ?? out.length;
+		const text = out.slice(start, end);
+		const eol = text.indexOf("\n");
+		const header = eol === -1 ? text : text.slice(0, eol);
+		const path = byHeader.get(header);
+		// A section no asked path's header names: counted against every
+		// path, so none is taken for a single file's diff (never a guess).
+		if (path === undefined) {
+			for (const list of sections.values()) list.push(text);
+		} else sections.get(path)?.push(text);
+	});
+	return sections;
+}
+
 /**
  * The code comments point at, from the clone: for an anchor, the PR's diff
  * of its file at its commit, windowed to its range (codeWindow.ts). One per
@@ -168,6 +222,10 @@ export class ThreadCodeSource {
 	readonly #bases = new Memo<string | null>((oid) => oid === null, 2048);
 	/** The base branch's tip at a time: moves when a Refresh fetches it. */
 	readonly #tips = new Memo<string | null>(() => false, 1024);
+	/** The base branch's newest commits (#chain): moves with it too. */
+	readonly #chains = new Memo<Chain | null>((c) => c === null, 16);
+	/** Paths asked of one diff (left, commit) not yet read, by that pair. */
+	readonly #batches = new Map<string, DiffBatch>();
 	readonly #renames = new Memo<Renames | null>((r) => r === null, 64);
 	readonly #files = new Memo<HunkLine[] | null>((lines) => lines === null, 256);
 
@@ -193,6 +251,7 @@ export class ThreadCodeSource {
 		this.#commits.forgetFailures();
 		this.#bases.forgetFailures();
 		this.#tips.clear();
+		this.#chains.clear();
 		this.#renames.forgetFailures();
 		this.#files.forgetFailures();
 	}
@@ -226,20 +285,49 @@ export class ThreadCodeSource {
 		});
 	}
 
-	/** The base branch's last first-parent commit by `at`. */
+	/**
+	 * The base branch's last first-parent commit by `at`: the first commit
+	 * of its first-parent chain whose commit time is at or before `at`, as
+	 * `git rev-list -1 --first-parent --before=<at>` gives it. Read off the
+	 * chain's newest commits (#chain), one git for every comment's time
+	 * rather than one each (CAR-320); a deeper read only when they're all
+	 * newer.
+	 */
 	#tip(ref: string, at: string): Promise<string | null> {
-		if (Number.isNaN(Date.parse(at))) return Promise.resolve(null);
+		const ms = Date.parse(at);
+		if (Number.isNaN(ms)) return Promise.resolve(null);
+		const seconds = Math.floor(ms / 1000);
 		return this.#tips.get(`${ref} ${at}`, async () => {
+			for (let n = CHAIN_PAGE; ; n *= 4) {
+				const chain = await this.#chain(ref, n);
+				if (!chain) return null;
+				const hit = chain.commits.find((c) => c.time <= seconds);
+				if (hit) return hit.oid;
+				if (chain.complete) return null;
+			}
+		});
+	}
+
+	/** The newest `n` commits of `ref`'s first-parent chain, with their commit times. */
+	#chain(ref: string, n: number): Promise<Chain | null> {
+		return this.#chains.get(`${ref} ${n}`, async () => {
 			const out = await tryGit(this.repo, this.#stop.signal, [
 				"rev-list",
-				"-1",
 				"--first-parent",
-				`--before=${at}`,
+				"--timestamp",
+				`--max-count=${n}`,
 				ref,
 				"--",
 			]);
-			const oid = out?.trim() ?? "";
-			return OID.test(oid) ? oid : null;
+			if (out === null) return null;
+			const commits: Chain["commits"] = [];
+			for (const line of out.split("\n")) {
+				if (!line) continue;
+				const [time = "", oid = ""] = line.split(" ");
+				if (!/^\d+$/.test(time) || !OID.test(oid)) return null;
+				commits.push({ time: Number(time), oid });
+			}
+			return { commits, complete: commits.length < n };
 		});
 	}
 
@@ -284,46 +372,87 @@ export class ThreadCodeSource {
 			if (from !== undefined)
 				return this.#renamedLines(left, commit, from, path);
 			if (renames.old.has(path)) return null;
-			const diff = await tryGit(repo, this.#stop.signal, [
-				LITERAL,
-				"diff",
-				"--no-color",
-				"--no-ext-diff",
-				"--no-renames",
-				"--unified=100000000",
-				left,
-				commit,
-				"--",
-				path,
-			]);
-			if (diff === null) return null;
-			const files = diff.match(/^diff --git /gm)?.length ?? 0;
-			if (files > 1) return null;
-			if (files === 1) return parseDiffHunk(diff);
+			const sections = await this.#fileDiff(left, commit, path);
+			if (sections === null) return null;
+			if (sections.length > 1) return null;
+			if (sections.length === 1) return parseDiffHunk(sections[0] as string);
 			// No change: only when the file is the same blob on both sides.
-			const [oldBlob, newBlob] = await Promise.all([
-				tryGit(repo, this.#stop.signal, [
-					"rev-parse",
-					"--verify",
-					"--quiet",
-					`${left}:${path}`,
-				]),
-				tryGit(repo, this.#stop.signal, [
-					"rev-parse",
-					"--verify",
-					"--quiet",
-					`${commit}:${path}`,
-				]),
-			]);
-			const blob = newBlob?.trim();
-			if (!blob || oldBlob?.trim() !== blob) return null;
-			const content = await tryGit(repo, this.#stop.signal, [
-				"cat-file",
-				"blob",
-				blob,
-			]);
-			return content === null ? null : contextLines(content);
+			const signal = this.#stop.signal;
+			const [before, after] = await Promise.all([
+				readObject(repo, `${left}:${path}`, signal),
+				readObject(repo, `${commit}:${path}`, signal),
+			]).catch(() => [null, null]);
+			if (after?.type !== "blob" || before?.oid !== after.oid) {
+				return null;
+			}
+			return contextLines(after.content.toString("utf8"));
 		});
+	}
+
+	/**
+	 * `path`'s sections of the diff between `left` and `commit` (`diff
+	 * --git` on, one per file git lists; none when it's the same on both
+	 * sides), whole-file context, no renames. The paths asked of one pair
+	 * in the same turn share one `git diff` (CAR-320: a thread each made
+	 * one); a path git would quote in the header is read on its own. Null
+	 * when git fails.
+	 */
+	#fileDiff(
+		left: string,
+		commit: string,
+		path: string,
+	): Promise<string[] | null> {
+		if (!PLAIN_PATH.test(path)) {
+			return this.#diffPaths(left, commit, [path]).then((out) =>
+				out === null ? null : (splitSections(out, [path]).get(path) ?? []),
+			);
+		}
+		const key = `${left} ${commit}`;
+		let batch = this.#batches.get(key);
+		if (!batch) {
+			const made: DiffBatch = {
+				paths: new Set(),
+				result: new Promise((resolve) => {
+					setImmediate(() => {
+						if (this.#batches.get(key) === made) this.#batches.delete(key);
+						const paths = [...made.paths];
+						resolve(
+							this.#diffPaths(left, commit, paths).then((out) =>
+								out === null ? null : splitSections(out, paths),
+							),
+						);
+					});
+				}),
+			};
+			batch = made;
+			this.#batches.set(key, batch);
+		}
+		batch.paths.add(path);
+		return batch.result.then((sections) =>
+			sections === null ? null : (sections.get(path) ?? []),
+		);
+	}
+
+	/** The whole-file diff of `paths` between `left` and `commit`; null when git fails. */
+	#diffPaths(
+		left: string,
+		commit: string,
+		paths: string[],
+	): Promise<string | null> {
+		return tryGit(this.repo, this.#stop.signal, [
+			LITERAL,
+			"-c",
+			"core.quotePath=false",
+			"diff",
+			"--no-color",
+			"--no-ext-diff",
+			"--no-renames",
+			"--unified=100000000",
+			left,
+			commit,
+			"--",
+			...paths,
+		]);
 	}
 
 	/**
@@ -362,12 +491,12 @@ export class ThreadCodeSource {
 		}
 		if (/^@@ /m.test(diff)) return parseDiffHunk(diff);
 		// Renamed as it was: the file itself.
-		const content = await tryGit(repo, this.#stop.signal, [
-			"cat-file",
-			"blob",
+		const content = await readBlob(
+			repo,
 			`${commit}:${to}`,
-		]);
-		return content === null ? null : contextLines(content);
+			this.#stop.signal,
+		).catch(() => null);
+		return content === null ? null : contextLines(content.toString("utf8"));
 	}
 
 	/**

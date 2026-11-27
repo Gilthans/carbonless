@@ -10,6 +10,7 @@ import type {
 	Snapshot,
 	StateChange,
 } from "../../shared/types.js";
+import { readBlob } from "../catFile.js";
 import { runGit } from "../git.js";
 import {
 	type CarriedEvent,
@@ -738,9 +739,7 @@ export class ReviewService {
 	async #readLookup(ref: string): Promise<string | null> {
 		const oid = await this.store.tip(ref);
 		if (!oid) return null;
-		const id = (
-			await runGit(this.store.repo, ["cat-file", "blob", oid])
-		).trim();
+		const id = (await readBlob(this.store.repo, oid)).toString("utf8").trim();
 		if (!REVIEW_ID.test(id)) {
 			throw new Error(`Lookup ref ${ref} doesn't hold a review id`);
 		}

@@ -37,9 +37,9 @@ import type {
 	Snapshot,
 	ThreadAnchorRef,
 } from "../../shared/types.js";
+import { readBlob } from "../catFile.js";
 import { touchesOldSide } from "../codeWindow.js";
 import { fileText } from "../diff/snapshot.js";
-import { runGitBuffer } from "../git.js";
 import type { DiffBase, ThreadCodeSource } from "../threadCode.js";
 import { type DiffEntry, diffMap, linesMapper, NONE } from "./engine.js";
 
@@ -400,7 +400,7 @@ export class ThreadPlacer {
 		const key = JSON.stringify([commit, path]);
 		let made = this.#texts.get(key);
 		if (!made) {
-			made = runGitBuffer(this.repo, ["cat-file", "blob", `${commit}:${path}`])
+			made = readBlob(this.repo, `${commit}:${path}`)
 				.then((bytes) => fileText(EMPTY, bytes).newLines)
 				.catch(() => null);
 			this.#texts.set(key, made);

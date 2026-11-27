@@ -254,9 +254,23 @@ export class OverviewRead {
 				// with GitHub's hunk to check against, is in) the check and any
 				// fallback. Waiting for the text holds no slot. A text that fails
 				// counts as no hunk (ThreadCodeSource.code).
+				// The build from the clone, all at once (CAR-320): the clone's
+				// reads batch across threads (a diff per commit pair, not per
+				// thread), so the listed-first ones' come in a batch of their
+				// own, the rest's in another after it.
+				const warmFirst = this.#warm(
+					sources,
+					p.coded.filter((t) => firstIds.has(t.id)),
+				);
+				const warmRest = warmFirst.then(() =>
+					this.#warm(
+						sources,
+						p.coded.filter((t) => !firstIds.has(t.id)),
+					),
+				);
 				const tasks = p.coded.map((t) => ({
 					first: firstIds.has(t.id),
-					done: limit(() => this.#warm(sources, t))
+					done: (firstIds.has(t.id) ? warmFirst : warmRest)
 						.then(() => textOf(t.id).catch(() => {}))
 						.then(() => limit(() => this.#code(sources, t, textOf))),
 				}));
@@ -652,12 +666,20 @@ export class OverviewRead {
 	}
 
 	/**
-	 * Builds a thread's code from the clone into the source's caches, so
-	 * #code then reads the clone only for a fallback.
+	 * Builds threads' code from the clone into the source's caches, so
+	 * #code then reads the clone only for a fallback. Never fails.
 	 */
-	async #warm(sources: ReadSources, thread: ReviewThread): Promise<void> {
-		if (!thread.code) return;
-		await sources.code.window(thread.code.anchor, await sources.base());
+	async #warm(
+		sources: ReadSources,
+		threads: readonly ReviewThread[],
+	): Promise<void> {
+		const anchors = threads.flatMap((t) => (t.code ? [t.code.anchor] : []));
+		if (anchors.length === 0) return;
+		const base = await sources.base().catch(() => null);
+		if (!base) return;
+		await Promise.all(
+			anchors.map((a) => sources.code.window(a, base).catch(() => null)),
+		);
 	}
 
 	/**

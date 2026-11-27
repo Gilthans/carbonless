@@ -6,6 +6,7 @@ import { GhError, UnresolvedError, WriteRefusedError } from "./errors.js";
 import { mapOverview } from "./overview.js";
 import { type HeadSpec, needsCommentPages, pickHead } from "./pinnedHead.js";
 import { slugify } from "./slug.js";
+import { noteSpawn } from "./spawnWatch.js";
 import { argsSummary, traceparent, tracer } from "./trace.js";
 
 export { GhError, slugify };
@@ -129,6 +130,7 @@ function spawnGh(args: string[], run: GhRun = {}): Promise<GhResult> {
 		const env = ghEnv(run.env);
 		// The fake gh's own span (tests) goes under this one.
 		if (span?.context) env.TRACEPARENT = traceparent(span.context);
+		noteSpawn("gh", args, name);
 		const child = spawn("gh", args, {
 			cwd: run.cwd,
 			env,
