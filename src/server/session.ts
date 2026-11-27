@@ -53,6 +53,7 @@ import { type AgentHost, reviewAgentHost } from "./agent/host.js";
 import { isSafePath } from "./agent/prompt.js";
 import { type AgentDiff, AgentDiffRequestError } from "./agent/reads.js";
 import { AgentThreadStore, type MovesCheck } from "./agent/store.js";
+import { readBlob } from "./catFile.js";
 import { ensureClone, ensureCommit, fetchPr } from "./clone.js";
 import { touchesOldSide } from "./codeWindow.js";
 import { contextLines, inDiffHunks } from "./diff/hunks.js";
@@ -81,7 +82,7 @@ import {
 	type PrRef,
 	resolvePrRef,
 } from "./gh.js";
-import { GitError, runGit, runGitBuffer } from "./git.js";
+import { GitError, runGit } from "./git.js";
 import {
 	type NewThreadTarget,
 	type StartedRecord,
@@ -107,7 +108,7 @@ import {
 	type Traced,
 	traceRereview,
 } from "./rereview/engine.js";
-import { checkOid, commitsOver, commitsSince } from "./rereview/shape.js";
+import { CommitCounter, checkOid, commitsSince } from "./rereview/shape.js";
 import {
 	DeadMoveError,
 	failedInput,
@@ -354,8 +355,11 @@ export class Session {
 	 */
 	readonly #commitCounts = new BackgroundCounts((key) => {
 		const [mergeBase = "", head = ""] = key.split(" ");
-		return commitsOver(this.repo, mergeBase, head, this.#stop.signal);
+		this.#counter ??= new CommitCounter(this.repo, this.#stop.signal);
+		return this.#counter.count(mergeBase, head);
 	});
+	/** Batches the counts asked together into one git (CAR-320). */
+	#counter: CommitCounter | undefined;
 	/** Order of PR metadata requests, by start; see #setMeta. */
 	#metaSeq = 0;
 	#metaSeqApplied = 0;
@@ -1484,7 +1488,7 @@ export class Session {
 	 * the text blobs' cache (an image would push the text out of it).
 	 */
 	async blobBytes(oid: string): Promise<Buffer> {
-		return runGitBuffer(this.repo, ["cat-file", "blob", checkOid(oid)]);
+		return readBlob(this.repo, checkOid(oid));
 	}
 
 	async #interdiffBlobName(

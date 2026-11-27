@@ -45,15 +45,142 @@ async function countBetween(
 	return Number(out.trim());
 }
 
-/** `git rev-list --count <mergeBase>..<head>`: a patch set's commits. */
-export async function commitsOver(
+/**
+ * Each patch set's commits over its merge base (`git rev-list --count
+ * <mergeBase>..<head>`), for many patch sets at once (CAR-320): the counts asked in
+ * the same turn share one `git rev-list --parents ^<merge base> <heads...>`
+ * per merge base, each head's count then walked off its parents within
+ * that list (every commit a head has over the merge base is in it), where
+ * a `--count` per patch set started a git each. A failed git fails the
+ * counts it had.
+ */
+export class CommitCounter {
+	/** Counts asked and not yet run: by merge base, by head, their waiters. */
+	#pending = new Map<string, Map<string, Waiter[]>>();
+	#scheduled = false;
+
+	constructor(
+		private readonly repo: string,
+		private readonly signal?: AbortSignal,
+	) {}
+
+	count(mergeBase: string, head: string): Promise<number> {
+		if (mergeBase === head) return Promise.resolve(0);
+		checkOid(mergeBase);
+		checkOid(head);
+		return new Promise((resolve, reject) => {
+			let heads = this.#pending.get(mergeBase);
+			if (!heads) {
+				heads = new Map();
+				this.#pending.set(mergeBase, heads);
+			}
+			const waiting = heads.get(head) ?? [];
+			waiting.push({ resolve, reject });
+			heads.set(head, waiting);
+			if (!this.#scheduled) {
+				this.#scheduled = true;
+				setImmediate(() => this.#run());
+			}
+		});
+	}
+
+	#run(): void {
+		this.#scheduled = false;
+		const pending = this.#pending;
+		this.#pending = new Map();
+		for (const [mergeBase, heads] of pending) {
+			void this.#settle(mergeBase, heads);
+		}
+	}
+
+	/**
+	 * One git for the heads; when it fails and there were several, each
+	 * head alone, so one broken head fails only its own count.
+	 */
+	async #settle(
+		mergeBase: string,
+		heads: Map<string, Waiter[]>,
+	): Promise<void> {
+		const settle = (head: string, n: number | Error) => {
+			for (const w of heads.get(head) ?? []) {
+				if (typeof n === "number") w.resolve(n);
+				else w.reject(n);
+			}
+		};
+		const asError = (e: unknown) =>
+			e instanceof Error ? e : new Error(String(e));
+		try {
+			const counts = await countAll(
+				this.repo,
+				mergeBase,
+				[...heads.keys()],
+				this.signal,
+			);
+			for (const head of heads.keys()) {
+				const n = counts.get(head);
+				settle(head, n ?? new Error(`No count for ${head}`));
+			}
+		} catch (error) {
+			if (heads.size === 1) {
+				for (const head of heads.keys()) settle(head, asError(error));
+				return;
+			}
+			await Promise.all(
+				[...heads.keys()].map(async (head) => {
+					try {
+						const counts = await countAll(
+							this.repo,
+							mergeBase,
+							[head],
+							this.signal,
+						);
+						settle(head, counts.get(head) ?? new Error(`No count for ${head}`));
+					} catch (e) {
+						settle(head, asError(e));
+					}
+				}),
+			);
+		}
+	}
+}
+
+interface Waiter {
+	resolve: (n: number) => void;
+	reject: (e: unknown) => void;
+}
+
+/** Each head's commits over `mergeBase`, from one `rev-list --parents`. */
+async function countAll(
 	repo: string,
 	mergeBase: string,
-	head: string,
+	heads: string[],
 	signal?: AbortSignal,
-): Promise<number> {
-	if (mergeBase === head) return 0;
-	return countBetween(repo, checkOid(mergeBase), checkOid(head), signal);
+): Promise<Map<string, number>> {
+	const out = await runGit(
+		repo,
+		["rev-list", "--parents", ...heads, `^${mergeBase}`, "--"],
+		{ signal },
+	);
+	const parents = new Map<string, string[]>();
+	for (const line of out.split("\n")) {
+		const [oid, ...ps] = line.trim().split(" ");
+		if (oid) parents.set(oid, ps);
+	}
+	const counts = new Map<string, number>();
+	for (const head of heads) {
+		const seen = new Set<string>();
+		const stack = parents.has(head) ? [head] : [];
+		while (stack.length > 0) {
+			const oid = stack.pop() as string;
+			if (seen.has(oid)) continue;
+			seen.add(oid);
+			for (const p of parents.get(oid) ?? []) {
+				if (parents.has(p) && !seen.has(p)) stack.push(p);
+			}
+		}
+		counts.set(head, seen.size);
+	}
+	return counts;
 }
 
 /**

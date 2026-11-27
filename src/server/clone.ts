@@ -11,7 +11,7 @@ import {
 	utimes,
 } from "node:fs/promises";
 import { hostname } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, resolve, sep } from "node:path";
 import { Activity, beginStep, phase, runIn, waitOn } from "./activity.js";
 import { GhError } from "./errors.js";
 import type { PrMeta } from "./gh.js";
@@ -25,22 +25,23 @@ import { cacheDir } from "./paths.js";
  */
 export function clonePath(owner: string, repo: string): string {
 	for (const segment of [owner, repo]) {
-		if (
-			!segment ||
-			segment === "." ||
-			segment === ".." ||
-			/[/\\\0]/.test(segment)
-		) {
+		// GitHub's own charset for owners and repos: never a separator, a
+		// drive (`C:`) or a NUL, and never `.` or `..`.
+		if (!GITHUB_NAME.test(segment) || segment === "." || segment === "..") {
 			throw new GhError(`Not a GitHub owner/repo: ${owner}/${repo}`);
 		}
 	}
-	return join(
-		cacheDir(),
-		"repos",
-		owner.toLowerCase(),
-		`${repo.toLowerCase()}.git`,
-	);
+	const root = resolve(cacheDir(), "repos");
+	const path = resolve(root, owner.toLowerCase(), `${repo.toLowerCase()}.git`);
+	// Under the cache's repos directory, whatever the names held.
+	if (!path.startsWith(root + sep)) {
+		throw new GhError(`Not a GitHub owner/repo: ${owner}/${repo}`);
+	}
+	return path;
 }
+
+/** A GitHub owner or repository name. */
+const GITHUB_NAME = /^[A-Za-z0-9._-]+$/;
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 

@@ -226,6 +226,27 @@ cache, which the warm-up fills. Without it each test's own
 (`$XDG_CACHE_HOME/carbonless/compile-cache`) empty at every start;
 `e2e/fixtures.spec.ts` checks both paths.
 
+## Processes per request (CAR-320)
+
+On Windows a `git` or `gh` costs ~90 ms to start, so how many a request
+starts matters as much as what they do. `src/server/spawnWatch.ts` tells
+listeners of every git and gh crb starts; `test/spawn-count.ts` drives an
+in-process server through the page's first reads (open, session,
+overview, review, the threads' stages, head, Files' first file and the
+next ten, verdict, timeline, placements, the since view, Home) on a
+synthetic PR: N files, M threads (a third on a commit force-pushed away),
+three patch sets with marks. Each step counts the processes it starts,
+with the background work it sets off (settled before the next step).
+
+- `pnpm spawn-counts [<files>x<threads>]` (default `40x15`) prints the
+  table: per step, the counts for a machine's first open (a new clone),
+  a restart (the clone and a started review, nothing in memory) and a
+  reload, with their shapes (`git diff ×3`, `gh api graphql ×6`).
+  `--calls` adds every command line.
+- `src/server/spawnCounts.test.ts` runs it at 15 files / 15 threads and at
+  4x that, and fails when any step's count differs: a process per file,
+  thread or commit shows up there.
+
 ## One server for many tests (CAR-106)
 
 A Playwright worker's tests share one `crb serve` (`e2e/shared-server.ts`),

@@ -6,6 +6,7 @@ import {
 	serializeCommitMessage,
 	validateForWrite,
 } from "./events.js";
+import { tipFromFiles } from "./refFiles.js";
 
 /**
  * Retry budget per append; each lost race re-reads the tip (see appendEvent).
@@ -89,8 +90,14 @@ export class RefStore {
 		return this.#emptyTree;
 	}
 
+	/**
+	 * The ref's tip, null when it doesn't exist: off git's ref files when
+	 * they tell (refFiles.ts: no process), else `git rev-parse`.
+	 */
 	async tip(ref: string): Promise<string | null> {
 		checkRef(ref);
+		const read = await tipFromFiles(this.repo, ref);
+		if (read !== undefined) return read;
 		const out = await runGit(
 			this.repo,
 			["rev-parse", "--verify", "--quiet", "--end-of-options", ref],

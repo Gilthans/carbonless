@@ -1,5 +1,6 @@
 import { type ChildProcess, spawn } from "node:child_process";
 import { beginCall } from "./activity.js";
+import { noteSpawn } from "./spawnWatch.js";
 import { argsSummary, tracer } from "./trace.js";
 
 export class GitError extends Error {}
@@ -123,6 +124,36 @@ function gitCommand(args: readonly string[]): string {
 	return "?";
 }
 
+/**
+ * Starts a git that keeps running (a `cat-file --batch` that answers many
+ * reads, catFile.ts): the same environment as runGit's, counted as a spawn,
+ * but not one of the gits a request waits on (gitChildren), since it
+ * outlives requests on purpose. Killed when crb exits, however it ends.
+ */
+export function spawnLongGit(repoPath: string, args: string[]): ChildProcess {
+	noteSpawn("git", args, `git ${gitCommand(args)}`);
+	const child = spawn("git", ["-C", repoPath, ...args], {
+		env: inheritedEnv(),
+		stdio: ["pipe", "pipe", "pipe"],
+		// No console window flashing up on Windows.
+		windowsHide: true,
+	});
+	long.add(child);
+	child.on("close", () => long.delete(child));
+	child.on("error", () => long.delete(child));
+	if (!killLongOnExit) {
+		killLongOnExit = true;
+		process.on("exit", () => {
+			for (const c of long) c.kill("SIGKILL");
+		});
+	}
+	return child;
+}
+
+/** Long-running gits (spawnLongGit) still alive. */
+const long = new Set<ChildProcess>();
+let killLongOnExit = false;
+
 export async function runGit(
 	repoPath: string,
 	args: string[],
@@ -189,6 +220,7 @@ export function runGitFull(
 					},
 				)
 			: null;
+		noteSpawn("git", args, name);
 		const child = spawn("git", ["-C", repoPath, ...args], {
 			env: { ...inheritedEnv(), ...opts.env },
 			stdio: ["pipe", "pipe", "pipe"],

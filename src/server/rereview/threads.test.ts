@@ -1,5 +1,6 @@
 import { execFileSync } from "node:child_process";
-import { renameSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import fc from "fast-check";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
@@ -18,6 +19,7 @@ import type {
 	Snapshot,
 	ThreadAnchorRef,
 } from "../../shared/types";
+import { closeCatFiles } from "../catFile";
 import { buildSnapshot } from "../diff/snapshot";
 import { ThreadCodeSource } from "../threadCode";
 import {
@@ -1053,5 +1055,29 @@ describe("placeMoved on a cold cache (CAR-139 fix round 1)", () => {
 			),
 			{ numRuns: 15 },
 		);
+	});
+});
+
+describe("ThreadPlacer.text", () => {
+	it("keeps a file's absence, never a read that failed (CAR-320)", async () => {
+		const tmp = mkdtempSync(join(tmpdir(), "crb-placer-text-"));
+		try {
+			// No clone there yet: git fails, it doesn't say "no such file".
+			const clone = join(tmp, "clone.git");
+			const p = new ThreadPlacer(
+				clone,
+				new ThreadCodeSource(clone, async () => true),
+			);
+			expect(await p.text(H1, "a.ts")).toBeNull();
+			execFileSync("git", ["clone", "--quiet", "--bare", repo.path, clone], {
+				env: testGitEnv(),
+			});
+			expect((await p.text(H1, "a.ts"))?.length).toBeGreaterThan(0);
+			// A file that isn't there is kept as not there.
+			expect(await p.text(H1, "nope.ts")).toBeNull();
+		} finally {
+			await closeCatFiles();
+			rmSync(tmp, { recursive: true, force: true });
+		}
 	});
 });
