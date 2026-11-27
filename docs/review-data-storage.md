@@ -1173,12 +1173,18 @@ unreachable, so a later prune can drop them.
 - **When.** On opening a started review of a PR that is over (`Session`,
   in the background after the open's own writes; `close()` waits for it),
   and when Home lists a started review of a merged or closed PR (once per
-  process per review, one review at a time, off the request path). A
-  compacted ref with nothing new is left alone (its tip has no parent: one
-  `for-each-ref` tells). A write after compaction (marks on a merged PR stay
-  possible) lands on top as usual and is compacted on the next trigger.
+  process per review, one review at a time, off the request path; the
+  test hook's reset waits for one under way). The two share one run when
+  they ask at once. A compacted ref with nothing new is left alone (its tip
+  has no parent: one `for-each-ref` tells). A write after compaction (marks
+  on a merged PR stay possible) lands on top as usual; the ref is compacted
+  again only once `RECOMPACT_AFTER` (20) commits sit on its compacted root,
+  since each compaction leaves a full copy of the history unreachable until
+  a prune, and reviewers often finish a review after the merge.
 - **No event lost, no fold changed.** The compacted commit carries the
-  event lines over verbatim, in the order readers read them now (`git log
+  event lines over verbatim (every line past a message's summary line that
+  starts with `{`, trimmed: all `parseEventLines` can read; anything else
+  in a message, which no reader reads, is not kept), in the order readers read them now (`git log
   --reverse`, the summary line of each message skipped, as `parseEventLines`
   does), dropping only exact duplicate lines. Lines this version can't read
   (a newer crb's type or version, a malformed line) are kept too, since a
@@ -1189,12 +1195,17 @@ unreachable, so a later prune can drop them.
   (coverage, marks, carries, placements, agent threads, the review's
   metadata) identical by construction. A test folds a review with every
   kind of event before and after and gets the same state, the same lines
-  in the same order.
+  in the same order; another reads Home's started summary (coverage, last
+  action) and MCP's listing before and after.
 - **Marked.** The commit's last line is a `compacted` event (`by: "auto"`,
   `from`: the old tip, `commits`: how many it replaced), in every compacted
   ref, not only `meta`: refs are fetched one by one, so each must say it was
   rewritten. Readers fold nothing from it; older ones skip it as an unknown
-  type. Its summary line says `crb: compacted <n> commits`. The reviewer's
+  type. Its `ts` is when crb compacted, not anyone's activity: nothing that
+  shows or sorts by latest activity (Home's and search's "last acted", MCP's
+  `lastActivity`) counts it (`isActivity`, `events.ts`). Stampers (a new
+  event is stamped after the ref's newest) still see it, which only keeps
+  new events after it. Its summary line says `crb: compacted <n> commits`. The reviewer's
   refs keep the reviewer as author; `meta`'s is the reviewer whose crb
   compacted it.
 - **Concurrency.** Each ref is its own compare-and-swap (`update-ref <ref>
@@ -1215,10 +1226,15 @@ unreachable, so a later prune can drop them.
   --prune=<date>`, `git prune`) or a full repack that drops unreachable
   objects (`git repack -a -d` without `-k`/`-A`/`--cruft`). Until then
   compaction saves what a pack holds reachable, not disk. A safe policy
-  (proposed, not built): prune unreachable objects older than two weeks,
-  under the repo lock, at most weekly; crb needs no unreachable object for
-  that long (a PR head read by OID is fetched again on every open, and the
-  `compacted` event's `from` is informational).
+  (proposed, not built): `git prune --expire=2.weeks.ago`, at most weekly.
+  What makes it safe is the expiry window, not a lock: compaction and every
+  ref write run outside the repo lock, and a commit just built but not yet
+  swapped in is unreachable for that moment, so only objects older than the
+  window may go. crb needs no unreachable object for two weeks (a PR head
+  read by OID is fetched again on every open, and the `compacted` event's
+  `from` is informational). Reflogs keep old tips alive past a prune if a
+  user's global config sets `core.logAllRefUpdates=always`; crb's bare
+  clone writes none otherwise.
 
 Measured 2026-11-27 (git 2.53, a synthetic progress ref, one event per
 commit, random 64-hex cluster keys and snapshot ids):

@@ -306,6 +306,14 @@ describe("Session", () => {
 		expect(commits()).toBe(1);
 		const after = await Session.open(pr.arg, process.cwd());
 		expect((await after.review()).progress.clusters.reviewed).toBe(1);
+		// A mark after the merge lands on top; the next open leaves it there
+		// (not worth another full copy: RECOMPACT_AFTER).
+		await after.setStates(after.snapshot().revision, [
+			{ key: firstKey(after), state: "crossed-off" },
+		]);
+		await after.close();
+		await (await Session.open(pr.arg, process.cwd())).close();
+		expect(commits()).toBe(2);
 	});
 
 	it("keeps an unstarted review's snapshot when the PR is merged at a new head", async () => {

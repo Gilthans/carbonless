@@ -80,8 +80,8 @@ Foundation for everything below.
   milestone, which keeps refs local. See "Sync with the remote" in
   `docs/review-data-storage.md`.
 - **Compact a review when its PR is merged:** built (CAR-13); see
-  "Compaction" in `docs/review-data-storage.md`. Still open: (owner,
-  2026-11-08) (owner, 2026-11-08): once every line of a cluster is marked, its
+  "Compaction" in `docs/review-data-storage.md`. Still open (owner,
+  2026-11-08): once every line of a cluster is marked, its
   `lines-state` events compact to one whole `cluster-state`, and the
   `since-lines-state` events of a (since, path) to the last one.
 

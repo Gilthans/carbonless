@@ -12,7 +12,7 @@ import {
 	foldAgentThreads,
 } from "../agent/store.js";
 import { onSpawn } from "../spawnWatch.js";
-import { compactReview } from "./compact.js";
+import { compactReview, RECOMPACT_AFTER } from "./compact.js";
 import { type CrbEvent, newEvent, parseEventLines } from "./events.js";
 import { foldProgress } from "./fold.js";
 import { RefStore } from "./refStore.js";
@@ -225,6 +225,8 @@ async function readAll(id: string) {
 		threads: foldAgentThreads(
 			await fresh.readEvents(agentThreadsRef(id, "dan")),
 		),
+		// Thread moves and their undos, as the page reads them.
+		moves: await new AgentThreadStore(fresh, id, "dan").moves(),
 		reviews: await listReviews(repo),
 		pins: git(
 			"for-each-ref",
@@ -310,18 +312,41 @@ describe("compactReview", () => {
 		expect(again.compacted).toEqual([]);
 		expect(eventRefs(id).map((r) => git("rev-parse", r))).toEqual(tips);
 
-		// A mark after the merge lands on top, and folds in.
-		await store.appendEvent(
-			progressRef(id, "dan"),
-			"late",
-			mark(99, "reviewed"),
-			"dan",
-		);
+		// Marks after the merge land on top and fold in; a few aren't worth
+		// another full copy of the history (each compaction leaves one
+		// unreachable), RECOMPACT_AFTER are.
+		const dan = progressRef(id, "dan");
+		const late = async (from: number, n: number) => {
+			for (let i = 0; i < n; i++) {
+				await store.appendEvent(dan, "late", mark(from + i, "reviewed"), "dan");
+			}
+		};
+		await late(100, RECOMPACT_AFTER - 1);
+		const few = await compactReview(store, id, "dan");
+		expect(few.compacted).toEqual([]);
+		expect(commitCount(dan)).toBe(RECOMPACT_AFTER);
+		await late(200, 1);
 		const before = await readAll(id);
 		const third = await compactReview(store, id, "dan");
-		expect(third.compacted.map((c) => c.ref)).toEqual([progressRef(id, "dan")]);
-		expect(commitCount(progressRef(id, "dan"))).toBe(1);
+		expect(third.compacted.map((c) => c.ref)).toEqual([dan]);
+		expect(commitCount(dan)).toBe(1);
 		expect(await readAll(id)).toEqual(before);
+		// The threshold is an option: one late mark, compacted at 1.
+		await late(300, 1);
+		const one = await compactReview(store, id, "dan", { recompactAfter: 1 });
+		expect(one.compacted.map((c) => c.ref)).toEqual([dan]);
+	});
+
+	it("shares one compaction of a review among those who ask at once", async () => {
+		const id = await seedReview(3);
+		const a = compactReview(store, id, "dan");
+		const b = compactReview(new RefStore(repo), id, "dan");
+		expect(b).toBe(a);
+		expect((await a).compacted.length).toBeGreaterThan(0);
+		// Once it's done, a new ask runs anew (and finds nothing to do).
+		const c = compactReview(store, id, "dan");
+		expect(c).not.toBe(a);
+		expect((await c).compacted).toEqual([]);
 	});
 
 	it("keeps a write that lands while it compacts (compare-and-swap, then again)", async () => {

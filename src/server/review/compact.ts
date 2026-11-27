@@ -1,13 +1,15 @@
 import { runGit } from "../git.js";
 import { tracer } from "../trace.js";
-import { isSlug, newEvent } from "./events.js";
+import { isSlug, newEvent, parseEventLines } from "./events.js";
 import { RefConflictError, RefStore } from "./refStore.js";
 
 /*
  * Compaction (docs/review-data-storage.md, "Compaction"): once a review's PR
  * is merged or closed (GitHub's state, principle 7), each of its event refs
- * is rewritten to one root commit holding every event line of its history,
- * verbatim and in the order readers see them now, plus a `compacted` event.
+ * is rewritten to one root commit holding every event line of its history
+ * (each message's lines past its summary that start with `{`, trimmed: all
+ * a reader can parse; nothing else is kept), verbatim and in the order
+ * readers see them now, plus a `compacted` event.
  * The old commits become unreachable; git drops them only when something
  * prunes (crb never does; same doc). Nothing a reader folds can change: the
  * lines are the same lines in the same order, so every fold (coverage,
@@ -21,6 +23,14 @@ const REVIEW_ID = /^[0-9a-hjkmnp-tv-z]{26}$/;
 
 /** Tries per ref: each lost compare-and-swap race reads the new tip and builds again. */
 const MAX_TRIES = 5;
+
+/**
+ * A ref compacted before is compacted again only once this many commits
+ * sit on its compacted root: each compaction leaves a full copy of the
+ * history unreachable (kept until a prune), so a few marks made after the
+ * merge don't each cost one.
+ */
+export const RECOMPACT_AFTER = 20;
 
 interface CompactedRef {
 	ref: string;
@@ -37,6 +47,8 @@ interface CompactedRef {
 export interface CompactOptions {
 	/** Test hook: runs after the compacted commit is built, before the ref is swapped. */
 	beforeSwap?: (ref: string) => Promise<void>;
+	/** Commits on a compacted root that make it compact again (default RECOMPACT_AFTER). */
+	recompactAfter?: number;
 }
 
 export interface CompactResult {
@@ -55,11 +67,33 @@ export interface CompactResult {
  * the other reviews in the clone: one for-each-ref, then per ref a log, a
  * commit-tree and an update-ref.
  */
-export async function compactReview(
+export function compactReview(
 	store: RefStore,
 	reviewId: string,
 	actor: string,
 	options: CompactOptions = {},
+): Promise<CompactResult> {
+	if (options.beforeSwap) return compactNow(store, reviewId, actor, options);
+	// One compaction per review at a time in this process (a Session's and
+	// Home's of one review): a second ask shares the first's work.
+	const key = `${store.repo}\0${reviewId}`;
+	const running = inFlight.get(key);
+	if (running !== undefined) return running;
+	const run = compactNow(store, reviewId, actor, options).finally(() =>
+		inFlight.delete(key),
+	);
+	inFlight.set(key, run);
+	return run;
+}
+
+/** Compactions under way, by `<repo>\0<review id>`. */
+const inFlight = new Map<string, Promise<CompactResult>>();
+
+async function compactNow(
+	store: RefStore,
+	reviewId: string,
+	actor: string,
+	options: CompactOptions,
 ): Promise<CompactResult> {
 	if (!REVIEW_ID.test(reviewId)) {
 		throw new Error(`Invalid review id: ${reviewId}`);
@@ -117,11 +151,15 @@ async function eventRefs(
 	return refs;
 }
 
-/** The event lines of `tip`'s history as readers see them: oldest commit first, the summary line skipped. */
+/**
+ * The event lines of `tip`'s history as readers see them: oldest commit
+ * first, the summary line skipped. `compactedRoot`: its first commit is a
+ * compaction's.
+ */
 async function historyOf(
 	store: RefStore,
 	tip: string,
-): Promise<{ commits: number; lines: string[] }> {
+): Promise<{ commits: number; lines: string[]; compactedRoot: boolean }> {
 	const out = await runGit(store.repo, [
 		"--no-replace-objects",
 		"-c",
@@ -132,13 +170,17 @@ async function historyOf(
 		"-z",
 		"--reverse",
 		"--no-color",
-		"--format=%B",
+		"--format=%H%n%B",
 		"--end-of-options",
 		tip,
 	]);
-	const records = out.split("\0");
-	// `-z` ends the last record with nothing after it.
-	if (records[records.length - 1]?.trim() === "") records.pop();
+	// Each record is its commit's OID, then its message; `-z` ends the last
+	// one with nothing after it.
+	const records: string[] = [];
+	for (const record of out.split("\0")) {
+		const oid = /^[0-9a-f]{40,64}(?:\n|$)/.exec(record);
+		if (oid) records.push(record.slice(oid[0].length));
+	}
 	const lines: string[] = [];
 	const seen = new Set<string>();
 	for (const body of records) {
@@ -151,7 +193,10 @@ async function historyOf(
 			lines.push(text);
 		}
 	}
-	return { commits: records.length, lines };
+	const compactedRoot = parseEventLines(records[0] ?? "").some(
+		(e) => e.type === "compacted",
+	);
+	return { commits: records.length, lines, compactedRoot };
 }
 
 async function compactRef(
@@ -163,9 +208,12 @@ async function compactRef(
 ): Promise<CompactedRef | null> {
 	let tip: string | null = firstTip;
 	for (let attempt = 1; ; attempt++) {
-		const { commits, lines } = await historyOf(store, tip);
+		const { commits, lines, compactedRoot } = await historyOf(store, tip);
 		// Already one commit (another compaction won the race): done.
 		if (commits <= 1) return null;
+		// Compacted before, and too little on top yet to be worth a copy.
+		const after = options.recompactAfter ?? RECOMPACT_AFTER;
+		if (compactedRoot && commits - 1 < after) return null;
 		const marker = newEvent(
 			"compacted",
 			author,
@@ -235,7 +283,7 @@ export class Compactions {
 		});
 	}
 
-	/** Resolves once nothing queued runs. */
+	/** Resolves once nothing queued runs (the test hook's reset waits for it). */
 	idle(): Promise<void> {
 		return this.#queue;
 	}

@@ -277,6 +277,11 @@ export class HomeService {
 		for (const listener of this.#onReset) listener();
 	}
 
+	/** Resolves once no compaction it started runs (the test hook's reset waits for it). */
+	compactionsIdle(): Promise<void> {
+		return this.#compactions.idle();
+	}
+
 	/** The repos it keeps facts for (the test hook's state). */
 	cachedRepos(): string[] {
 		return [...this.#repos.keys()];

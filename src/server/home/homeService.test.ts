@@ -568,6 +568,9 @@ describe("HomeService", () => {
 		await refresh(home);
 		await load(home);
 		await compactions.idle();
+		// Once each: Home's answers after that ask for nothing more.
+		await refresh(home);
+		await compactions.idle();
 		const clone = clonePath("acme", "api");
 		// 5 merged and 6 closed; never 3 (open), nor a review as of a cutoff.
 		expect(calls.sort()).toEqual([

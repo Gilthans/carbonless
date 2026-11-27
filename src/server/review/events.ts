@@ -587,6 +587,16 @@ export function serializeCommitMessage(
 }
 
 /**
+ * Whether an event is something someone did (a mark, a start, a message):
+ * false for crb's own bookkeeping (compaction's `compacted` marker), whose
+ * `ts` is when crb wrote it. Every "last acted" or "latest activity" reads
+ * only these.
+ */
+export function isActivity(e: CrbEvent): boolean {
+	return e.type !== "compacted";
+}
+
+/**
  * Reads the events from a commit message. The message is untrusted: the
  * summary line, blank or invalid lines, unknown types and versions, and
  * malformed events are skipped, and so is any cluster-state not written by a

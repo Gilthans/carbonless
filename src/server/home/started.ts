@@ -6,7 +6,7 @@ import type { Snapshot } from "../../shared/types.js";
 import { buildSnapshot } from "../diff/snapshot.js";
 import { cacheDir } from "../paths.js";
 import { buildReviewView } from "../review/coverage.js";
-import type { CrbEvent } from "../review/events.js";
+import { type CrbEvent, isActivity } from "../review/events.js";
 import { foldProgress } from "../review/fold.js";
 import { RefStore } from "../review/refStore.js";
 import { reviewCreated } from "../review/reviews.js";
@@ -324,7 +324,8 @@ function summary(
 	const progress = foldProgress(events);
 	if (!progress.patchset) return null;
 	let last = 0;
-	for (const e of events) if (e.ts > last) last = e.ts;
+	// Only what the reviewer did: never compaction's marker (CAR-13).
+	for (const e of events) if (isActivity(e) && e.ts > last) last = e.ts;
 	const { owner, repo: name, number } = created.pr;
 	return {
 		owner,
