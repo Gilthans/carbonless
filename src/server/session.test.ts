@@ -3562,6 +3562,135 @@ describe("Session", () => {
 			await s.close();
 		});
 
+		/** A commit on origin with a.txt as `text` on `parents[0]`'s tree. */
+		const commitWithParents = (
+			parents: string[],
+			text: string,
+			msg: string,
+		) => {
+			const [first, ...rest] = parents;
+			if (!first) throw new Error("no parent");
+			const one = commitOnOrigin(first, text, msg);
+			if (rest.length === 0) return one;
+			const tree = originGit("rev-parse", `${one}^{tree}`);
+			return originGit(
+				"commit-tree",
+				tree,
+				...parents.flatMap((p) => ["-p", p]),
+				"-m",
+				msg,
+			);
+		};
+
+		it.each([
+			["a rebase onto the moved base", "rebase"],
+			["a merge of the moved base into the PR", "merge"],
+		] as const)(
+			"after %s, a removed line on a viewed head nobody marked names that head's own merge base, in next, threads, the code window, a view and file (CAR-315)",
+			async (_, how) => {
+				const s = await Session.open(pr.arg, process.cwd());
+				const host = s.agent;
+				if (!host) throw new Error("no agent");
+				await s.setStates((await s.review()).revision, [
+					{ key: firstKey(s), state: "reviewed" },
+				]);
+				const h1 = pr.head();
+				const m1 = pr.mergeBase;
+				// main moves (line 6); the PR takes it: H2, merge base M2.
+				const m2 = commitOnOrigin(
+					m1,
+					numbered((l) => {
+						l[5] = "line 6 from main";
+					}),
+					"main moves",
+				);
+				pr.moveMain(m2);
+				const h2 = commitWithParents(
+					how === "rebase" ? [m2] : [h1, m2],
+					numbered((l) => {
+						l[1] = "line 2 rebased";
+						l[5] = "line 6 from main";
+						l[25] = "line 26 changed";
+					}),
+					"PR takes main",
+				);
+				originGit("update-ref", "refs/pull/12/head", h2);
+				pr.scenario({
+					prs: {
+						12: { view: prView({ headRefOid: h2, baseRefName: "main" }) },
+					},
+				});
+				await s.checkHead();
+				await s.viewHead(h2);
+				// The review's own merge base is still M1: H2 is no patch set.
+				expect(s.snapshot().base).toBe(m1);
+				expect(s.info().patchsets.map((p) => p.head)).not.toContain(h2);
+				const x = await host.open({
+					clientId: "q1",
+					text: "Why removed?",
+					span: { ...onA(h2, 2), side: "LEFT", startSide: "LEFT" },
+					view: { target: { head: h2 }, from: { branch: true } },
+				});
+				// The view stored with the question: M2..H2, as the page showed it.
+				expect(x.messages[0]?.view).toMatchObject({ left: m2, base: m2 });
+				const token = await joinAgent(host);
+				const q = await host.sessionNext(token);
+				expect(q?.thread).toBe(x.id);
+				expect(q?.envelope).toMatchObject({
+					thread: { anchor: { commit: m2, side: "LEFT", line: 2 } },
+				});
+				// The file the anchor names is M2's: line 6 is main's.
+				expect(q?.anchoredFile?.commit).toBe(m2);
+				expect(q?.anchoredFile?.text).toContain("line 6 from main");
+				expect(q?.hunk?.split("\n")).toContain("-line 2");
+				const listed = (await host.sessionThreads(token)).find(
+					(t) => t.id === x.id,
+				);
+				expect(listed?.anchor).toMatchObject({ commit: m2, side: "LEFT" });
+				// (The page builds no code window here, as for a GitHub comment
+				// whose base moved: threadCode's tip check. host.test covers a
+				// code window's anchor on such a head.)
+				if (listed?.code) {
+					expect(listed.code.anchor).toMatchObject({ commit: m2 });
+				}
+				// The agent may read the commit it was told.
+				await expect(
+					host.sessionFile(token, { path: "a.txt", commit: m2 }),
+				).resolves.toMatchObject({ commit: m2 });
+				await s.close();
+			},
+		);
+
+		it("a removed line on a head whose merge base can't be read says so, never the review's merge base (CAR-315)", async () => {
+			const s = await Session.open(pr.arg, process.cwd());
+			const host = s.agent;
+			if (!host) throw new Error("no agent");
+			const gone = "7".repeat(40);
+			const y = await host.open({
+				clientId: "q1",
+				text: "And this?",
+				span: { ...onA(gone, 2), side: "LEFT", startSide: "LEFT" },
+			});
+			const token = await joinAgent(host);
+			const q = await host.sessionNext(token);
+			expect(q?.thread).toBe(y.id);
+			const envelope = q?.envelope as {
+				thread: { anchor: { commit: string } };
+				notice?: string;
+			};
+			expect(envelope.thread.anchor.commit).not.toBe(pr.mergeBase);
+			expect(envelope.thread.anchor.commit).toBe("");
+			expect(envelope.notice).toContain(
+				`The merge base of ${gone} can't be read now`,
+			);
+			expect(q?.anchoredFile).toBeNull();
+			const listed = (await host.sessionThreads(token)).find(
+				(t) => t.id === y.id,
+			);
+			expect(listed?.anchor).toMatchObject({ commit: "" });
+			await s.close();
+		});
+
 		it("a conversation on a commit a force-push dropped, missing from crb's clone: fetched by OID for its hunk; one that can't be fetched gives the notice and no hunk (CAR-53)", async () => {
 			const s = await Session.open(pr.arg, process.cwd());
 			const host = s.agent;

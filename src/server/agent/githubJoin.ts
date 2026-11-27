@@ -96,12 +96,15 @@ export function orphanAnchor(a: ThreadAnchor): AgentAnchor {
  * snapshot's merge base): the right is the viewed patch set's head or the
  * viewed head; the left is the compared-from patch set's head, or for the
  * base branch the viewed patch set's merge base (a head's patch set's, else
- * `base`); `base`, that merge base (what LEFT lines are numbered in). Null for a patch set that isn't one, or a head that isn't an OID.
+ * `headBase`, that head's own merge base with the base branch, CAR-315;
+ * else `base`); `base`, that merge base (what LEFT lines are numbered in).
+ * Null for a patch set that isn't one, or a head that isn't an OID.
  */
 export function resolveView(
 	view: Omit<AgentView, "left" | "right">,
 	patchsets: readonly { number: number; head: string; mergeBase: string }[],
 	base: string,
+	headBase?: string,
 ): AgentView | null {
 	const ps = (n: number) => patchsets.find((p) => p.number === n);
 	let right: string;
@@ -115,7 +118,8 @@ export function resolveView(
 		const head = view.target.head;
 		if (!OID.test(head)) return null;
 		right = head;
-		mergeBase = patchsets.find((p) => p.head === head)?.mergeBase ?? base;
+		mergeBase =
+			patchsets.find((p) => p.head === head)?.mergeBase ?? headBase ?? base;
 	}
 	let left: string;
 	if ("branch" in view.from) left = mergeBase;

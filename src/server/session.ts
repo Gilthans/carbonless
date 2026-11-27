@@ -474,6 +474,7 @@ export class Session {
 			snapshot: () => this.#snapshot,
 			fileSnapshot: (base, head, path) =>
 				this.#agentFileSnapshot(base, head, path),
+			headMergeBase: (head) => this.#agentHeadBase(head),
 			prFacts: async () => {
 				const o = await this.overview();
 				return { title: o.title, body: o.body };
@@ -1928,19 +1929,32 @@ export class Session {
 		checkOid(head);
 		if (base !== null) checkOid(base);
 		if (!isSafePath(path)) throw new Error("its path isn't a safe one");
+		const from = base ?? (await this.#agentHeadBase(head));
 		await this.#agentCommit(head);
-		const from =
-			base ??
-			(
-				await runGit(
-					this.repo,
-					["merge-base", `refs/remotes/origin/${this.#meta.baseBranch}`, head],
-					{ signal: this.#stop.signal },
-				)
-			).trim();
 		checkOid(from);
 		await this.#agentCommit(from);
 		return fileSnapshot(this.repo, from, head, path);
+	}
+
+	/**
+	 * `head`'s own merge base with the base branch, as a viewed head's
+	 * snapshot takes it (#headSnapshot): what the page diffs a head no
+	 * patch set has against, so what an agent's LEFT anchor there names
+	 * (CAR-315). A commit the clone lacks is fetched by OID (#agentCommit).
+	 * A checked OID; throws when it can't be read.
+	 */
+	async #agentHeadBase(head: string): Promise<string> {
+		checkOid(head);
+		await this.#agentCommit(head);
+		const base = (
+			await runGit(
+				this.repo,
+				["merge-base", `refs/remotes/origin/${this.#meta.baseBranch}`, head],
+				{ signal: this.#stop.signal },
+			)
+		).trim();
+		checkOid(base);
+		return base;
 	}
 
 	/** Commits an agent's file snapshot couldn't fetch, until when (ms). */

@@ -131,6 +131,7 @@ const facts = (): RunnerFacts => ({
 	}),
 	anchored: async () => null,
 	hunk: async () => null,
+	headBase: async () => origin.shas[0] as string,
 	authorOf: async () => "reviewer",
 	join: async (folds: AgentThreadFold[]) => folds,
 	github: async () => null,

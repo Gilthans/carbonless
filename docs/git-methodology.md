@@ -225,6 +225,10 @@ there, CAR-293) alike when PS2 was rebased or merged the base in
 (`engine.test.ts`). After a retarget each patch set
 keeps the base branch it was reviewed against (its graph card's "Against";
 only the head's card names the PR's current base; `session.test.ts`, S7).
+An agent conversation on a removed line of a head nobody marked yet (no
+patch set) names that head's own merge base, the one the page diffed it
+against, after a rebase and after a merge of the base alike (CAR-315,
+`session.test.ts`).
 
 Add new history-sensitive behaviour to the matrix rather than to a single
 fixture shape.

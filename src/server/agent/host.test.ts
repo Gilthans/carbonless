@@ -528,6 +528,11 @@ describe("AgentHost with a session joined through MCP", () => {
 			return key in fileAt ? (fileAt[key] ?? null) : { text: "hello\n" };
 		},
 		hunk: async () => "@@ -1 +1 @@\n-a\n+b",
+		headBase: async (h) => {
+			const b = headBaseOf[h];
+			if (b instanceof Error) throw b;
+			return b ?? mergeBase;
+		},
 		authorOf: async () => "reviewer",
 		join: async (folds) => folds,
 		github: async () => ghThread,
@@ -540,6 +545,8 @@ describe("AgentHost with a session joined through MCP", () => {
 	let prFiles: string[];
 	/** Files the stub `anchored` reads, by `<commit>:<path>` (others: "hello\n"). */
 	let fileAt: Record<string, { text: string } | null>;
+	/** A head's own merge base as the stub facts read it (default: the review's); an Error: unreadable. */
+	let headBaseOf: Record<string, string | Error>;
 	const PATCHSETS: PromptPatchset[] = [
 		{
 			number: 1,
@@ -651,6 +658,7 @@ describe("AgentHost with a session joined through MCP", () => {
 		acpSeen = undefined;
 		prFiles = ["a.txt"];
 		fileAt = {};
+		headBaseOf = {};
 		ghDown = false;
 		onThread = undefined;
 		ghComments = undefined;
@@ -2076,6 +2084,100 @@ describe("AgentHost with a session joined through MCP", () => {
 				commit: M2,
 				text: "patch set 2's base\n",
 			});
+		});
+
+		it("a span on a removed line of a head no patch set has: threads, its code window and next name that head's own merge base (CAR-315)", async () => {
+			patchsets = [PS1];
+			mergeBase = M1;
+			head = H1;
+			codeWindow = windowOf;
+			const H9 = "9".repeat(40);
+			const M9 = "8".repeat(40);
+			headBaseOf[H9] = M9;
+			fileAt[`${M9}:src/cache.ts`] = { text: "the rebased head's base\n" };
+			const x = await host.open({
+				clientId: "c1",
+				text: "Why was this removed?",
+				span: removedLine(H9),
+			});
+			const token = await approve();
+			const listed = (await host.sessionThreads(token)).find(
+				(t) => t.id === x.id,
+			);
+			expect(listed?.anchor).toMatchObject(onBase(M9));
+			expect(listed?.code?.anchor).toMatchObject(onBase(M9));
+			const q = await host.sessionNext(token);
+			expect(codeOf(q)?.thread.anchor).toMatchObject(onBase(M9));
+			expect(q?.anchoredFile).toMatchObject({
+				commit: M9,
+				text: "the rebased head's base\n",
+			});
+			expect(codeOf(q)?.notice ?? "").not.toContain("merge base of");
+		});
+
+		/**
+		 * CAR-315: after a rebase, GitHub's thread sits on a removed line of
+		 * a head nobody marked (no patch set). Its line is numbered in that
+		 * head's own merge base, not the review's: next and threads name it;
+		 * one that can't be read names no commit and says so.
+		 */
+		it("a GitHub thread on a removed line of a head no patch set has: next and threads name that head's own merge base; unreadable, no commit and a notice (CAR-315)", async () => {
+			patchsets = [PS1];
+			mergeBase = M1;
+			head = H1;
+			const H9 = "9".repeat(40);
+			const M9 = "8".repeat(40);
+			headBaseOf[H9] = M9;
+			ghThreads = [
+				{
+					id: "PRRT_9",
+					path: "src/cache.ts",
+					commit: H9,
+					resolved: false,
+					anchor: {
+						side: "LEFT",
+						line: 20,
+						startSide: "LEFT",
+						startLine: 20,
+					},
+				} as unknown as ReviewThread,
+			];
+			ghThread = { ...ghFacts(false), path: "src/cache.ts", openedOn: H9 };
+			fileAt[`${M9}:src/cache.ts`] = { text: "the rebased head's base\n" };
+			const x = await host.open({
+				clientId: "c1",
+				text: "Is this right?",
+				thread: "PRRT_9",
+			});
+			const token = await approve();
+			const listed = (await host.sessionThreads(token)).find(
+				(t) => t.id === x.id,
+			);
+			expect(listed?.anchor).toMatchObject(onBase(M9));
+			const q = await host.sessionNext(token);
+			expect(codeOf(q)?.thread.anchor).toMatchObject(onBase(M9));
+			expect(q?.anchoredFile).toMatchObject({
+				commit: M9,
+				text: "the rebased head's base\n",
+			});
+
+			headBaseOf[H9] = new Error("commit gone");
+			const again = (await host.sessionThreads(token)).find(
+				(t) => t.id === x.id,
+			);
+			expect(again?.anchor).toMatchObject({ commit: "" });
+			await host.sessionReply(token, {
+				thread: x.id,
+				replyTo: q?.replyTo as string,
+				text: "Looks fine.",
+			});
+			await host.message(x.id, { clientId: "c2", text: "Sure?" });
+			const q2 = await host.sessionNext(token);
+			expect(codeOf(q2)?.thread.anchor).toMatchObject({ commit: "" });
+			expect(codeOf(q2)?.thread.anchor).not.toMatchObject({ commit: M1 });
+			expect(codeOf(q2)?.notice).toContain(
+				`The merge base of ${H9} can't be read now (commit gone)`,
+			);
 		});
 
 		/**
