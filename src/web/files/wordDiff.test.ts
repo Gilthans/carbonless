@@ -1,7 +1,14 @@
 import DiffMatchPatch from "diff-match-patch";
+import fc from "fast-check";
 import { describe, expect, it } from "vitest";
 import type { Mark } from "../code/Invisibles";
-import { tokenize, tokenMarks, WORD_DIFF_MAX, wordMarks } from "./wordDiff";
+import {
+	groupMarks,
+	tokenize,
+	tokenMarks,
+	WORD_DIFF_MAX,
+	wordMarks,
+} from "./wordDiff";
 
 /** A small seeded PRNG (mulberry32), so a failure reproduces. */
 function rng(seed: number) {
@@ -792,4 +799,282 @@ describe("wordMarks", () => {
 		},
 		LOADED,
 	);
+});
+
+describe("groupMarks", () => {
+	const split = (one: string, run: string[], markdown = false) =>
+		groupMarks({ one, run, oneIsOld: true, markdown });
+	/** The range of `part` in `text` (its first occurrence from `from`). */
+	const at = (text: string, part: string, from = 0): Mark => {
+		const i = text.indexOf(part, from);
+		expect(i).toBeGreaterThanOrEqual(0);
+		return [i, i + part.length];
+	};
+
+	const def = "def load(path, retries=3, timeout=30):";
+	it("marks nothing in a pure split", () => {
+		const run = [
+			"def load(",
+			"    path,",
+			"    retries=3,",
+			"    timeout=30",
+			"):",
+		];
+		expect(split(def, run)).toEqual({ one: [], run: [[], [], [], [], []] });
+		expect(
+			groupMarks({ one: def, run, oneIsOld: false, markdown: false }),
+		).toEqual({ one: [], run: [[], [], [], [], []] });
+	});
+	it("marks only a new trailing comma, on its line", () => {
+		const run = [
+			"def load(",
+			"    path,",
+			"    retries=3,",
+			"    timeout=30,",
+			"):",
+		];
+		expect(split(def, run)).toEqual({
+			one: [],
+			run: [[], [], [], [at(run[3] as string, ",")], []],
+		});
+	});
+	it("marks the added words of a wrapped comment on both lines, not its leader or kept comma", () => {
+		const one = "  // Scale each row by the factor and matrix, rows first";
+		const run = [
+			"  // Scale each row by the given factor and matrix,",
+			"  // rows first, then the columns",
+		];
+		const r0 = run[0] as string;
+		const r1 = run[1] as string;
+		expect(split(one, run)).toEqual({
+			one: [],
+			run: [[at(r0, "given ")], [at(r1, ", then the columns")]],
+		});
+	});
+	it("marks only the changed number of a join, on each side", () => {
+		const run = ["items", "  .map(price)", "  .reduce(sum, 0);"];
+		const one = "items.map(price).reduce(sum, 1);";
+		expect(groupMarks({ one, run, oneIsOld: false, markdown: false })).toEqual({
+			one: [at(one, "1")],
+			run: [[], [], [at(run[2] as string, "0")]],
+		});
+	});
+	it("marks nothing in a CRLF file's pure split", () => {
+		const run = [
+			"def load(",
+			"    path,",
+			"    retries=3,",
+			"    timeout=30",
+			"):",
+		];
+		expect(
+			split(
+				`${def}\r`,
+				run.map((l) => `${l}\r`),
+			),
+		).toEqual({
+			one: [],
+			run: [[], [], [], [], []],
+		});
+	});
+	it("marks the odd \\r of a mixed file", () => {
+		// The one line is CRLF, the run's last line isn't: the one line's \r.
+		expect(split("foo bar\r", ["foo\r", "bar"])).toEqual({
+			one: [[7, 8]],
+			run: [[], []],
+		});
+		// The one line is LF: every run line's \r.
+		expect(split("foo bar", ["foo\r", "bar\r"])).toEqual({
+			one: [],
+			run: [[[3, 4]], [[3, 4]]],
+		});
+		// Both sides CRLF but a middle line LF: nothing to mark.
+		expect(split("a b c\r", ["a\r", "b", "c\r"])).toEqual({
+			one: [],
+			run: [[], [], []],
+		});
+	});
+	it("marks a Markdown bullet's or heading's new leader", () => {
+		expect(split("* one two", ["* one", "* two"], true)).toEqual({
+			one: [],
+			run: [[], [[0, 1]]],
+		});
+		expect(split("# A long heading", ["# A long", "# heading"], true)).toEqual({
+			one: [],
+			run: [[], [[0, 1]]],
+		});
+	});
+	it("keeps a code comment's leader plain", () => {
+		expect(split("// A long comment", ["// A long", "// comment"])).toEqual({
+			one: [],
+			run: [[], []],
+		});
+		expect(split("# A long comment", ["# A long", "  # comment"])).toEqual({
+			one: [],
+			run: [[], []],
+		});
+		expect(split("  /// Doc for it", ["  /// Doc", "  ///  for it"])).toEqual({
+			one: [],
+			run: [[], []],
+		});
+		expect(split("   * a b", ["   * a", "   * b"])).toEqual({
+			one: [],
+			run: [[], []],
+		});
+	});
+	it("marks a leader that differs from the one line's", () => {
+		expect(split("/// a b", ["/// a", "// b"])).toEqual({
+			one: [],
+			run: [[], [[0, 2]]],
+		});
+	});
+	it("marks a comment's continuation that isn't a comment", () => {
+		expect(split("// a b", ["// a", "b()"])).toEqual({
+			one: [],
+			run: [[], [[1, 3]]],
+		});
+	});
+	it("never reads two words across a break as one", () => {
+		expect(split("foo bar", ["foo", "bar"])).toEqual({
+			one: [],
+			run: [[], []],
+		});
+		expect(split("foobar", ["foo", "bar"])).toEqual({
+			one: [[0, 6]],
+			run: [[[0, 3]], [[0, 3]]],
+		});
+	});
+	it("lets a break take the one line's spaces however the diff matched them", () => {
+		// The run's trailing space matches the one line's second space; the
+		// break still takes the first.
+		expect(
+			groupMarks({
+				one: "  foo",
+				run: ["@ ", "foo"],
+				oneIsOld: false,
+				markdown: false,
+			}),
+		).toEqual({ one: [], run: [[[0, 1]], []] });
+	});
+	it("marks an added trailing space before a break", () => {
+		expect(split("a.b", ["a. ", "b"])).toEqual({
+			one: [],
+			run: [[[2, 3]], []],
+		});
+	});
+	it("never bridges two marks across the break", () => {
+		expect(split("foo bar", ["fox", "baz"])).toEqual({
+			one: [
+				[0, 3],
+				[4, 7],
+			],
+			run: [[[0, 3]], [[0, 3]]],
+		});
+	});
+	it("marks nothing at the length cut", () => {
+		const long = `a ${"b".repeat(WORD_DIFF_MAX)}`;
+		expect(split(long, ["a", "c"])).toEqual({ one: [], run: [[], []] });
+		// The run joined: 511 + 1 + 512 = 1,024 characters.
+		const run = ["a".repeat(511), "b".repeat(512)];
+		expect(split("x", run)).toEqual({ one: [], run: [[], []] });
+		// One character under it still marks.
+		expect(split("x", ["a".repeat(511), "b".repeat(511)]).one).toEqual([
+			[0, 1],
+		]);
+	});
+
+	describe("properties", () => {
+		const piece = fc.constantFrom(
+			"foo",
+			"bar",
+			"x1",
+			"go",
+			".",
+			",",
+			"(",
+			")",
+			"=",
+			" ",
+			"  ",
+			"\t",
+		);
+		/** A line, and its run: broken at token boundaries, re-indented. */
+		const splitLine = fc
+			.tuple(
+				fc.array(piece, { minLength: 1, maxLength: 30 }),
+				fc.array(fc.nat(), { maxLength: 8 }),
+				fc.array(fc.constantFrom("", "  ", "\t", "    "), {
+					minLength: 9,
+					maxLength: 9,
+				}),
+				fc.array(fc.boolean(), { minLength: 9, maxLength: 9 }),
+				fc.boolean(),
+			)
+			.map(([pieces, cuts, indents, keep, markdown]) => {
+				const one = pieces.join("");
+				const tokens = tokenize(one);
+				const at = [
+					...new Set(cuts.map((c) => 1 + (c % Math.max(1, tokens.length)))),
+				]
+					.filter((c) => c < tokens.length)
+					.sort((a, b) => a - b);
+				const run: string[] = [];
+				const starts: number[] = [];
+				let from = 0;
+				for (const [k, to] of [...at, tokens.length].entries()) {
+					let text = tokens.slice(from, to).join("");
+					if (k > 0) {
+						text = (indents[k] as string) + text.replace(/^[ \t]+/, "");
+						starts.push((indents[k] as string).length);
+						if (!keep[k - 1]) {
+							run[k - 1] = (run[k - 1] as string).replace(/[ \t]+$/, "");
+						}
+					} else starts.push(0);
+					run.push(text);
+					from = to;
+				}
+				// A blank line's indentation goes with the next line's drop.
+				for (const [k, text] of run.entries()) {
+					starts[k] = Math.min(starts[k] as number, text.length);
+				}
+				return { one, run, starts, markdown };
+			});
+		it("marks nothing in a pure split or join", () => {
+			fc.assert(
+				fc.property(splitLine, fc.boolean(), ({ one, run, markdown }, old) => {
+					expect(groupMarks({ one, run, oneIsOld: old, markdown })).toEqual({
+						one: [],
+						run: run.map(() => []),
+					});
+				}),
+			);
+		});
+		it("marks one inserted token, on its line, and nothing else", () => {
+			fc.assert(
+				fc.property(
+					splitLine,
+					fc.nat(),
+					fc.nat(),
+					fc.constantFrom("@", "!", "?"),
+					fc.boolean(),
+					({ one, run, starts, markdown }, line, pos, token, old) => {
+						const k = line % run.length;
+						const text = run[k] as string;
+						const start = starts[k] as number;
+						const bounds = [...boundaries(text.slice(start))].map(
+							(b) => b + start,
+						);
+						const p = bounds[pos % bounds.length] as number;
+						const changed = [...run];
+						changed[k] = text.slice(0, p) + token + text.slice(p);
+						const want = run.map((): Mark[] => []);
+						want[k] = [[p, p + 1]];
+						expect(
+							groupMarks({ one, run: changed, oneIsOld: old, markdown }),
+						).toEqual({ one: [], run: want });
+					},
+				),
+			);
+		});
+	});
 });
