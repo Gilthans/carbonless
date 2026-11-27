@@ -128,14 +128,16 @@ const INPUTS = ["wheel", "touchstart", "keydown"] as const;
 /**
  * Before a pick: where the reader is in `section`'s view, and once the
  * new view (`renderer`, on the section's `data-renderer`) shows its lines,
- * scrolls that place back where it was. A view with no lines (Image) puts
- * its view bar back where it was pinned instead. Gives up after `wait` ms
- * or once the reader scrolls themselves. Returns null when there's no
- * place to keep (the file's start is in view).
+ * scrolls that place back where it was, and keeps it there for `settle`
+ * ms while late rows land (marks, notes, an image's size). A view with no
+ * lines (Image) puts its view bar back where it was pinned instead. Gives
+ * up after `wait` ms, and stops at once when the reader scrolls or types
+ * themselves. Returns null when there's no place to keep (the file's
+ * start is in view).
  */
 export function keepPlace(
 	section: HTMLElement,
-	wait = 5000,
+	{ wait = 5000, settle = 1000 } = {},
 ): ((renderer: string) => () => void) | null {
 	const bar = section.querySelector<HTMLElement>("[data-view-bar]");
 	const stack = stickyBottom(bar ?? section);
@@ -145,32 +147,45 @@ export function keepPlace(
 	const { line, y: was } = place;
 	return (renderer) => {
 		let frame = 0;
-		const observer = new MutationObserver(() => {
+		let placed = false;
+		const schedule = () => {
 			if (!frame) frame = requestAnimationFrame(attempt);
-		});
+		};
+		const observer = new MutationObserver(schedule);
+		const resized =
+			typeof ResizeObserver === "undefined"
+				? null
+				: new ResizeObserver(schedule);
 		const stop = () => {
 			cancelAnimationFrame(frame);
 			observer.disconnect();
+			resized?.disconnect();
 			clearTimeout(timer);
 			for (const e of INPUTS) window.removeEventListener(e, stop, true);
 		};
-		const timer = setTimeout(stop, wait);
+		let timer = setTimeout(stop, wait);
+		const done = () => {
+			if (placed) return;
+			placed = true;
+			clearTimeout(timer);
+			timer = setTimeout(stop, settle);
+		};
 		function attempt() {
 			frame = 0;
 			if (!section.isConnected) return stop();
 			if (section.getAttribute("data-renderer") !== renderer) return;
 			const y = yOfLine(lineBoxes(section), line);
 			if (y !== null) {
-				window.scrollBy(0, y - was);
-				return stop();
+				if (Math.abs(y - was) >= 1) window.scrollBy(0, y - was);
+				return done();
 			}
 			// No lines: the image's view, its bar first in it. The bar goes
 			// back to where it was pinned, the image under it.
 			const image = section.querySelector("[data-testid=image-view]");
 			if (!image || barTop === undefined) return;
 			const top = image.getBoundingClientRect().top;
-			if (top < barTop) window.scrollBy(0, top - barTop);
-			stop();
+			if (top < barTop - 1) window.scrollBy(0, top - barTop);
+			done();
 		}
 		observer.observe(section, {
 			childList: true,
@@ -178,9 +193,10 @@ export function keepPlace(
 			attributes: true,
 			attributeFilter: ["data-renderer"],
 		});
+		resized?.observe(section);
 		for (const e of INPUTS)
 			window.addEventListener(e, stop, { capture: true, passive: true });
-		frame = requestAnimationFrame(attempt);
+		schedule();
 		return stop;
 	};
 }
