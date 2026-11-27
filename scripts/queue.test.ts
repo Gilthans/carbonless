@@ -1,4 +1,5 @@
 import { type ChildProcess, spawn, spawnSync } from "node:child_process";
+import { once } from "node:events";
 import {
 	chmodSync,
 	copyFileSync,
@@ -154,7 +155,12 @@ describe("queue config and guard", () => {
 		process.env.CRB_QUEUE_MY_TICKET = me.path;
 		return me;
 	};
-	/** Another live process's ticket in the line, held with `workers` when given. */
+	/**
+	 * Another live process's ticket in the line, held with `workers` when
+	 * given. `stop()` resolves once the process is reaped: right after a
+	 * SIGKILL it is often still running ("R" in /proc) while it exits, and
+	 * its ticket would still count as a live run's.
+	 */
 	const another = (dir: string, full: boolean, workers?: number) => {
 		const other = spawn("sleep", ["30"]);
 		const pid = other.pid as number;
@@ -164,14 +170,21 @@ describe("queue config and guard", () => {
 			`${pid} ${startTime(pid)} - ${full ? "full" : "short"}\n`,
 		);
 		if (workers !== undefined) writeWorkers(path, workers);
-		return { path, stop: () => other.kill("SIGKILL") };
+		const exited = once(other, "exit");
+		return {
+			path,
+			stop: async () => {
+				other.kill("SIGKILL");
+				await exited;
+			},
+		};
 	};
 	const workersIn = (path: string) =>
 		ticketKind(readFileSync(path, "utf8")).workers;
 
 	it("with two slots, a full run takes 5 of 8 cores and a short one beside it 2: never more than cores - 1 together, and each writes its count", {
 		timeout: 30_000,
-	}, () => {
+	}, async () => {
 		configure('{"slots": 1, "shortSlots": 1}');
 		const dir = join(home, ".cache", "carbonless-queue");
 		const me = holding(dir, true);
@@ -187,13 +200,13 @@ describe("queue config and guard", () => {
 			expect(full + (workersIn(short.path) as number)).toBeLessThanOrEqual(7);
 			short.leave();
 		} finally {
-			fullRun.stop();
+			await fullRun.stop();
 		}
 	});
 
 	it("a short run first takes 3, and a full one starting beside it what's left; one whose runner hasn't said counts as the most it may take", {
 		timeout: 30_000,
-	}, () => {
+	}, async () => {
 		configure('{"slots": 1, "shortSlots": 1}');
 		const dir = join(home, ".cache", "carbonless-queue");
 		const me = holding(dir, false);
@@ -207,7 +220,7 @@ describe("queue config and guard", () => {
 			expect(short + (workersIn(full.path) as number)).toBeLessThanOrEqual(7);
 			full.leave();
 		} finally {
-			shortRun.stop();
+			await shortRun.stop();
 		}
 		// Held, no count yet: a full run counts as its 5.
 		const quiet = another(dir, true);
@@ -217,7 +230,7 @@ describe("queue config and guard", () => {
 			expect(queuedWorkers(8, 64 * GB)).toBe(2);
 			me2.leave();
 		} finally {
-			quiet.stop();
+			await quiet.stop();
 		}
 	});
 
