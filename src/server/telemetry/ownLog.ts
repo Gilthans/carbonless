@@ -19,7 +19,7 @@ import { stateDir } from "../paths.js";
  * lines (and a crash's, which only serve.log catches) are there once.
  */
 
-export const ownLogFile = (): string => join(stateDir(), "serve-own.log");
+const ownLogFile = (): string => join(stateDir(), "serve-own.log");
 const serveLogFile = () => join(stateDir(), "serve.log");
 
 /** serve-own.log moves to serve-own.log.1 past this, as serve.log does. */
