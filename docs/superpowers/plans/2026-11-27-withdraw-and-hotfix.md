@@ -57,7 +57,7 @@
   - Withdrawing the only release → `refused` names the tag; with `deprecateOnly`, `refused` null, `tags` empty, `deprecate` filled.
   - A version not on npm → `refused`.
   - `laterVersions(state, "0.4.0")` lists 0.4.1?, 0.5.0-rc.N in semver order.
-  - `withdrawnReason`: `"withdrawn: bad\nthing‮"` → `"bad thing�"` (or the project's replacement character); `"deprecated for other reasons"` → null; `42` → null.
+  - `withdrawnReason`: `"withdrawn: bad\nthing\u202e"` → `"bad thing�"` (or the project's replacement character); `"deprecated for other reasons"` → null; `42` → null.
 - [ ] **Step 2: Run** `pnpm test scripts/release-withdraw.test.ts` → FAIL (module missing).
 - [ ] **Step 3: Implement** with `parseVersion`/`compareVersions` from `release-lib.ts` (semver order, prereleases below their release).
 - [ ] **Step 4: Run** → PASS.

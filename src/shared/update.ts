@@ -97,7 +97,7 @@ const MAX_REASON = 300;
 // and isolates (as releaseNotes.ts's printable).
 const CONTROL_OR_BIDI =
 	// biome-ignore lint/suspicious/noControlCharactersInRegex: that's the point
-	/[\u0000-\u001f\u007f-\u009f؜‎‏‪-‮⁦-⁩]/g;
+	/[\u0000-\u001f\u007f-\u009f\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]/g;
 
 /**
  * Why a version was withdrawn, from its npm `deprecated` field: the text

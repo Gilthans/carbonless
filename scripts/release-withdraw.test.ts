@@ -27,7 +27,7 @@ const NO = { deprecateOnly: false };
 
 describe("withdrawnReason", () => {
 	it("the text after the prefix, one line, control and bidi characters replaced", () => {
-		expect(withdrawnReason("withdrawn: bad\nthing‮")).toBe("bad thing?");
+		expect(withdrawnReason("withdrawn: bad\nthing\u202e")).toBe("bad thing?");
 		expect(withdrawnReason("withdrawn: tabs\tand\r\n  spaces ")).toBe(
 			"tabs and spaces",
 		);
@@ -193,7 +193,7 @@ describe("planWithdraw", () => {
 		expect(planWithdraw(state(), ["0.4.0"], "two\nlines", NO).refused).toMatch(
 			/reason/,
 		);
-		expect(planWithdraw(state(), ["0.4.0"], "x‮y", NO).refused).toMatch(
+		expect(planWithdraw(state(), ["0.4.0"], "x\u202ey", NO).refused).toMatch(
 			/reason/,
 		);
 	});
