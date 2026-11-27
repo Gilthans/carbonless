@@ -296,6 +296,27 @@ async function registryState(io: Io): Promise<RegistryState> {
 	return { versions, deprecated, distTags };
 }
 
+/**
+ * Which of `versions` npm has as withdrawn (deprecated with the
+ * `withdrawn: ` prefix): one `npm view` over them by name; none asked,
+ * none read.
+ */
+export async function withdrawnOf(
+	io: Io,
+	versions: readonly string[],
+): Promise<Set<string>> {
+	if (versions.length === 0) return new Set();
+	const deprecated = parseDeprecated(
+		await npmView(io, `${PACKAGE}@${versions.join(" || ")}`, [
+			"deprecated",
+			"version",
+		]),
+	);
+	return new Set(
+		versions.filter((v) => withdrawnReason(deprecated[v]) !== null),
+	);
+}
+
 /** The versions withdrawn on npm, with their reasons (printable), oldest first. */
 function withdrawnVersions(
 	state: RegistryState,

@@ -101,7 +101,13 @@ describe("only merged PRs enter a hotfix", () => {
 	});
 
 	it("refuses a branch the rulesets don't protect (setup step 12)", () => {
-		for (const missing of ["pull_request", "non_fast_forward", "deletion"]) {
+		for (const missing of [
+			"pull_request",
+			"non_fast_forward",
+			"deletion",
+			// Restrict updates: only the bypass (the owner) merges into it.
+			"update",
+		]) {
 			expect(() =>
 				checkHotfixPrs({
 					commits,

@@ -19,8 +19,12 @@ import { fileURLToPath } from "node:url";
 const HOTFIX = /^hotfix\/(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/;
 const RELEASE_TAG = /^v(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/;
 const SHA = /^[0-9a-f]{40}$/;
-/** What GitHub must enforce on a hotfix branch (the `Master` ruleset). */
-const NEEDED_RULES = ["pull_request", "non_fast_forward", "deletion"];
+/**
+ * What GitHub must enforce on a hotfix branch (the `Master` ruleset): PRs
+ * only, no force push, no deletion, and Restrict updates (only the bypass,
+ * the owner, merges into it).
+ */
+const NEEDED_RULES = ["pull_request", "non_fast_forward", "deletion", "update"];
 
 /** `git log --first-parent --format='%H %P%x09%s'` lines as commits. */
 export function parseCommits(text) {

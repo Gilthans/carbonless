@@ -33,6 +33,7 @@ import {
 	type Version,
 } from "./release-lib.js";
 import { mdText, subjectPr, titleTickets } from "./release-notes.js";
+import { withdrawnOf } from "./release-withdraw.js";
 
 /**
  * The release a hotfix of `fromTag` (a release tag) becomes: its next patch
@@ -97,6 +98,47 @@ export function hotfixStartTag(
 }
 
 /**
+ * The version a hotfix from `start` gets: its next patch with no tag that
+ * npm doesn't have, skipping a version npm has as withdrawn with no tag
+ * (one we didn't build: the runbook's case). Any other version npm has
+ * with no tag is ours, published but unfinished: refused, as a hotfix past
+ * it would ship without its fix.
+ */
+async function nextHotfixVersion(
+	io: Io,
+	start: string,
+	tags: readonly string[],
+	npmVersions: readonly string[],
+	log = true,
+): Promise<string> {
+	const from = parseTag(start) as Version;
+	const untagged = npmVersions.filter((n) => {
+		const x = parseVersion(n);
+		return (
+			x !== null &&
+			x.rc === undefined &&
+			x.major === from.major &&
+			x.minor === from.minor &&
+			x.patch > from.patch &&
+			!tags.includes(tagOf(x))
+		);
+	});
+	const withdrawn = await withdrawnOf(io, untagged);
+	const unfinished = untagged.filter((v) => !withdrawn.has(v));
+	if (unfinished.length > 0) {
+		throw new Error(
+			`${unfinished.join(", ")} is on npm with no tag: finish its release first (release-finish), or withdraw it if we didn't build it`,
+		);
+	}
+	if (log && withdrawn.size > 0) {
+		io.log(
+			`skipping ${[...withdrawn].join(", ")}: withdrawn on npm, with no tag`,
+		);
+	}
+	return hotfixVersion(start, tags, [...withdrawn]);
+}
+
+/**
  * Fails when master's next release isn't after the hotfix `version`: its
  * RCs would sort below the hotfix, or be the same version.
  */
@@ -127,23 +169,12 @@ export async function hotfixStart(
 		masterVersion(io),
 	]);
 	const start = hotfixStartTag(tags, from);
-	const version = hotfixVersion(start.tag, tags, npm?.versions ?? []);
-	const skipped = (npm?.versions ?? []).filter((n) => {
-		const x = parseVersion(n);
-		return (
-			x !== null &&
-			x.rc === undefined &&
-			x.major === start.version.major &&
-			x.minor === start.version.minor &&
-			x.patch > start.version.patch &&
-			!tags.includes(tagOf(x))
-		);
-	});
-	if (skipped.length > 0) {
-		io.log(
-			`skipping ${skipped.join(", ")}: on npm with no tag (withdraw what we didn't build)`,
-		);
-	}
+	const version = await nextHotfixVersion(
+		io,
+		start.tag,
+		tags,
+		npm?.versions ?? [],
+	);
 	checkMasterAfter(master, version);
 	const sha = (await tagCommit(io, start.tag)).trim();
 	if (!/^[0-9a-f]{40}$/.test(sha)) {
@@ -219,13 +250,12 @@ export async function resolveHotfix(
 	}
 	const start = hotfixStartFor(v, tags);
 	const newest = newestTag(tags, false);
-	if (
-		!start ||
-		newest?.tag !== start ||
-		hotfixVersion(start, tags, npm?.versions ?? []) !== version
-	) {
+	const next =
+		newest &&
+		(await nextHotfixVersion(io, newest.tag, tags, npm?.versions ?? [], false));
+	if (!start || newest?.tag !== start || next !== version) {
 		throw new Error(
-			`${branch} is not a hotfix of the newest release (${newest?.tag ?? "none"}): the next one is ${newest ? hotfixVersion(newest.tag, tags, npm?.versions ?? []) : "none"}`,
+			`${branch} is not a hotfix of the newest release (${newest?.tag ?? "none"}): the next one is ${next || "none"}`,
 		);
 	}
 	const github = io.tags !== "local";
@@ -503,16 +533,23 @@ export async function missingOnMaster(
 			const r = await io.run(
 				"git",
 				[...who, "cherry-pick", "-x", ...(merge ? ["-m", "1"] : []), item.sha],
-				{ cwd: dir },
+				// English output: the empty and conflict messages are matched.
+				{ cwd: dir, env: { LC_ALL: "C" } },
 			);
 			const said = r.stderr + r.stdout;
 			if (r.code !== 0 && /is now empty|nothing to commit/i.test(said)) {
 				// Master has the change already.
-				await io.run("git", ["cherry-pick", "--skip"], { cwd: dir });
+				await io.run("git", ["cherry-pick", "--skip"], {
+					cwd: dir,
+					env: { LC_ALL: "C" },
+				});
 				continue;
 			}
 			if (r.code !== 0) {
-				await io.run("git", ["cherry-pick", "--abort"], { cwd: dir });
+				await io.run("git", ["cherry-pick", "--abort"], {
+					cwd: dir,
+					env: { LC_ALL: "C" },
+				});
 				// A conflict is an answer; any other failure is not.
 				if (!/could not apply|conflict/i.test(said)) {
 					throw new Error(

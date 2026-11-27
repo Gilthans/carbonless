@@ -183,7 +183,8 @@ export type RunResult = { code: number; stdout: string; stderr: string };
 export type Runner = (
 	cmd: string,
 	args: readonly string[],
-	opts?: { cwd?: string },
+	/** `env`: added to the process's environment for this call. */
+	opts?: { cwd?: string; env?: Record<string, string> },
 ) => Promise<RunResult>;
 
 export type Io = {

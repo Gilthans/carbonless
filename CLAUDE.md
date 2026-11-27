@@ -420,7 +420,8 @@ Before the first hotfix, the owner's setup step 12 (rulesets on `hotfix/*`).
    OTP): crbs on it show a red Withdrawn banner; `latest`/`rc` move back.
 2. On the owner's word: `pnpm release hotfix` creates `hotfix/X.Y.Z` at
    the newest release tag (the only start; after a withdraw, the withdrawn
-   release; versions npm has without a tag are skipped).
+   release; a version npm has withdrawn, with no tag, is skipped; any
+   other untagged one on npm is refused: finish its release first).
 3. The fix goes in as a PR into `hotfix/X.Y.Z` (a ticket, a release note,
    the branch's CI); the owner merges it. Only merged PRs enter.
 4. On the owner's word: `pnpm release promote --hotfix X.Y.Z` (no RC

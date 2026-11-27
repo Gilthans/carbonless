@@ -143,9 +143,11 @@ Promote refuses a branch they don't protect.
    still the newest tag, and its hotfix is what crbs on it are offered.
    The version is the next patch that is neither tagged nor on npm: a
    second hotfix of the line follows the first one's tag (`v0.4.1` ->
-   `hotfix/0.4.2`), and a version npm has with no tag (one we didn't
-   build) is skipped (npm has an untagged 0.4.1: `hotfix/0.4.2` from
-   `v0.4.0`). Refused: an RC tag, any other commit, an older release or
+   `hotfix/0.4.2`), and a version npm has **withdrawn** with no tag (one
+   we didn't build) is skipped (npm has a withdrawn, untagged 0.4.1:
+   `hotfix/0.4.2` from `v0.4.0`). Any other untagged version on npm is
+   ours, published but unfinished: refused, "finish its release first
+   (release-finish)", since a hotfix past it would ship without its fix. Refused: an RC tag, any other commit, an older release or
    line (they'd need per-line dist-tags), and a master whose next release
    isn't after the hotfix (move it on first: `pnpm release next minor`).
    A rerun with the branch at that commit does nothing.
@@ -231,8 +233,10 @@ job): first stop more of it, then withdraw.
    and the releases that may carry the cause.
 4. Ship the fix as a hotfix (above), or through master if `latest` isn't
    affected. A version that wasn't ours has no tag, and npm never takes
-   its number again: `pnpm release hotfix` skips it (npm has a 0.4.1 we
-   didn't build: `hotfix/0.4.2`, from `v0.4.0`).
+   its number again: once step 3 withdrew it, `pnpm release hotfix` skips
+   it (npm has a withdrawn 0.4.1 we didn't build: `hotfix/0.4.2`, from
+   `v0.4.0`). Withdraw first: an untagged version that isn't withdrawn
+   is refused as an unfinished release of ours.
 
 The settings that protect hotfix branches are setup step 12.
 
@@ -978,8 +982,9 @@ machine.
 12. **Hotfix branches** (CAR-212, "Withdraw and hotfix"), before the first
     hotfix (promote refuses a branch these rules don't cover): add the
     target `hotfix/*` (Include by pattern) to the `Master` ruleset (step 3:
-    only the owner's login updates them, only through a PR, no force push
-    or deletion) and the rule Restrict creations (creating `hotfix/*` is
+    Restrict updates, so only the owner's login merges into them; Require
+    a pull request; Block force pushes; Restrict deletions; promote checks
+    these four are on the branch) and the rule Restrict creations (creating `hotfix/*` is
     the bypass list's too: the owner, or an agent running `pnpm release
     hotfix` with the owner's token). Required checks: a third ruleset, `Hotfix
     checks`, Active, target `hotfix/*`, no bypass list, Require status

@@ -146,6 +146,7 @@ const runner: Runner = (cmd, args, opts) =>
 	new Promise((resolve, reject) => {
 		const child = spawn(cmd, args, {
 			cwd: opts?.cwd,
+			env: opts?.env ? { ...process.env, ...opts.env } : undefined,
 			stdio: ["ignore", "pipe", "pipe"],
 		});
 		let stdout = "";

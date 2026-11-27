@@ -81,6 +81,13 @@ const lsRemote = (...tags: string[]) =>
 	tags.map((t, i) => `${String(i).repeat(40)}\trefs/tags/${t}`).join("\n");
 const npmView = (distTags: Record<string, string>, versions: string[]) =>
 	JSON.stringify({ "dist-tags": distTags, versions });
+/** npm's answer for one version's `deprecated` (withdraw's read). */
+const WITHDRAWN_041 = {
+	"npm view carbonless-review@0.4.1 deprecated version --json": JSON.stringify({
+		version: "0.4.1",
+		deprecated: "withdrawn: not built by us",
+	}),
+};
 const contents = (version: string) =>
 	Buffer.from(JSON.stringify({ name: "carbonless-review", version })).toString(
 		"base64",
@@ -238,9 +245,10 @@ describe("pnpm release hotfix: where it starts", () => {
 		}
 	});
 
-	it("the runbook's case: npm has a 0.4.1 we didn't build (no tag): 0.4.2 from v0.4.0", async () => {
+	it("the runbook's case: npm has a withdrawn 0.4.1 we didn't build (no tag): 0.4.2 from v0.4.0", async () => {
 		const { io, calls, lines } = startIo({
 			"npm view": npmView({ latest: "0.4.0" }, ["0.4.0", "0.4.1"]),
+			...WITHDRAWN_041,
 		});
 		expect(await hotfixStart(io)).toEqual({
 			branch: "hotfix/0.4.2",
@@ -250,10 +258,29 @@ describe("pnpm release hotfix: where it starts", () => {
 		expect(writes(calls)).toEqual([
 			`gh api -X POST repos/owner/repo/git/refs -f ref=refs/heads/hotfix/0.4.2 -f sha=${A}`,
 		]);
-		expect(lines.join("\n")).toContain("skipping 0.4.1: on npm with no tag");
+		expect(lines.join("\n")).toContain(
+			"skipping 0.4.1: withdrawn on npm, with no tag",
+		);
 		expect(hotfixVersion("v0.4.0", ["v0.4.0"], ["0.4.1", "0.4.2"])).toBe(
 			"0.4.3",
 		);
+	});
+
+	it("an untagged 0.4.1 that isn't withdrawn is ours, unfinished: refused", async () => {
+		for (const answer of [
+			// Not deprecated at all, or deprecated for another reason.
+			JSON.stringify("0.4.1"),
+			JSON.stringify({ version: "0.4.1", deprecated: "use 0.4.2" }),
+		]) {
+			const { io, calls } = startIo({
+				"npm view": npmView({ latest: "0.4.1" }, ["0.4.0", "0.4.1"]),
+				"npm view carbonless-review@0.4.1 deprecated version --json": answer,
+			});
+			await expect(hotfixStart(io)).rejects.toThrow(
+				/0\.4\.1 is on npm with no tag: finish its release first \(release-finish\)/,
+			);
+			expect(writes(calls)).toEqual([]);
+		}
 	});
 });
 
@@ -286,6 +313,7 @@ describe("pnpm release promote --hotfix", () => {
 		{ type: "pull_request" },
 		{ type: "non_fast_forward" },
 		{ type: "deletion" },
+		{ type: "update" },
 	]);
 	const promoteIo = (over: Record<string, Handler> = {}) =>
 		fakeIo({
@@ -426,9 +454,10 @@ describe("pnpm release promote --hotfix", () => {
 		expect(writes(calls)).toEqual([]);
 	});
 
-	it("the runbook's case: 0.4.2 from v0.4.0 when npm has an untagged 0.4.1", async () => {
+	it("the runbook's case: 0.4.2 from v0.4.0 when npm has a withdrawn untagged 0.4.1", async () => {
 		const over = {
 			"npm view": npmView({ latest: "0.4.0" }, ["0.4.0", "0.4.1"]),
+			...WITHDRAWN_041,
 			"git fetch --quiet origin +refs/heads/hotfix/0.4.2:refs/remotes/origin/hotfix/0.4.2 --tags":
 				"",
 			"git rev-parse -q --verify refs/remotes/origin/hotfix/0.4.2^{commit}": `${HEAD}\n`,
@@ -457,6 +486,18 @@ describe("pnpm release promote --hotfix", () => {
 		await expect(
 			promoteHotfix(promoteIo(over).io, "0.4.1", async () => ""),
 		).rejects.toThrow(/already released/);
+		// Not withdrawn: our unfinished 0.4.1, so no 0.4.2 past it.
+		const unfinished = promoteIo({
+			...over,
+			"npm view carbonless-review@0.4.1 deprecated version --json":
+				JSON.stringify("0.4.1"),
+		});
+		await expect(
+			promoteHotfix(unfinished.io, "0.4.2", async () => ""),
+		).rejects.toThrow(
+			/0\.4\.1 is on npm with no tag: finish its release first/,
+		);
+		expect(writes(unfinished.calls)).toEqual([]);
 	});
 
 	it("only the next patch of the newest release, not yet released", async () => {
@@ -864,7 +905,7 @@ describe("against a repository", {
 						: new Promise((resolve) => {
 								const child = spawn(cmd, args, {
 									cwd: opts?.cwd ?? cwd(),
-									env,
+									env: { ...env, ...opts?.env },
 								});
 								let stdout = "";
 								let stderr = "";
@@ -1122,6 +1163,24 @@ describe("against a repository", {
 		);
 	});
 
+	it("reads git's English: every cherry-pick runs with LC_ALL=C", async () => {
+		hotfix(["Fix b (CAR-34) (#34)", { "src/b.ts": "alpha!\n" }]);
+		const { io } = repoIo();
+		const seen: string[] = [];
+		const run = io.run;
+		io.run = (cmd, args, opts) => {
+			if (args.includes("cherry-pick")) {
+				seen.push(`${opts?.env?.LC_ALL ?? "unset"} ${args.join(" ")}`);
+			}
+			return run(cmd, args, opts);
+		};
+		expect((await missingOnMaster(io, "v0.4.1")).map((i) => i.status)).toEqual([
+			"conflicts",
+		]);
+		expect(seen.length).toBeGreaterThan(0);
+		for (const s of seen) expect(s).toMatch(/^C /);
+	});
+
 	it("keeps the port branch with the picks that applied, each with its source", async () => {
 		const [fix] = hotfix(
 			["Fix one (CAR-33) (#33)", { "src/a.ts": "ONE\ntwo\nthree\n" }],
@@ -1324,8 +1383,10 @@ describe("the workflows", () => {
 		const text = wf("release-finish.yml");
 		expect(text).toContain(
 			// biome-ignore lint/suspicious/noTemplateCurlyInString: GitHub expressions and shell
-			"if: ${{ !cancelled() && steps.plan.outputs.hotfix != '' }}",
+			"if: ${{ !cancelled() && steps.plan.outputs.hotfix != '' && steps.tag.outcome != 'failure' }}",
 		);
+		// The tag step has the id that guard reads.
+		expect(text).toMatch(/- name: Tag\n {8}id: tag\n/);
 		expect(text).toContain(
 			'gh pr create --base master --head "$branch" --title "$(cat "$out/title")" --body-file "$out/body.md"',
 		);
