@@ -76,6 +76,7 @@ import {
 	useAgentComment,
 	useCommentScope,
 } from "./commentOnGithub";
+import { END_PIN, useEndPin } from "./endPin";
 import { HANDLE, HANDLE_OFF } from "./handle";
 import { useLinkProblem } from "./linkProblems";
 import { useHoldComposer, usePendingComposers } from "./pendingThread";
@@ -201,15 +202,8 @@ const AGENT_SURFACE =
  * landing outlines unclipped; `mb-1!` (over the body's space-y-2, which
  * would win otherwise) keeps the gap to the reply row at 8px as it was.
  * A swipe at its end hands on to the page (no overscroll containment):
- * on a phone it is most of the screen.
- *
- * Not the thread agent panel's flex-col-reverse: in a reversed box,
- * Chromium's scroll anchoring let a reader scrolled up jump when a reply
- * landed (measured 70px, e2e "CAR-246"). Here new content lands below
- * what is in sight, so nothing moves unless pinned to the end. Scroll
- * anchoring is off in it: its adjustments (a stored reply taking the
- * streamed one's place) fired scroll events that read as the reader
- * leaving the end, and the pin let go (seen on the phone).
+ * on a phone it is most of the screen. The pin: useEndPin (as the review
+ * conversation's drawer and the thread agent panel, CAR-316).
  */
 function AgentScroll(props: {
 	children: ReactNode;
@@ -218,19 +212,6 @@ function AgentScroll(props: {
 }) {
 	const box = useRef<HTMLDivElement>(null);
 	const content = useRef<HTMLDivElement>(null);
-	const atEnd = useRef(true);
-	// Where the last pin left scrollTop: its scroll event comes a frame
-	// later, maybe after the content grew again, and must not read as the
-	// reader leaving the end.
-	const pinned = useRef<number | null>(null);
-	// Its scrollTop and scrollHeight as last seen (a pin or a scroll
-	// event): moved since by someone else while the content didn't shrink
-	// (a landing's scrollIntoView, in the same frame as the content grew),
-	// the pin lets go rather than undo it. Content that shrank moves it by
-	// a clamp, maybe one restored later (React puts back the scrollTop it
-	// read mid-commit when it refocuses, as Preview hides the comment's
-	// box): that pins again.
-	const seen = useRef({ top: 0, height: 0 });
 	const [turn, setTurn] = useState<Turn | null>(null);
 	// A jump under way (its end handler): the pin stays off until it ends.
 	const jumping = useRef<(() => void) | null>(null);
@@ -245,55 +226,15 @@ function AgentScroll(props: {
 				: next,
 		);
 	};
-	// biome-ignore lint/correctness/useExhaustiveDependencies: float reads refs and sets state only.
-	useLayoutEffect(() => {
-		const el = box.current;
-		const inner = content.current;
-		if (!el || !inner) return;
-		const toEnd = () => {
-			el.scrollTop = el.scrollHeight;
-			pinned.current = el.scrollTop;
-			seen.current = { top: el.scrollTop, height: el.scrollHeight };
-		};
-		toEnd();
-		if (typeof ResizeObserver === "undefined") return;
-		const pin = new ResizeObserver(() => {
-			float();
-			if (!atEnd.current) return;
-			const moved = Math.abs(el.scrollTop - seen.current.top) >= 1;
-			const shrank = el.scrollHeight < seen.current.height;
-			const end = el.scrollTop + el.clientHeight >= el.scrollHeight - 2;
-			if (moved && !shrank && !end) {
-				atEnd.current = false;
-				pinned.current = null;
-				seen.current = { top: el.scrollTop, height: el.scrollHeight };
-				return;
-			}
-			toEnd();
-			float();
-		});
-		pin.observe(inner);
-		pin.observe(el);
-		return () => pin.disconnect();
-	}, []);
+	const pin = useEndPin(box, content, {
+		onChange: float,
+		held: () => jumping.current !== null,
+	});
 	return (
 		<div
 			ref={box}
 			data-testid="agent-thread-scroll"
-			onScroll={(e) => {
-				const el = e.currentTarget;
-				seen.current = { top: el.scrollTop, height: el.scrollHeight };
-				float();
-				if (
-					pinned.current !== null &&
-					Math.abs(el.scrollTop - pinned.current) < 1
-				)
-					return;
-				pinned.current = null;
-				atEnd.current =
-					!jumping.current &&
-					el.scrollTop + el.clientHeight >= el.scrollHeight - 2;
-			}}
+			onScroll={pin.onScroll}
 			className={AGENT_SCROLL}
 		>
 			{/* Over the box's top, taking no room: showing it moves nothing.
@@ -309,8 +250,7 @@ function AgentScroll(props: {
 							if (!el) return;
 							// Leaves the end: the pin lets go, and stays off until the
 							// scroll ends (its first frames may still be near the end).
-							atEnd.current = false;
-							pinned.current = null;
+							pin.leave();
 							jumping.current?.();
 							const done = () => {
 								el.removeEventListener("scrollend", done);
@@ -432,8 +372,7 @@ function QuestionBar(props: {
 	);
 }
 
-const AGENT_SCROLL =
-	"-mx-1 -mt-1 mb-1! max-h-[min(28rem,60vh)] overflow-y-auto scroll-pt-10 p-1 [overflow-anchor:none]";
+const AGENT_SCROLL = `-mx-1 -mt-1 mb-1! max-h-[min(28rem,60vh)] overflow-y-auto scroll-pt-10 p-1 ${END_PIN}`;
 
 function Who(props: { children: React.ReactNode }) {
 	return (
