@@ -16,7 +16,8 @@ Under `devices/<device>/` on the branch `device/<device>`:
   7 days, up to 300 MB in all (beyond that the oldest are left out). The
   file being written is sent up to its last whole line.
 - `logs/`: `serve.log`, `serve.log.1` and the updater's `update.log`, each
-  its last 5 MB, as text (bytes that aren't UTF-8, e.g. a Windows console
+  its last 5 MB (up to 10 MB while it grows: the tail is cut anew only past
+  twice that, so a growing log is read incrementally too), as text (bytes that aren't UTF-8, e.g. a Windows console
   code page, become U+FFFD).
 - `state.json`: crb's version and commit, OS and arch, node and git
   versions, the server's pid and uptime, the config, the trace directory's
@@ -32,7 +33,10 @@ auth, cookie or session, an agent's `env` values, a command-line option's
 value named so (`--api-key=…`, `--token …`), URLs' userinfo, and GitHub
 tokens or API keys wherever they appear. The key is scrubbed as its current
 value and as any `?key=…`: a log line with a key rotated away since
-(`crb serve --new-key`) is caught by the latter only.
+(`crb serve --new-key`) is caught by the latter only. In trace files, an
+option and its value recorded as separate items of a JSON array
+(`"--token","abc"`) aren't recognised; crb's own spans record git and gh
+argv as one summarised string, where `--token abc` is.
 
 ## How it's stored
 
@@ -44,10 +48,13 @@ the same blob until it is 7 days old, so a file is sent once; the state's
 history rides inside the snapshot (`state-history.jsonl`). Git sends only
 what changed (the remote's last snapshot is the thin pack's base).
 
-What one push **adds** is capped (50 MB): on a backlog (the first push of
-a busy device) the newest trace files go first, and the older ones follow
-on the next pushes; a newer file is never skipped for an older one.
-`crb telemetry status` says how many wait.
+What one push **adds** is capped (50 MB), measured against what the remote
+already has (recorded only after a push lands, `pushed.json`): pushes that
+failed for a while (an expired login) never pile up into one big push. On a
+backlog (the first push of a busy device, the branch deleted or taken over)
+the newest trace files go first, a file over the room left goes in part
+(whole lines), and the rest follow on the next pushes; a newer file is
+never skipped for an older one. `crb telemetry status` says how many wait.
 
 Copies are incremental: a trace file only grows, so each push reads and
 scrubs just the lines added since the last one (in 4 MB chunks, letting
@@ -57,6 +64,8 @@ crb writes only `device/<device>`, never another branch or a tag. When
 that branch moved since its last push (a reinstall, or two machines with
 one device name), it takes the branch over, still with a lease on what it
 saw, and says so: in `crb telemetry status`, and once in `serve.log`.
+A push that landed but wasn't recorded (crb stopped right after it) is
+recognised as this device's own and isn't reported as a takeover.
 `state.json` names the machine (`machine.hostname`, `machine.stateDir`),
 so the reader can tell two apart. Give each machine its own `--device`.
 
@@ -80,8 +89,9 @@ terminal prompt, no askpass program (`GIT_ASKPASS`, `core.askPass`,
 BatchMode=yes`, appended to your `GIT_SSH_COMMAND` or `core.sshCommand`
 when it is OpenSSH's; another client, or a `$GIT_SSH` program, is left as
 is). Credentials that need a login fail the push, and `status` says so.
-`crb telemetry on` and `send`, run in a terminal, may prompt: that's your
-own action, and how a first login happens. The remote URL reaches git
+`crb telemetry on` and `send`, run in a terminal, may prompt there (their
+push runs in the terminal's session; a credential helper's own window works
+too): that's your own action, and how a first login happens. The remote URL reaches git
 through the environment, never argv (so not into traces or process lists).
 
 **Tracing follows**: with the mailbox on and `$CRB_TRACE_DIR` unset, crb

@@ -176,10 +176,13 @@ export async function telemetryCli(
 	if (command === "off") {
 		extraArgs(0);
 		const { config } = await readConfig();
-		await updateConfig((c) => {
-			const { telemetry: _off, ...rest } = c;
-			return rest;
-		});
+		await updateConfig(
+			(c) => {
+				const { telemetry: _off, ...rest } = c;
+				return rest;
+			},
+			{ removeTelemetry: true },
+		);
 		print("Telemetry off.");
 		if (config.telemetry) {
 			print(

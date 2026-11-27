@@ -451,6 +451,11 @@ describe("config", () => {
 			await updateConfig((c) => ({ ...c, refresh: { minutes: 5 } }));
 			expect(onDisk().telemetry).toEqual(typo);
 			expect(onDisk().refresh).toEqual({ minutes: 5 });
+			// …and crb telemetry off removes it all the same.
+			await updateConfig(({ telemetry: _t, ...c }) => c, {
+				removeTelemetry: true,
+			});
+			expect(onDisk().telemetry).toBeUndefined();
 		});
 
 		it("updateConfig turns it on and off, keeping its unknown keys while on", async () => {

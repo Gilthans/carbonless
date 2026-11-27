@@ -5,6 +5,7 @@ import {
 	mkdirSync,
 	mkdtempSync,
 	readFileSync,
+	renameSync,
 	rmSync,
 	utimesSync,
 	writeFileSync,
@@ -20,6 +21,7 @@ import {
 	testGitEnv,
 } from "../../../test/git-fixture";
 import { type CrbConfig, DEFAULT_CONFIG } from "../config";
+import { runGit } from "../git";
 import { cacheDir, stateDir } from "../paths";
 import { sanitize, scrubText } from "./collect";
 import {
@@ -142,6 +144,10 @@ describe.concurrent("the mailbox's git environment", () => {
 		);
 		// Another client's options are its own; $GIT_SSH is a bare program.
 		expect(bg({}, "plink -batch")).toBeUndefined();
+		// core.sshCommand comes before $GIT_SSH in git's order.
+		expect(bg({ GIT_SSH: "/opt/my-ssh" }, "ssh -F cfg")).toBe(
+			"ssh -F cfg -o BatchMode=yes",
+		);
 		expect(bg({ GIT_SSH: "/opt/my-ssh" })).toBeUndefined();
 	});
 
@@ -436,6 +442,160 @@ describe("the telemetry mailbox", () => {
 			const argv = readFileSync(log, "utf8");
 			expect(argv).toMatch(/push --quiet --no-verify --force-with-lease/);
 			expect(argv).not.toContain(remote.path);
+		},
+	);
+
+	const blob = (path: string) =>
+		remoteGit("cat-file", "blob", `device/laptop:devices/laptop/${path}`);
+	const outboxJson = () => join(stateDir(), "telemetry", "outbox.json");
+
+	it("a push stopped between copying and recording never sends a line twice", async () => {
+		const f = join(traces, "crb-1-abc.20261127.000000.jsonl");
+		traceFile("crb-1-abc.20261127.000000.jsonl", '{"a":1}\n');
+		expect((await pushed()).ok).toBe(true);
+		const recorded = readFileSync(outboxJson(), "utf8");
+		writeFileSync(f, '{"a":2}\n', { flag: "a" });
+		expect((await pushed()).ok).toBe(true);
+		// As if that push had stopped after copying, before recording it.
+		writeFileSync(outboxJson(), recorded);
+		writeFileSync(f, '{"a":3}\n', { flag: "a" });
+		expect((await pushed()).ok).toBe(true);
+		expect(blob("traces/crb-1-abc.20261127.000000.jsonl")).toBe(
+			'{"a":1}\n{"a":2}\n{"a":3}',
+		);
+	});
+
+	it("pushes that failed don't pile up: the first that lands adds no more than the cap", async () => {
+		const name = "crb-2-abc.20261127.000000.jsonl";
+		const line = `${"x".repeat(999)}\n`;
+		const cap = 1_500_000;
+		const missing = {
+			telemetry: {
+				mailbox: join(work, "missing.git"),
+				device: "laptop",
+				every: 15,
+			},
+		};
+		for (let i = 0; i < 4; i++) {
+			writeFileSync(join(traces, name), line.repeat(1000), { flag: "a" });
+			const failed = await pushed({ ...missing, newCap: cap });
+			expect(failed.ok).toBe(false);
+		}
+		const landed = await pushed({ newCap: cap });
+		expect(landed.ok).toBe(true);
+		expect(landed.tracesWaiting).toBe(1);
+		const size = Number(
+			remoteGit(
+				"cat-file",
+				"-s",
+				`device/laptop:devices/laptop/traces/${name}`,
+			),
+		);
+		expect(size).toBeLessThanOrEqual(cap);
+		expect(size % line.length).toBe(0);
+		expect(landed.newBytes).toBeGreaterThanOrEqual(size);
+		expect(landed.newBytes).toBeLessThanOrEqual(cap);
+		// The rest follows, a cap at a time.
+		for (let i = 0; i < 3; i++) await pushed({ newCap: cap });
+		expect(blob(`traces/${name}`)).toBe(line.repeat(4000).trimEnd());
+	});
+
+	it("a deleted branch gets the window back a cap at a time, not in one push", async () => {
+		const day = 24 * 60 * 60_000;
+		const big = (c: string) => `${c.repeat(999)}\n`.repeat(1000);
+		traceFile("crb-1-a.20261125.000000.jsonl", big("o"), 2 * day);
+		traceFile("crb-1-a.20261126.000000.jsonl", big("n"), day);
+		expect((await pushed()).ok).toBe(true);
+		remoteGit("update-ref", "-d", "refs/heads/device/laptop");
+		const again = await pushed({ newCap: 1_500_000 });
+		expect(again).toMatchObject({ ok: true, tracesWaiting: 1 });
+		// Deleted, not someone else's: no takeover.
+		expect(again.tookOver).toBeUndefined();
+		// The newest whole, the next in part: no more than the cap.
+		const sizes = tree()
+			.filter((p) => p.includes("/traces/"))
+			.map((p) => Number(remoteGit("cat-file", "-s", `device/laptop:${p}`)));
+		expect(sizes.reduce((a, b) => a + b, 0)).toBeLessThanOrEqual(1_500_000);
+		expect(sizes).toContain(1_000_000);
+		expect((await pushed({ newCap: 1_500_000 })).ok).toBe(true);
+		expect(blob("traces/crb-1-a.20261125.000000.jsonl")).toBe(
+			big("o").trimEnd(),
+		);
+		expect(blob("traces/crb-1-a.20261126.000000.jsonl")).toBe(
+			big("n").trimEnd(),
+		);
+	});
+
+	it("a push that landed but wasn't recorded isn't taken for another crb's", async () => {
+		const dir = join(stateDir(), "telemetry");
+		expect((await pushed()).ok).toBe(true);
+		const ref = join(dir, "mailbox.git", "refs", "mailbox", "pushed");
+		const first = {
+			ref: readFileSync(ref, "utf8"),
+			pushed: readFileSync(join(dir, "pushed.json"), "utf8"),
+		};
+		const second = await pushed();
+		expect(second.ok).toBe(true);
+		// As if crb had stopped right after the remote took the second push.
+		writeFileSync(
+			join(dir, "pending.json"),
+			JSON.stringify({
+				commit: second.commit,
+				manifest: JSON.parse(readFileSync(join(dir, "pushed.json"), "utf8")),
+			}),
+		);
+		writeFileSync(ref, first.ref);
+		writeFileSync(join(dir, "pushed.json"), first.pushed);
+		const third = await pushed();
+		expect(third.ok).toBe(true);
+		expect(third.tookOver).toBeUndefined();
+	});
+
+	it("locks a killed git left behind don't stop the next push", async () => {
+		expect((await pushed()).ok).toBe(true);
+		const repo = join(stateDir(), "telemetry", "mailbox.git");
+		writeFileSync(join(repo, "index.lock"), "");
+		writeFileSync(join(repo, "refs", "mailbox", "pushed.lock"), "");
+		const next = await pushed();
+		expect(next.error).toBeUndefined();
+		expect(next.ok).toBe(true);
+	});
+
+	it("a trace file replaced under the same name, and a rotated serve.log, are copied anew", async () => {
+		const name = "crb-1-abc.20261127.000000.jsonl";
+		traceFile(name, '{"old":1}\n{"old":2}\n{"old":3}\n');
+		expect((await pushed()).ok).toBe(true);
+		rmSync(join(traces, name));
+		traceFile(name, '{"new":1}\n');
+		// serve.log moves to serve.log.1 (client.ts), a new one starts.
+		const log = join(stateDir(), "serve.log");
+		renameSync(log, `${log}.1`);
+		writeFileSync(log, "crb: new start\n");
+		expect((await pushed()).ok).toBe(true);
+		expect(blob(`traces/${name}`)).toBe('{"new":1}');
+		expect(blob("logs/serve.log")).toBe("crb: new start");
+		expect(blob("logs/serve.log.1")).toMatch(/^crb: carbonless listening/);
+	});
+
+	it.skipIf(process.platform === "win32")(
+		"an attached git stays in crb's session (a terminal can prompt), a timed one leaves it",
+		async () => {
+			const own = execFileSync(
+				"ps",
+				["-o", "sid=", "-p", String(process.pid)],
+				{
+					encoding: "utf8",
+				},
+			).trim();
+			const sid = async (attached: boolean) =>
+				(
+					await runGit(work, ["-c", "alias.sid=!ps -o sid= -p $$", "sid"], {
+						timeoutMs: 30_000,
+						attached,
+					})
+				).trim();
+			expect(await sid(true)).toBe(own);
+			expect(await sid(false)).not.toBe(own);
 		},
 	);
 

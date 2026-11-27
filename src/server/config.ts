@@ -344,6 +344,8 @@ let updates: Promise<unknown> = Promise.resolve();
  */
 export function updateConfig(
 	change: (c: CrbConfig) => CrbConfig,
+	/** `removeTelemetry`: drop the section even when it doesn't read (crb telemetry off). */
+	options: { removeTelemetry?: boolean } = {},
 ): Promise<CrbConfig> {
 	const run = updates.then(async () => {
 		const { raw } = await readRaw();
@@ -370,7 +372,10 @@ export function updateConfig(
 		// through an unrelated update: it was off already, and a fix to it
 		// shouldn't be lost. Only turning a valid one off removes it.
 		const keptBad =
-			!c.telemetry && !before.telemetry && oldTelemetry !== undefined
+			!c.telemetry &&
+			!before.telemetry &&
+			!options.removeTelemetry &&
+			oldTelemetry !== undefined
 				? { telemetry: oldTelemetry }
 				: {};
 		const out = {

@@ -7,6 +7,7 @@ import {
 	rename,
 	rm,
 	stat,
+	truncate,
 	writeFile,
 } from "node:fs/promises";
 import { basename, dirname, join, relative, sep } from "node:path";
@@ -51,6 +52,8 @@ const RETAIN_DAYS = 7;
 const RETAIN_BYTES = 300 * MiB;
 /** A log is sent as its last this many bytes. */
 const LOG_TAIL_BYTES = 5 * MiB;
+/** Room every push leaves for traces, however big its state and logs. */
+const MIN_TRACE_ROOM = 1 * MiB;
 /** Read and scrubbed this much at a time, the event loop let go between. */
 const CHUNK_BYTES = 4 * MiB;
 /** state-history.jsonl keeps this many days. */
@@ -67,6 +70,10 @@ const outboxDir = () => join(telemetryDir(), "outbox");
 const statusFile = () => join(telemetryDir(), "status.json");
 const historyFile = () => join(telemetryDir(), "state-history.jsonl");
 const manifestFile = () => join(telemetryDir(), "outbox.json");
+/** What the remote has: the outbox manifest of this device's last push that landed. */
+const pushedFile = () => join(telemetryDir(), "pushed.json");
+/** The push under way: its commit and manifest, until it's known to have landed. */
+const pendingFile = () => join(telemetryDir(), "pending.json");
 const lockFile = () => join(telemetryDir(), "push.lock");
 /** An empty file and directory: the user's global ignores, attributes and hooks never apply. */
 const emptyFile = () => join(telemetryDir(), "empty");
@@ -136,6 +143,13 @@ interface Copied {
 	mtimeMs: number;
 	/** Where the copy started (a log's tail). */
 	from: number;
+	/**
+	 * The copy's own size: a copy of another size (a push stopped between
+	 * appending and recording it) is started over, never appended to twice.
+	 */
+	copied: number;
+	/** The tail's start was mid-line and no whole line followed yet. */
+	partial?: boolean;
 }
 
 type Manifest = Record<string, Copied>;
@@ -153,13 +167,19 @@ async function appendScrubbed(
 	size: number,
 	secrets: string[],
 	skipPartial: boolean,
-): Promise<number> {
+): Promise<{ offset: number; partial: boolean }> {
 	const handle = await open(src, "r");
 	let offset = from;
+	let skipping = skipPartial && from > 0;
 	try {
+		if (skipping) {
+			// A tail starting right after a newline starts on a whole line.
+			const before = Buffer.alloc(1);
+			await handle.read(before, 0, 1, from - 1);
+			if (before[0] === 10) skipping = false;
+		}
 		let carry = Buffer.alloc(0);
 		let pos = from;
-		let skipping = skipPartial && from > 0;
 		while (pos < size) {
 			const want = Math.min(CHUNK_BYTES, size - pos);
 			const buf = Buffer.alloc(want);
@@ -171,6 +191,8 @@ async function appendScrubbed(
 			if (skipping) {
 				const nl = data.indexOf(10);
 				if (nl < 0) {
+					// Still inside the cut line: it's skipped, and so is the
+					// rest of it on the next copy (`partial`).
 					carry = Buffer.alloc(0);
 					offset = pos;
 					continue;
@@ -195,13 +217,15 @@ async function appendScrubbed(
 	} finally {
 		await handle.close();
 	}
-	return offset;
+	return { offset, partial: skipping };
 }
 
 /**
- * Brings the outbox copy of `src` up to date: only the bytes added since
- * the last copy, or a new copy when the source is another file, shrank, or
- * (a log) the copy would outgrow its tail.
+ * Brings the outbox copy of `src` up to date (up to `st.size`): only the
+ * bytes added since the last copy, or a new copy when the source is another
+ * file, shrank, the copy isn't the size recorded, or (a log) the copy would
+ * outgrow twice its tail (slack, so a growing log isn't re-read in full on
+ * every push).
  */
 async function syncCopy(
 	src: string,
@@ -215,9 +239,10 @@ async function syncCopy(
 	const continues =
 		prev !== undefined &&
 		destSize !== undefined &&
+		destSize === prev.copied &&
 		prev.ino === st.ino &&
 		st.size >= prev.offset &&
-		(tailBytes === undefined || st.size - prev.from <= tailBytes);
+		(tailBytes === undefined || st.size - prev.from <= 2 * tailBytes);
 	if (continues && prev.size === st.size && prev.mtimeMs === st.mtimeMs) {
 		return prev;
 	}
@@ -232,28 +257,69 @@ async function syncCopy(
 		from = tailBytes ? Math.max(0, st.size - tailBytes) : 0;
 		start = from;
 	}
-	const offset = await appendScrubbed(
+	const { offset, partial } = await appendScrubbed(
 		src,
 		dest,
 		start,
 		st.size,
 		secrets,
-		!continues && from > 0,
+		continues ? prev.partial === true : from > 0,
 	);
-	return { ino: st.ino, offset, size: st.size, mtimeMs: st.mtimeMs, from };
+	const copied = (await statOf(dest))?.size ?? 0;
+	return {
+		ino: st.ino,
+		offset,
+		size: st.size,
+		mtimeMs: st.mtimeMs,
+		from,
+		copied,
+		...(partial ? { partial } : {}),
+	};
 }
 
-/** A source not yet sent in full: what a copy would add. */
-const newBytesOf = (
-	st: { ino: number; size: number; mtimeMs: number },
-	prev: Copied | undefined,
-	inOutbox: boolean,
-) => {
-	if (!prev || !inOutbox || prev.ino !== st.ino || st.size < prev.offset) {
-		return st.size;
+/**
+ * Makes the outbox copy what `entry` recorded (a smaller copy of the same
+ * file: what the remote has), cutting it back, or copying it anew.
+ */
+async function rewind(
+	src: string,
+	dest: string,
+	ino: number,
+	entry: Copied,
+	current: Copied | undefined,
+	secrets: string[],
+): Promise<Copied> {
+	const destSize = (await statOf(dest))?.size;
+	if (
+		current &&
+		current.ino === ino &&
+		destSize === current.copied &&
+		current.copied >= entry.copied &&
+		current.from === entry.from
+	) {
+		await truncate(dest, entry.copied);
+		return entry;
 	}
-	return st.size - prev.offset;
-};
+	return syncCopy(
+		src,
+		dest,
+		{ ino, size: entry.offset, mtimeMs: entry.mtimeMs },
+		undefined,
+		secrets,
+	);
+}
+
+/** Whether `sent` (what the remote has) is a part of the source as it is now. */
+const sentPart = (
+	st: { ino: number; size: number },
+	sent: Copied | undefined,
+): sent is Copied => !!sent && sent.ino === st.ino && st.size >= sent.offset;
+
+/** What the remote hasn't seen of a source: what sending it now adds. */
+const newBytesOf = (
+	st: { ino: number; size: number },
+	sent: Copied | undefined,
+) => (sentPart(st, sent) ? st.size - sent.offset : st.size);
 
 /** Every file under `dir`, as paths relative to it (forward slashes). */
 async function walk(dir: string, base = dir): Promise<string[]> {
@@ -311,6 +377,8 @@ async function history(state: unknown, now: Date): Promise<string> {
 }
 
 interface Filled {
+	/** The outbox manifest of this snapshot. */
+	manifest: Manifest;
 	bytes: number;
 	files: number;
 	newBytes: number;
@@ -330,6 +398,8 @@ async function fillOutbox(opts: {
 	secrets: string[];
 	now: number;
 	newCap: number;
+	/** What the remote has (pushed.json); {} when it has nothing of ours. */
+	pushed: Manifest;
 	signal?: AbortSignal;
 }): Promise<Filled> {
 	const root = join(outboxDir(), "devices", opts.device);
@@ -371,8 +441,44 @@ async function fillOutbox(opts: {
 			keep.add(rel(dest));
 		} catch (error) {
 			if (opts.signal?.aborted) throw error;
-			// Gone or locked meanwhile (Windows): the next push has it.
+			// Gone or locked meanwhile (Windows): the copy as it was stays
+			// (cut back to what was recorded), and the next push goes on.
+			const prev = manifest[rel(dest)];
+			const size = (await statOf(pathOf(dest)))?.size;
+			if (prev && size !== undefined && size >= prev.copied) {
+				await truncate(pathOf(dest), prev.copied).catch(() => {});
+				next[rel(dest)] = prev;
+				keep.add(rel(dest));
+			}
 		}
+	};
+
+	/**
+	 * The outbox copy of a trace file up to `target` bytes of its source
+	 * (whole lines): continued when it's behind, cut back to what the
+	 * remote has (or started over) when it's ahead.
+	 */
+	const syncTo = async (
+		src: string,
+		dest: string,
+		st: { ino: number; size: number; mtimeMs: number },
+		target: number,
+		sent: Copied | undefined,
+	): Promise<Copied> => {
+		const path = pathOf(dest);
+		let base = manifest[rel(dest)];
+		if (base && (base.ino !== st.ino || base.offset > target)) {
+			base = sentPart(st, sent)
+				? await rewind(src, path, st.ino, sent, base, opts.secrets)
+				: undefined;
+		}
+		return syncCopy(
+			src,
+			path,
+			{ ino: st.ino, size: Math.min(target, st.size), mtimeMs: st.mtimeMs },
+			base,
+			opts.secrets,
+		);
 	};
 
 	// Logs first: small, and the freshest account of what happened.
@@ -385,10 +491,9 @@ async function fillOutbox(opts: {
 		const st = await statOf(src);
 		if (!st) continue;
 		const dest = `logs/${name}`;
-		const prev = manifest[rel(dest)];
 		newBytes += Math.min(
 			LOG_TAIL_BYTES,
-			newBytesOf(st, prev, (await statOf(pathOf(dest))) !== null),
+			newBytesOf(st, opts.pushed[rel(dest)]),
 		);
 		await sync(dest, src, st, LOG_TAIL_BYTES);
 	}
@@ -421,26 +526,55 @@ async function fillOutbox(opts: {
 				break;
 			}
 			const dest = `traces/${f.name}`;
-			const prev = manifest[rel(dest)];
-			const inOutbox = (await statOf(pathOf(dest))) !== null;
-			const adds = newBytesOf(f.st, prev, inOutbox);
-			const fits =
-				!full &&
-				// The first one always goes: a file over the cap must not
-				// hold back every older one forever.
-				(traceNew === 0 || newBytes + traceNew + adds <= opts.newCap);
-			if (adds > 0 && !fits) {
-				full = true;
-				if (prev && inOutbox && prev.ino === f.st.ino) {
-					// Sent before and grown since: the sent part stays.
-					next[rel(dest)] = prev;
-					keep.add(rel(dest));
-					total += f.st.size;
-				} else tracesWaiting++;
+			const src = join(dir, f.name);
+			// Measured against what the remote has, not the outbox: bytes
+			// copied for a push that failed are still new.
+			const sent = opts.pushed[rel(dest)];
+			const sentTo = sentPart(f.st, sent) ? sent.offset : 0;
+			const adds = newBytesOf(f.st, sent);
+			// Room left in this push; the traces always get some, so a big
+			// state or log never holds them back forever.
+			const room = Math.max(
+				opts.newCap - newBytes - traceNew,
+				traceNew === 0 ? MIN_TRACE_ROOM : 0,
+			);
+			opts.signal?.throwIfAborted();
+			try {
+				if (adds === 0 || (!full && adds <= room)) {
+					next[rel(dest)] = await syncTo(src, dest, f.st, f.st.size, sent);
+				} else if (!full) {
+					// The newest that doesn't fit goes in part (whole lines up
+					// to the room left); the rest of it, and older new files,
+					// follow on the next pushes.
+					full = true;
+					tracesWaiting++;
+					next[rel(dest)] = await syncTo(src, dest, f.st, sentTo + room, sent);
+				} else {
+					tracesWaiting++;
+					if (!sentPart(f.st, sent)) continue;
+					// Sent before and grown since: the snapshot keeps what the
+					// remote has, no more.
+					next[rel(dest)] = await rewind(
+						src,
+						pathOf(dest),
+						f.st.ino,
+						sent,
+						manifest[rel(dest)],
+						opts.secrets,
+					);
+				}
+			} catch (error) {
+				if (opts.signal?.aborted) throw error;
+				// Gone or locked meanwhile (Windows): the next push has it.
 				continue;
 			}
-			await sync(dest, join(dir, f.name), f.st);
-			traceNew += adds;
+			if ((next[rel(dest)]?.offset ?? 0) === 0) {
+				// Nothing of it fit (one long line): not in this snapshot.
+				delete next[rel(dest)];
+				continue;
+			}
+			keep.add(rel(dest));
+			traceNew += Math.max(0, (next[rel(dest)]?.offset ?? 0) - sentTo);
 			total += f.st.size;
 		}
 		newBytes += traceNew;
@@ -458,7 +592,14 @@ async function fillOutbox(opts: {
 		bytes += (await statOf(path))?.size ?? 0;
 	}
 	await writeFileAtomic(manifestFile(), JSON.stringify(next));
-	return { bytes, files, newBytes, tracesWaiting, tracesOverCap };
+	return {
+		manifest: next,
+		bytes,
+		files,
+		newBytes,
+		tracesWaiting,
+		tracesOverCap,
+	};
 }
 
 /** Whether an ssh command's program is OpenSSH's (takes `-o BatchMode=yes`). */
@@ -520,9 +661,13 @@ export function gitEnv(opts: {
 		env.SSH_ASKPASS_REQUIRE = "never";
 		env.GCM_INTERACTIVE = "never";
 		config.push(["credential.interactive", "false"]);
-		if (!parent.GIT_SSH || parent.GIT_SSH_COMMAND) {
-			const ssh = parent.GIT_SSH_COMMAND || opts.sshCommand || "ssh";
-			if (isOpenSsh(ssh)) env.GIT_SSH_COMMAND = `${ssh} -o BatchMode=yes`;
+		// git's order: $GIT_SSH_COMMAND, core.sshCommand, $GIT_SSH, ssh.
+		const ssh =
+			parent.GIT_SSH_COMMAND ||
+			opts.sshCommand ||
+			(parent.GIT_SSH ? undefined : "ssh");
+		if (ssh && isOpenSsh(ssh)) {
+			env.GIT_SSH_COMMAND = `${ssh} -o BatchMode=yes`;
 		}
 	}
 	env.GIT_CONFIG_COUNT = String(config.length);
@@ -666,12 +811,15 @@ async function push(
 			).trim() || undefined;
 	const env = gitEnv({ mailbox, interactive, sshCommand });
 	const repo = repoDir();
-	const git = (args: string[], timeoutMs = GIT_TIMEOUT_MS) =>
+	// `attached`: the CLI's push and ls-remote stay in the terminal's
+	// session, so git and ssh can ask for a login there.
+	const git = (args: string[], timeoutMs = GIT_TIMEOUT_MS, attached = false) =>
 		runGitFull(outboxDir(), [`--git-dir=${repo}`, "--work-tree=.", ...args], {
 			env,
 			timeoutMs,
 			allowFailure: true,
 			signal: opts.signal,
+			attached,
 		});
 	const must = async (args: string[]) => {
 		const r = await git(args);
@@ -680,6 +828,10 @@ async function push(
 		return r.stdout.toString("utf8").trim();
 	};
 
+	// Locks a stopped or killed git left (SIGKILL: git can't clean up).
+	// Only mailbox gits use this repo, and push.lock (held) serializes them.
+	await rm(join(repo, "index.lock"), { force: true });
+	await rm(join(repo, "refs", "mailbox", "pushed.lock"), { force: true });
 	if (!(await statOf(join(repo, "HEAD")))) {
 		await runGit(telemetryDir(), ["init", "--quiet", "--bare", repo], {
 			env,
@@ -696,35 +848,64 @@ async function push(
 		now,
 	});
 	opts.signal?.throwIfAborted();
-	const filled = await fillOutbox({
-		device,
-		texts: {
-			"state.json": `${JSON.stringify(state, null, "\t")}\n`,
-			"state-history.jsonl": await history(state, now),
-		},
-		traceDir: opts.traceDir,
-		secrets,
-		now: now.getTime(),
-		newCap: opts.newCap ?? NEW_BYTES_PER_PUSH,
-		signal: opts.signal,
-	});
+	const texts = {
+		"state.json": `${JSON.stringify(state, null, "\t")}\n`,
+		"state-history.jsonl": await history(state, now),
+	};
+	const readJson = async <T>(file: string): Promise<T | null> => {
+		try {
+			return JSON.parse(await readFile(file, "utf8")) as T;
+		} catch {
+			return null;
+		}
+	};
+	/** The snapshot against what the remote has (`pushed`), committed. */
+	const snapshot = async (pushed: Manifest) => {
+		const filled = await fillOutbox({
+			device,
+			texts,
+			traceDir: opts.traceDir,
+			secrets,
+			now: now.getTime(),
+			newCap: opts.newCap ?? NEW_BYTES_PER_PUSH,
+			pushed,
+			signal: opts.signal,
+		});
+		// --force: a global ignore (*.log is common) must not drop a file.
+		await must(["add", "--all", "--force", "."]);
+		const tree = await must(["write-tree"]);
+		const commit = await must([
+			"commit-tree",
+			tree,
+			"-m",
+			`crb telemetry: ${device} at ${now.toISOString()}`,
+		]);
+		// Until the push is known to have landed (a stop or kill between the
+		// remote's yes and recording it leaves this behind: R-N1 below).
+		await writeFileAtomic(
+			pendingFile(),
+			JSON.stringify({ commit, manifest: filled.manifest }),
+		);
+		return { filled, commit };
+	};
 
-	// --force: a global ignore (*.log is common) must not drop a file.
-	await must(["add", "--all", "--force", "."]);
-	const tree = await must(["write-tree"]);
-	const commit = await must([
-		"commit-tree",
-		tree,
-		"-m",
-		`crb telemetry: ${device} at ${now.toISOString()}`,
-	]);
-
-	const branch = `refs/heads/${deviceBranch(device)}`;
-	const pushed = (
+	const pushedRef = (
 		await git(["rev-parse", "--verify", "--quiet", "refs/mailbox/pushed"])
 	).stdout
 		.toString("utf8")
 		.trim();
+	// An earlier push not known to have landed, read before this one's
+	// snapshot replaces it.
+	const pending = await readJson<{ commit: string; manifest: Manifest }>(
+		pendingFile(),
+	);
+	// What the remote has of ours; nothing when this device never pushed.
+	let pushedManifest: Manifest = pushedRef
+		? ((await readJson<Manifest>(pushedFile())) ?? {})
+		: {};
+	let { filled, commit } = await snapshot(pushedManifest);
+
+	const branch = `refs/heads/${deviceBranch(device)}`;
 	const pushTo = (expected: string) =>
 		git(
 			[
@@ -736,22 +917,45 @@ async function push(
 				`${commit}:${branch}`,
 			],
 			PUSH_TIMEOUT_MS,
+			interactive,
 		);
-	let result = await pushTo(pushed);
+	let result = await pushTo(pushedRef);
 	let tookOver = false;
 	if (
 		result.code !== 0 &&
 		/stale info|fetch first|already exists/i.test(result.stderr)
 	) {
-		// The branch isn't what this device last pushed: a reinstall (state
-		// dir wiped) or another crb with the same device name. Its own
-		// branch, so this device takes it over, still with a lease, and
-		// says so (status, serve.log once, crb telemetry status).
-		const remote = await git(["ls-remote", "mailbox", branch], PUSH_TIMEOUT_MS);
+		// The branch isn't what this device last recorded pushing.
+		const remote = await git(
+			["ls-remote", "mailbox", branch],
+			PUSH_TIMEOUT_MS,
+			interactive,
+		);
+		opts.signal?.throwIfAborted();
 		if (remote.code === 0) {
 			const tip = remote.stdout.toString("utf8").split(/\s/)[0] ?? "";
+
+			if (tip && pending && tip === pending.commit && tip !== commit) {
+				// This device's own push, landed but not recorded (stopped or
+				// killed before update-ref): not a takeover. The snapshot,
+				// measured against older records, adds no more than the cap.
+				await must(["update-ref", "refs/mailbox/pushed", tip]);
+				await writeFileAtomic(pushedFile(), JSON.stringify(pending.manifest));
+				pushedManifest = pending.manifest;
+				({ filled, commit } = await snapshot(pushedManifest));
+			} else {
+				// A reinstall, the branch deleted, or another crb with the same
+				// device name: the remote has nothing of this device's records.
+				// The snapshot is made again against that, so the new data is
+				// still capped (older files follow on the next pushes), and
+				// the branch is taken over, still with a lease, and said
+				// (status, serve.log once, crb telemetry status).
+				pushedManifest = {};
+				({ filled, commit } = await snapshot(pushedManifest));
+				tookOver = tip !== "";
+			}
 			result = await pushTo(tip);
-			tookOver = result.code === 0;
+			if (result.code !== 0) tookOver = false;
 		}
 	}
 	opts.signal?.throwIfAborted();
@@ -767,6 +971,9 @@ async function push(
 	};
 	if (result.code === 0) {
 		await must(["update-ref", "refs/mailbox/pushed", commit]);
+		// Only now: the next push measures what's new against this.
+		await writeFileAtomic(pushedFile(), JSON.stringify(filled.manifest));
+		await rm(pendingFile(), { force: true });
 		outcome.ok = true;
 		outcome.lastOkAt = base.at;
 	} else {
