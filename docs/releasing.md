@@ -159,10 +159,12 @@ Each version's notes come from the Linear tickets in it (CAR-192; spec:
 read only where its key is (`$LINEAR_API_KEY`, else `linear/api-key` in
 `$XDG_CONFIG_HOME`, then in `~/.config`, so a worktree whose `.envrc`
 moves `XDG_CONFIG_HOME` still finds it; a missing key's error names each
-place tried). In CI the only Linear key is the `release-note` check's
-(below): read only, in that check's one step, running master's code;
-`pnpm release promote` reads Linear on the owner's machine and hands the
-notes to the run, which checks them from git alone (CAR-242).
+place tried). In CI the Linear key (read only) is in the environment
+`release-note` (master only), used by two jobs, each in one step running
+master's code: the `release-note` check (below) and the RC run's
+`rc-notes` (CAR-321, "In an RC" below); `pnpm release promote` reads
+Linear on the owner's machine and hands the notes to the run, which
+checks them from git alone (CAR-242).
 
 - **A ticket's note** is a comment on it whose first line starts with
   `Release note`; the newest such comment wins (by `updatedAt`, so an edit
@@ -250,8 +252,8 @@ notes to the run, which checks them from git alone (CAR-242).
   name, commits that aren't PRs). The owner approves the wording by
   merging that PR; a wording change goes back to Linear (`pnpm release
   note`) and the file is written again. Optional since CAR-242 (promote
-  collects the notes itself): use it to preview the notes, or whenever
-  RCs should carry fresher notes in What's new.
+  collects the notes itself) and CAR-321 (RCs collect theirs): use it to
+  preview the notes, or to fix a wording in RCs before Linear has it.
 - **At promote** (CAR-242): `pnpm release promote` collects the notes for
   exactly the chosen RC's range (the previous release's tag up to the
   RC's commit, so a PR merged after the RC is neither needed nor sent)
@@ -275,6 +277,22 @@ notes to the run, which checks them from git alone (CAR-242).
   result must cover every ticket and ticket-less PR of the release, or
   the run fails naming them. The summary lists the notes as the
   changelog will.
+- **In an RC** (CAR-321): the RC run's job `rc-notes` collects the next
+  release's notes written so far, with promote's rules (`collectNotes`,
+  through `rcNotes` in `scripts/release-notes.ts`), best effort: no
+  coverage check, a ticket or PR without a note is skipped (What's new
+  counts its PR among the changes with no notes yet), and no key,
+  Linear or GitHub failing, or two minutes without an answer give no
+  notes and a warning in the run's summary: the RC then ships what it
+  did before (the committed file and the PRs' titles). The job holds the
+  Linear key (environment `release-note`), installs without scripts, and
+  gets the PR descriptions in a step before any repo code runs (`gh pr
+  list`, the run's read-only token), so `release.ts ci:rc-notes` never
+  calls gh. Every step may fail without failing the run; its output (the
+  notes, gzip+base64 as promote's input) reaches `rc-build`'s
+  `ci:set-version` as `$RC_NOTES` (unreadable: a warning, no notes),
+  which puts them over any committed `release-notes/X.Y.Z.json` (theirs
+  win per id). `rc-build` and `rc-publish` never see the key.
 - **What ships:** `ci:set-version` gathers this version's notes (undated;
   on an RC with `uncovered`, the range's PRs no note covers yet) and every
   earlier released version's, dated, newest first, into two lists:
@@ -290,7 +308,7 @@ notes to the run, which checks them from git alone (CAR-242).
     which Global settings pages back through, all the way back. Without
     it, the build uses the field.
   A local build has neither. A release's own notes are the ones
-  promote-check checked (an RC's: its committed file so far); a release
+  promote-check checked (an RC's: its notes so far, above); a release
   also carries them whole (notes and none) as `crbReleaseNotesFile` in its
   `package.json`, which release-finish reads from the published package
   (after checking npm has the promote run's very tarball) to write the
@@ -845,7 +863,10 @@ machine.
     **`LINEAR_READ_API_KEY`** (Environment secrets, not a repository
     secret). Then add `release-note` to the `Master checks` ruleset's
     required checks (step 3). Without the key the check still runs, passing only
-    PRs whose description has a note.
+    PRs whose description has a note. The RC run's `rc-notes` job
+    (CAR-321) uses the same environment and key: a workflow_run's ref is
+    master, so the rule lets it in; without the key RCs ship only the
+    committed notes.
 
 From then on a release is: `pnpm release promote` (CI stages it), then
 `pnpm release publish` (the owner approves it with the OTP). Promoting the

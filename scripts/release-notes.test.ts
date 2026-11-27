@@ -45,9 +45,11 @@ import {
 	notesFromInput,
 	parseNoteLine,
 	postNote,
+	prBodiesIo,
 	prBodyNote,
 	prNotesOk,
 	promoteNotes,
+	rcNotes,
 	readNotesFile,
 	releaseRange,
 	renderNotesBody,
@@ -1452,6 +1454,252 @@ describe("against a repository", {
 				["CAR-67", "new", "Other."],
 				["CAR-66", "improved", "Keepalive also on phones."],
 			]);
+		});
+
+		describe("an RC's notes so far (CAR-321: best effort)", () => {
+			/** PR descriptions as the RC workflow fetches them (gh pr list --json number,body). */
+			const BODIES = [
+				{ number: 125, body: "Release note: none (test tooling)\n" },
+				{ number: 126, body: "Fixes CAR-172\n" },
+			];
+
+			it("returns the notes it finds and skips the ones missing, never asking gh itself (descriptions from the fetched list)", async () => {
+				history();
+				const { io, calls } = repoIo(repo);
+				const { linear, queries } = linearFor0_4();
+				const r = await rcNotes(
+					prBodiesIo(io, BODIES),
+					{ linear, tried: [] },
+					"0.4.0",
+					"HEAD",
+					{ cwd: repo },
+				);
+				expect(r.file).toEqual({
+					version: "0.4.0",
+					date: null,
+					notes: [
+						{
+							id: "CAR-183",
+							kind: "new",
+							prs: [110, 127],
+							text: "Files changed has a Threads tab.",
+						},
+					],
+					none: [
+						{ id: "CAR-66", prs: [111], why: "refactor" },
+						{ id: "#125", prs: [125], why: "test tooling" },
+						{ id: "CAR-171", prs: [126], why: "flaky test fix" },
+					],
+				});
+				// CAR-172 has no note anywhere: skipped, counted, not an error.
+				expect(r.missing).toBe(1);
+				expect(calls.filter((c) => c.startsWith("gh"))).toEqual([]);
+				expect(queries.some((q) => /mutation/.test(q))).toBe(false);
+			});
+
+			it("a PR the fetched list lacks reads as no description: its ticket is skipped, nothing fails", async () => {
+				history();
+				const { io } = repoIo(repo);
+				const r = await rcNotes(
+					prBodiesIo(io, []),
+					{ linear: linearFor0_4().linear, tried: [] },
+					"0.4.0",
+					"HEAD",
+					{ cwd: repo },
+				);
+				expect(r.file?.none.map((n) => n.id)).toEqual(["CAR-66", "CAR-171"]);
+				expect(r.missing).toBe(2);
+			});
+
+			it("no key, Linear failing or too slow: no notes and a warning, never a throw", async () => {
+				history();
+				const { io } = repoIo(repo);
+				const bodies = prBodiesIo(io, BODIES);
+				const noKey = await rcNotes(
+					bodies,
+					{ linear: null, tried: ["$LINEAR_API_KEY"] },
+					"0.4.0",
+					"HEAD",
+					{ cwd: repo },
+				);
+				expect(noKey.file).toBeNull();
+				expect(noKey.warnings).toEqual([
+					expect.stringMatching(/^no Linear key \(tried \$LINEAR_API_KEY\)/),
+				]);
+				const down: Linear = {
+					query: async () => {
+						throw new Error("Linear answered 503: no data");
+					},
+				};
+				const failed = await rcNotes(
+					bodies,
+					{ linear: down, tried: [] },
+					"0.4.0",
+					"HEAD",
+					{ cwd: repo },
+				);
+				expect(failed.file).toBeNull();
+				expect(failed.warnings).toEqual([
+					expect.stringMatching(/Linear answered 503/),
+				]);
+				const hang: Linear = { query: () => new Promise(() => {}) };
+				const slow = await rcNotes(
+					bodies,
+					{ linear: hang, tried: [] },
+					"0.4.0",
+					"HEAD",
+					{ cwd: repo, timeoutMs: 20 },
+				);
+				expect(slow.file).toBeNull();
+				expect(slow.warnings).toEqual([expect.stringMatching(/timed out/)]);
+				// Not a release: a warning too.
+				const bad = await rcNotes(
+					bodies,
+					{ linear: linearFor0_4().linear, tried: [] },
+					"0.4.0-rc.1",
+					"HEAD",
+					{ cwd: repo },
+				);
+				expect(bad.file).toBeNull();
+				expect(bad.warnings).toEqual([expect.stringMatching(/not a release/)]);
+			});
+
+			it("an RC build ships them over the committed file (theirs win per id, the file's others stay), and only PRs still without a note are listed", async () => {
+				history();
+				commit("notes: 0.4.0 (#140)", {
+					"release-notes/0.4.0.json": notesFile({
+						version: "0.4.0",
+						notes: [
+							{ id: "CAR-183", kind: "new", prs: [110], text: "Old text." },
+						],
+						none: [{ id: "CAR-172", prs: [126], why: "flaky test fix" }],
+					}),
+				});
+				const { io } = repoIo(repo);
+				const { file } = await rcNotes(
+					prBodiesIo(io, BODIES),
+					{ linear: linearFor0_4().linear, tried: [] },
+					"0.4.0",
+					"HEAD",
+					{ cwd: repo },
+				);
+				expect(file).not.toBeNull();
+				const shipped = await shippedNotes(
+					io,
+					"0.4.0-rc.2",
+					repo,
+					file ?? undefined,
+				);
+				expect(shipped[0]).toEqual({
+					version: "0.4.0",
+					date: null,
+					notes: [
+						{
+							id: "CAR-183",
+							kind: "new",
+							prs: [110, 127],
+							text: "Files changed has a Threads tab.",
+						},
+					],
+					uncovered: [],
+				});
+				// Without them: today's behaviour, the file and the uncovered PRs.
+				expect((await shippedNotes(io, "0.4.0-rc.2", repo))[0]).toEqual({
+					version: "0.4.0",
+					date: null,
+					notes: [
+						{ id: "CAR-183", kind: "new", prs: [110], text: "Old text." },
+					],
+					// #126 also carries CAR-171.
+					uncovered: [111, 125, 126],
+				});
+				// Another release's notes are refused.
+				await expect(
+					shippedNotes(io, "0.4.0-rc.2", repo, {
+						version: "0.5.0",
+						date: null,
+						notes: [],
+						none: [],
+					}),
+				).rejects.toThrow(
+					/notes for 0\.5\.0 given to a build of 0\.4\.0-rc\.2/,
+				);
+			});
+
+			it("ci:set-version takes an RC's notes from $RC_NOTES (the collecting job's output) into crbReleaseNotes; unreadable ones only warn", () => {
+				history();
+				const tsx = join(import.meta.dirname, "../node_modules/.bin/tsx");
+				const encoded = encodeNotesInput({
+					version: "0.4.0",
+					date: null,
+					notes: [
+						{
+							id: "CAR-183",
+							kind: "new",
+							prs: [110, 127],
+							text: "Threads tab.",
+						},
+					],
+					none: [{ id: "#125", prs: [125], why: "test tooling" }],
+				});
+				const set = (rcNotesEnv: string) => {
+					const out = execFileSync(
+						tsx,
+						[
+							join(import.meta.dirname, "release.ts"),
+							"ci:set-version",
+							"0.4.0-rc.2",
+							repo,
+						],
+						{
+							encoding: "utf8",
+							env: { ...process.env, RC_NOTES: rcNotesEnv },
+						},
+					);
+					const pkg = JSON.parse(
+						readFileSync(join(repo, "package.json"), "utf8"),
+					);
+					git("update-index", "--no-skip-worktree", "package.json");
+					git("checkout", "--", "package.json");
+					return {
+						out,
+						top: (pkg.crbReleaseNotes as ShippedReleaseNotes[])[0],
+					};
+				};
+				const withNotes = set(encoded);
+				expect(withNotes.top).toEqual({
+					version: "0.4.0",
+					date: null,
+					notes: [
+						{
+							id: "CAR-183",
+							kind: "new",
+							prs: [110, 127],
+							text: "Threads tab.",
+						},
+					],
+					uncovered: [111, 126],
+				});
+				const broken = set("not base64 gzip");
+				expect(broken.out).toMatch(/^::warning::.*RC_NOTES/m);
+				expect(broken.top).toEqual({
+					version: "0.4.0",
+					date: null,
+					notes: [],
+					uncovered: [110, 111, 125, 126, 127],
+				});
+				// Another version's: ignored with a warning, too.
+				const other = set(
+					encodeNotesInput({
+						version: "0.5.0",
+						date: null,
+						notes: [],
+						none: [],
+					}),
+				);
+				expect(other.out).toMatch(/^::warning::/m);
+				expect(other.top?.notes).toEqual([]);
+			});
 		});
 
 		it('--pr: a notes/X.Y.Z branch from origin/master with the file, pushed, and a "notes: X.Y.Z" PR', async () => {
