@@ -1,4 +1,4 @@
-import { type ChildProcess, spawn } from "node:child_process";
+import { type ChildProcess, spawn, spawnSync } from "node:child_process";
 import { setPriority } from "node:os";
 import { beginCall } from "./activity.js";
 import { noteSpawn } from "./spawnWatch.js";
@@ -23,6 +23,12 @@ export interface RunGitOptions {
 	 * work no request waits on (clone maintenance).
 	 */
 	lowPriority?: boolean;
+	/**
+	 * On a timeout or an abort, settle only once git has exited: for a
+	 * holder of the repo lock, which must not hand it over while its git
+	 * still runs.
+	 */
+	waitForExit?: boolean;
 }
 
 /**
@@ -76,6 +82,21 @@ export function inheritedEnv(): NodeJS.ProcessEnv {
 
 /** Kills a detached child's whole process group (the child alone if that fails). */
 function killGroup(child: ChildProcess): void {
+	if (process.platform === "win32") {
+		// No process groups: the tree goes (a repack's pack-objects, an
+		// alias's shell), else they outlive git holding the clone's files.
+		if (child.pid === undefined || child.exitCode !== null) return;
+		const kill = spawnSync(
+			"taskkill",
+			["/pid", String(child.pid), "/t", "/f"],
+			{
+				stdio: "ignore",
+				windowsHide: true,
+			},
+		);
+		if (kill.error) child.kill("SIGKILL");
+		return;
+	}
 	try {
 		if (child.pid === undefined) throw new Error("not started");
 		process.kill(-child.pid, "SIGKILL");
@@ -264,7 +285,10 @@ export function runGitFull(
 			else child.kill("SIGKILL");
 			child.stdout.destroy();
 			child.stderr.destroy();
-			fail(message);
+			if (opts.waitForExit && child.exitCode === null) {
+				child.once("close", () => fail(message));
+				child.once("error", () => fail(message));
+			} else fail(message);
 		};
 		const timer =
 			opts.timeoutMs === undefined

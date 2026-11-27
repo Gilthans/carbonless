@@ -267,6 +267,8 @@ async function run(
 						// A timed git gets its own process group: a kill reaches
 						// pack-objects too.
 						timeoutMs: GIT_BACKSTOP_MS,
+						// The lock goes to the open only once it has exited.
+						waitForExit: true,
 					});
 				}
 			} finally {

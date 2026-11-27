@@ -337,9 +337,11 @@ describe("clone maintenance", () => {
 		const order: string[] = [];
 		// Held until the run is told to give way: only the open can end it.
 		const gate = (signal: AbortSignal) =>
-			new Promise<void>((r) =>
-				signal.addEventListener("abort", () => r(), { once: true }),
-			);
+			signal.aborted
+				? Promise.resolve()
+				: new Promise<void>((r) =>
+						signal.addEventListener("abort", () => r(), { once: true }),
+					);
 		const run = maintainClone(clone, { gate }).then((r) => {
 			order.push("maintenance done");
 			return r;
