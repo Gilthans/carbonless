@@ -69,43 +69,94 @@ export function shellScripts(root, paths) {
 	});
 }
 
-async function ensureBinary(root, asset) {
-	const dir = join(root, "node_modules", ".cache", "shellcheck", VERSION);
+/** A download whose bytes aren't the pinned ones: always fails, never skips. */
+export class HashMismatch extends Error {}
+
+export const DOWNLOAD_TIMEOUT_MS = 60_000;
+
+/**
+ * The binary in `dir` (`<dir>/shellcheck`), downloading `url` first when it
+ * isn't there and checking the tarball against `sha256` before anything is
+ * written. A download that fails (offline, a timeout, an HTTP error) throws
+ * with `env.CI` set, so CI never skips; locally it logs a loud SKIPPED and
+ * returns null (CI checks). A hash mismatch throws everywhere.
+ */
+export async function ensureBinary(
+	dir,
+	{ url, sha256, fetch: get = fetch, env = process.env, log = console.error },
+) {
 	const bin = join(dir, "shellcheck");
 	if (existsSync(bin)) return bin;
-	const name = `shellcheck-${VERSION}.${asset}.tar.gz`;
-	const url = `https://github.com/koalaman/shellcheck/releases/download/${VERSION}/${name}`;
-	console.error(`shellcheck: downloading ${name}`);
-	const res = await fetch(url);
-	if (!res.ok) throw new Error(`shellcheck: ${url}: HTTP ${res.status}`);
-	const body = Buffer.from(await res.arrayBuffer());
+	const name = url.slice(url.lastIndexOf("/") + 1);
+	log(`shellcheck: downloading ${name}`);
+	let body;
+	try {
+		const res = await get(url, {
+			signal: AbortSignal.timeout(DOWNLOAD_TIMEOUT_MS),
+		});
+		if (!res.ok) throw new Error(`HTTP ${res.status}`);
+		body = Buffer.from(await res.arrayBuffer());
+	} catch (e) {
+		const cause = errorText(e);
+		if (env.CI)
+			throw new Error(`shellcheck: couldn't download ${url}: ${cause}`);
+		log(
+			`\n*** shellcheck SKIPPED: ${url}: ${cause} (CI checks the shell scripts) ***\n`,
+		);
+		return null;
+	}
 	const sum = createHash("sha256").update(body).digest("hex");
-	if (sum !== SHA256[asset])
-		throw new Error(
-			`shellcheck: ${name} has sha256 ${sum}, expected ${SHA256[asset]}`,
+	if (sum !== sha256)
+		throw new HashMismatch(
+			`shellcheck: ${url} has sha256 ${sum}, expected ${sha256}`,
 		);
 	const tmp = `${dir}.tmp-${process.pid}`;
 	rmSync(tmp, { recursive: true, force: true });
 	mkdirSync(tmp, { recursive: true });
-	const tgz = join(tmp, name);
-	writeFileSync(tgz, body);
-	const tar = spawnSync(
-		"tar",
-		["-xzf", tgz, "-C", tmp, "--strip-components=1"],
-		{ stdio: "inherit" },
-	);
-	if (tar.status !== 0) throw new Error(`shellcheck: tar failed on ${name}`);
-	chmodSync(join(tmp, "shellcheck"), 0o755);
-	rmSync(tgz);
-	mkdirSync(dirname(dir), { recursive: true });
 	try {
-		renameSync(tmp, dir);
-	} catch (e) {
-		// Another lint run got there first.
+		const tgz = join(tmp, name);
+		writeFileSync(tgz, body);
+		const tar = spawnSync(
+			"tar",
+			["-xzf", tgz, "-C", tmp, "--strip-components=1"],
+			{ stdio: "inherit" },
+		);
+		if (tar.status !== 0 || !existsSync(join(tmp, "shellcheck")))
+			throw new Error(`shellcheck: no shellcheck in ${name}`);
+		chmodSync(join(tmp, "shellcheck"), 0o755);
+		rmSync(tgz);
+		mkdirSync(dirname(dir), { recursive: true });
+		try {
+			renameSync(tmp, dir);
+		} catch (e) {
+			// Another lint run got there first.
+			if (!existsSync(bin)) throw e;
+		}
+	} finally {
 		rmSync(tmp, { recursive: true, force: true });
-		if (!existsSync(bin)) throw e;
 	}
 	return bin;
+}
+
+function errorText(e) {
+	if (!(e instanceof Error)) return String(e);
+	const cause = e.cause instanceof Error ? `: ${e.cause.message}` : "";
+	return `${e.name === "TimeoutError" ? "timed out" : e.message}${cause}`;
+}
+
+/**
+ * shellcheck's argv: the repo's rc file (also for workflow steps, written
+ * outside the repo, and never a developer's ~/.shellcheckrc), the flags,
+ * then `--` so no path is read as an option.
+ */
+export function shellcheckArgs(root, flags, files) {
+	return [
+		`--rcfile=${join(root, ".shellcheckrc")}`,
+		"--external-sources",
+		...flags,
+		"--",
+		...files,
+	];
 }
 
 /** Whether a path is a GitHub Actions workflow. */
@@ -116,19 +167,37 @@ export function isWorkflow(path) {
 const indentOf = (l) => l.length - l.trimStart().length;
 
 /**
- * The shell of every `run:` step in a workflow's text, as `{ line, indent,
- * script }`: `line` is the 1-based line its first script line is on,
- * `indent` the columns dedented away. `${{ … }}` becomes `_GHA_EXPR_` (same
- * shape for shellcheck, a plain word). Steps that run another shell (a
- * `shell:` other than bash or sh, or a Windows job's default pwsh) are left
- * out. Line-based, for the plain block style our workflows use.
+ * `${{ … }}` as a word of the same length (`_GHA___…`), so shellcheck sees a
+ * plain word and a column after it still maps back.
  */
-export function workflowRunBlocks(text) {
+export function maskExpressions(s) {
+	return s.replace(
+		/\$\{\{[\s\S]*?\}\}/g,
+		(m) => `_GHA${"_".repeat(m.length - 4)}`,
+	);
+}
+
+/**
+ * The shell of every sh/bash `run:` step in a workflow's text, as `{ line,
+ * col, shell, script }`: `line` is the 1-based line its script starts on,
+ * `col` the 0-based column shellcheck's column 1 maps to. Steps that run
+ * another shell (a `shell:` other than bash or sh, or a Windows job's default
+ * pwsh) are left out. Line-based, for the shapes our workflows use: a plain
+ * one-line value, a one-line quoted one without escapes, and a `|` block.
+ * Anything else throws, naming `file:line`, rather than go unchecked.
+ */
+export function workflowRunBlocks(text, file = "workflow") {
 	const lines = text.split("\n");
 	const blocks = [];
 	let windowsJob = false;
+	let inJobs = false;
 	for (let i = 0; i < lines.length; i++) {
 		const l = lines[i];
+		// Steps live under the top-level `jobs:` (`on: … inputs: run:` and
+		// the top-level `defaults: run:` are no steps).
+		if (/^\S/.test(l) && !l.startsWith("#"))
+			inJobs = /^jobs:\s*(?:#.*)?$/.test(l);
+		if (!inJobs) continue;
 		// A job (two-space key under `jobs:`): note whether it runs on Windows.
 		if (/^ {2}[\w-]+:\s*$/.test(l)) {
 			windowsJob = false;
@@ -137,48 +206,93 @@ export function workflowRunBlocks(text) {
 				if (/^ {4}runs-on:.*windows/.test(lines[j])) windowsJob = true;
 			}
 		}
-		const m = /^(\s*)(?:- )?run:\s?(.*)$/.exec(l);
+		const m = /^(\s*)(- )?run:(?:\s+(.*))?$/.exec(l);
 		if (!m) continue;
-		const runIndent = indentOf(l) + (l.trimStart().startsWith("- ") ? 2 : 0);
-		const shell = stepShell(lines, i, runIndent);
-		if (shell ? !/^(?:ba)?sh\b/.test(shell) : windowsJob) continue;
-		const value = m[2].replace(/\s+#.*$/, "");
-		let body;
-		let first = i + 1;
-		if (/^[|>][-+]?$/.test(value.trim())) {
-			body = [];
+		const keyIndent = m[1].length + (m[2] ? 2 : 0);
+		const value = (m[3] ?? "").replace(/\s+#.*$/, "").trimEnd();
+		const fail = (why) => {
+			throw new Error(
+				`${file}:${i + 1}: shellcheck can't read this run: step (${why})`,
+			);
+		};
+		if (value === "") {
+			const next = lines.slice(i + 1).find((n) => n.trim() !== "");
+			// `defaults: run: shell: bash`: a mapping, not a step's script.
+			if (
+				!m[2] &&
+				next &&
+				indentOf(next) > keyIndent &&
+				/^\s*(?:shell|working-directory):(?:\s|$)/.test(next)
+			)
+				continue;
+			fail("its script starts on the next line: use `run: |`");
+		}
+		const shell = stepShell(lines, i, keyIndent, Boolean(m[2]));
+		if (shell ? !/^(?:ba)?sh$/.test(shell) : windowsJob) continue;
+		const sh = shell === "sh" ? "sh" : "bash";
+		const valueCol = l.indexOf(m[3]);
+		if (/^\|[-+]?$/.test(value)) {
+			const body = [];
 			let j = i + 1;
 			for (; j < lines.length; j++) {
 				const b = lines[j];
-				if (b.trim() !== "" && indentOf(b) <= runIndent) break;
+				if (b.trim() !== "" && indentOf(b) <= keyIndent) break;
 				body.push(b);
 			}
 			while (body.length && body[body.length - 1].trim() === "") body.pop();
+			const indent = Math.min(
+				...body.filter((b) => b.trim() !== "").map(indentOf),
+			);
+			if (!Number.isFinite(indent)) fail("an empty block");
+			blocks.push({
+				line: i + 2,
+				col: indent,
+				shell: sh,
+				script: `${maskExpressions(body.map((b) => b.slice(Math.min(indent, indentOf(b)))).join("\n"))}\n`,
+			});
 			i = j - 1;
+		} else if (/^[|>]/.test(value)) {
+			fail(`the block style ${value}: use \`run: |\``);
+		} else if (/^['"]/.test(value)) {
+			const q = value[0];
+			const inner = value.slice(1, -1);
+			if (value.length < 2 || value.at(-1) !== q)
+				fail("a quoted value over several lines");
+			if (q === '"' && /[\\"]/.test(inner))
+				fail("escapes in a double-quoted value");
+			if (q === "'" && /'(?!')/.test(inner.replace(/''/g, "")))
+				fail("a broken single-quoted value");
+			blocks.push({
+				line: i + 1,
+				col: valueCol + 1,
+				shell: sh,
+				script: `${maskExpressions(q === "'" ? inner.replace(/''/g, "'") : inner)}\n`,
+			});
 		} else {
-			body = [m[2]];
-			first = i;
+			const next = lines[i + 1];
+			if (
+				next !== undefined &&
+				next.trim() !== "" &&
+				indentOf(next) > keyIndent
+			)
+				fail("a plain value over several lines: use `run: |`");
+			blocks.push({
+				line: i + 1,
+				col: valueCol,
+				shell: sh,
+				script: `${maskExpressions(value)}\n`,
+			});
 		}
-		const indent = Math.min(
-			...body.filter((b) => b.trim() !== "").map(indentOf),
-		);
-		if (!Number.isFinite(indent)) continue;
-		const script = body
-			.map((b) => b.slice(Math.min(indent, indentOf(b))))
-			.join("\n")
-			.replace(/\$\{\{[^}]*\}\}/g, "_GHA_EXPR_");
-		blocks.push({
-			line: first + 1,
-			indent: first === i ? l.indexOf(m[2]) : indent,
-			script: `${script}\n`,
-		});
 	}
 	return blocks;
 }
 
-/** The `shell:` of the step whose `run:` is at line `i`, or the job/workflow default. */
-function stepShell(lines, i, keyIndent) {
-	for (let j = i - 1; j >= 0; j--) {
+/**
+ * The `shell:` of the step whose `run:` is at line `i`, or null. A `- run:`
+ * starts its step: only the lines after it are the step's.
+ */
+function stepShell(lines, i, keyIndent, startsStep) {
+	for (let j = startsStep ? -1 : i - 1; j >= 0; j--) {
 		const l = lines[j];
 		if (l.trim() === "" || l.trimStart().startsWith("#")) continue;
 		const ind = indentOf(l) + (l.trimStart().startsWith("- ") ? 2 : 0);
@@ -195,8 +309,27 @@ function stepShell(lines, i, keyIndent) {
 		if (m && indentOf(l) === keyIndent) return m[1];
 	}
 	// `defaults: run: shell:` (ours say bash) needs no special case: bash is
-	// what shellcheck checks anyway.
+	// what a step without its own shell is checked as.
 	return null;
+}
+
+/**
+ * Each block as the file shellcheck reads: its shell, and `set -e` (Actions
+ * runs bash steps with -e: `bash -e {0}`, or -eo pipefail with `shell:
+ * bash`, so a failing `cd` stops the step, SC2164), then the script.
+ */
+export const HEADER_LINES = 2;
+export function blockFile(block) {
+	return `# shellcheck shell=${block.shell}\nset -e\n${block.script}`;
+}
+
+/** shellcheck's gcc-format output with each block file's place mapped back. */
+export function remapGcc(out, where) {
+	return out.replace(/^(.+?):(\d+):(\d+):/gm, (all, name, line, col) => {
+		const w = where.get(name);
+		if (!w) return all;
+		return `${w.file}:${w.line + Number(line) - 1 - HEADER_LINES}:${w.col + Number(col)}:`;
+	});
 }
 
 function checkWorkflows(bin, root, workflows, flags) {
@@ -204,39 +337,31 @@ function checkWorkflows(bin, root, workflows, flags) {
 	try {
 		const where = new Map();
 		const names = [];
-		for (const wf of workflows) {
-			const text = readFileSync(join(root, wf), "utf8");
-			for (const b of workflowRunBlocks(text)) {
+		for (const file of workflows) {
+			const text = readFileSync(join(root, file), "utf8");
+			for (const b of workflowRunBlocks(text, file)) {
 				const name = join(tmp, `${names.length}.sh`);
-				// Actions runs bash steps with -e (`bash -e {0}`, or -eo pipefail
-				// with `shell: bash`): a failing `cd` stops the step (SC2164).
-				writeFileSync(name, `set -e\n${b.script}`);
-				where.set(name, { wf, ...b });
+				writeFileSync(name, blockFile(b));
+				where.set(name, { file, ...b });
 				names.push(name);
 			}
 		}
 		if (names.length === 0) return 0;
 		const r = spawnSync(
 			bin,
-			[
-				...flags,
-				"--shell=bash",
-				// `node -e '…${x}…'`: JavaScript in single quotes is meant literally.
-				"--exclude=SC2016",
-				"--format=gcc",
-				...names,
-			],
+			shellcheckArgs(
+				root,
+				[
+					...flags,
+					// `node -e '…${x}…'`: JavaScript in single quotes is meant literally.
+					"--exclude=SC2016",
+					"--format=gcc",
+				],
+				names,
+			),
 			{ cwd: root, encoding: "utf8" },
 		);
-		const out = (r.stdout ?? "").replace(
-			/^(.+?\.sh):(\d+):(\d+):/gm,
-			(all, name, line, col) => {
-				const w = where.get(name);
-				if (!w) return all;
-				return `${w.wf}:${w.line + Number(line) - 2}:${w.indent + Number(col)}:`;
-			},
-		);
-		process.stdout.write(out);
+		process.stdout.write(remapGcc(r.stdout ?? "", where));
 		process.stderr.write(r.stderr ?? "");
 		return r.status ?? 1;
 	} finally {
@@ -253,6 +378,9 @@ async function main() {
 		return 0;
 	}
 	const root = resolve(import.meta.dirname, "..");
+	// Every argument starting with `-` is a shellcheck flag (in its
+	// `--flag=value` form), so a file named like a flag can't be named here;
+	// with no files given, the tracked ones are found (and passed after `--`).
 	const args = process.argv.slice(2);
 	const flags = args.filter((a) => a.startsWith("-"));
 	let paths = args.filter((a) => !a.startsWith("-"));
@@ -268,10 +396,18 @@ async function main() {
 	} else files = paths.filter((p) => !isWorkflow(p));
 	const workflows = paths.filter(isWorkflow);
 	if (files.length === 0 && workflows.length === 0) return 0;
-	const bin = await ensureBinary(root, asset);
+	const name = `shellcheck-${VERSION}.${asset}.tar.gz`;
+	const bin = await ensureBinary(
+		join(root, "node_modules", ".cache", "shellcheck", VERSION),
+		{
+			url: `https://github.com/koalaman/shellcheck/releases/download/${VERSION}/${name}`,
+			sha256: SHA256[asset],
+		},
+	);
+	if (!bin) return 0;
 	let status = 0;
 	if (files.length > 0) {
-		const r = spawnSync(bin, ["--external-sources", ...flags, ...files], {
+		const r = spawnSync(bin, shellcheckArgs(root, flags, files), {
 			cwd: root,
 			stdio: "inherit",
 		});
