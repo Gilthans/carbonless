@@ -25,6 +25,7 @@ import {
 	type AgentStatus,
 	JOINED_PREAMBLE,
 } from "../../shared/agent.js";
+import { closeCatFiles } from "../catFile.js";
 import { registerMcp } from "../mcp/routes.js";
 import type { SessionRegistry } from "../registry.js";
 import { RefStore } from "../review/refStore.js";
@@ -256,6 +257,9 @@ afterEach(async () => {
 		if (v === undefined) delete process.env[k];
 		else process.env[k] = v;
 	}
+	// Ref reads keep the clone's cat-file up, and Windows won't remove a
+	// directory a process runs in: gone first.
+	await closeCatFiles();
 	origin.cleanup();
 	cache.cleanup();
 	rmSync(tmp, { recursive: true, force: true });
