@@ -1,8 +1,10 @@
+import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
-import { readdir } from "node:fs/promises";
+import { readdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { Coverage } from "../../shared/home.js";
 import type { Snapshot } from "../../shared/types.js";
+import { writeFileAtomic } from "../atomicFile.js";
 import { buildSnapshot } from "../diff/snapshot.js";
 import { cacheDir } from "../paths.js";
 import { buildReviewView } from "../review/coverage.js";
@@ -20,11 +22,64 @@ import type { StartedReview } from "./facts.js";
  * patch set exists only after the reviewer's first action.
  */
 
-/** Snapshots kept (by repo, merge base and head). */
-const MAX_SNAPSHOTS = 64;
+/**
+ * Snapshots kept (by repo, merge base and head), only so a review marked
+ * further recounts without a new build: the memos keep counts, never
+ * snapshots (CAR-324), and a snapshot of a big PR is several MB.
+ */
+const MAX_SNAPSHOTS = 4;
+
+/**
+ * Bumped whenever the coverage of the same refs could come out different:
+ * the snapshot's clusters or their keys (`diff/snapshot.ts`), the fold
+ * (`review/fold.ts`), split carries, or `coverageOf` below. A file of
+ * another version is ignored whole, so every review is counted again.
+ */
+export const COVERAGE_VERSION = 1;
 
 /** `<cache>/carbonless/repos`, where every clone lives. */
 const reposDir = () => join(cacheDir(), "repos");
+
+/** `<cache>/carbonless/coverage`: counted coverage, kept across restarts. */
+const coverageDir = () => join(cacheDir(), "coverage");
+
+/** The key `withCoverage` names a PR by: `owner/repo#number`, lowercased. */
+export const prKey = (owner: string, repo: string, number: number): string =>
+	`${owner}/${repo}#${number}`.toLowerCase();
+
+/** One review's counted coverage on disk, valid only at these tips. */
+interface DiskEntry {
+	metaTip: string;
+	progressTip: string;
+	coverage: Coverage;
+}
+
+const OID = /^[0-9a-f]{40}([0-9a-f]{24})?$/;
+const UNITS = new Set<Coverage["unit"]>(["lines", "clusters", "files"]);
+const count = (n: unknown): n is number =>
+	typeof n === "number" && Number.isSafeInteger(n) && n >= 0;
+
+/**
+ * A disk entry as read, or null when anything about it is off: a cache
+ * that can't be trusted is a miss (recounted), never coverage (principle 2).
+ */
+function diskEntry(value: unknown): DiskEntry | null {
+	if (typeof value !== "object" || value === null) return null;
+	const { metaTip, progressTip, coverage } = value as Record<string, unknown>;
+	if (typeof metaTip !== "string" || !OID.test(metaTip)) return null;
+	if (typeof progressTip !== "string" || !OID.test(progressTip)) return null;
+	if (typeof coverage !== "object" || coverage === null) return null;
+	const { done, total, unit } = coverage as Record<string, unknown>;
+	if (!count(done) || !count(total) || done > total) return null;
+	if (typeof unit !== "string" || !UNITS.has(unit as Coverage["unit"])) {
+		return null;
+	}
+	return {
+		metaTip,
+		progressTip,
+		coverage: { done, total, unit: unit as Coverage["unit"] },
+	};
+}
 
 /**
  * The share a row shows: reviewed out of what isn't crossed off, in lines.
@@ -80,6 +135,8 @@ export class StartedReviews {
 	 * last scan listed, so it is bounded by the started reviews that exist.
 	 */
 	readonly #memos = new Map<string, Map<string, Memo>>();
+	/** By clone and slug: the coverage file as read, by review id. */
+	readonly #disk = new Map<string, Promise<Map<string, DiskEntry>>>();
 
 	constructor(options: { build?: typeof buildSnapshot } = {}) {
 		this.#build = options.build ?? buildSnapshot;
@@ -90,6 +147,7 @@ export class StartedReviews {
 		this.#stores.clear();
 		this.#snapshots.clear();
 		this.#memos.clear();
+		this.#disk.clear();
 	}
 
 	#store(repo: string): RefStore {
@@ -119,15 +177,19 @@ export class StartedReviews {
 
 	/**
 	 * Every review `slug` has started, in any clone, as-of reviews left out.
-	 * Coverage only for repos `withCoverage` names (`owner/repo`, lowercased;
-	 * all when not given): Home shows no other. `only` (`owner/repo`): that
-	 * repo's clone alone, no other is scanned.
+	 * Coverage only for the PRs `withCoverage` names (prKey; all when not
+	 * given): Home asks for its rows' PRs alone, so a review of a PR merged
+	 * months ago costs nothing. `only` (`owner/repo`): that repo's clone
+	 * alone, no other is scanned.
 	 *
 	 * Git processes per clone, however many reviews it holds (CAR-307): one
 	 * for-each-ref of the meta and progress refs' tips, plus, only when a tip
-	 * moved since the last scan (or coverage is newly wanted), one git log of
-	 * the moved tips. A review written by another tab, the crb CLI or a fetch
-	 * moves its tip, so the next scan sees it with no invalidation.
+	 * moved since the last scan (or coverage is newly wanted and not on
+	 * disk), one git log of the moved tips. A review written by another tab,
+	 * the crb CLI or a fetch moves its tip, so the next scan sees it with no
+	 * invalidation. Coverage counted once is kept on disk by the refs' tips
+	 * (CAR-324), so a restart builds no snapshot for a review that didn't
+	 * move.
 	 */
 	async list(
 		slug: string,
@@ -164,6 +226,43 @@ export class StartedReviews {
 		return found.flat();
 	}
 
+	/**
+	 * The coverage of `reviews` (as the last list() of `slug` gave them),
+	 * by review id, with no new scan: for a caller that picks which reviews
+	 * it shows only after listing them all (the MCP `reviews` tool). Null:
+	 * not counted (a review the last scan didn't hold, or its commits not
+	 * readable).
+	 */
+	async coverage(
+		slug: string,
+		reviews: readonly StartedReview[],
+	): Promise<Map<string, Coverage | null>> {
+		const ids = new Set(reviews.map((r) => r.id));
+		const byRepo = new Map<string, Memo[]>();
+		for (const [key, memos] of this.#memos) {
+			const [repo = "", memoSlug] = key.split("\0");
+			if (memoSlug !== slug) continue;
+			for (const [id, memo] of memos) {
+				if (!ids.has(id) || !memo.review) continue;
+				byRepo.set(repo, [...(byRepo.get(repo) ?? []), memo]);
+			}
+		}
+		await Promise.all(
+			[...byRepo].map(([repo, memos]) =>
+				this.#cover(repo, slug, memos).catch((error) => {
+					console.error(`crb: no coverage in ${repo}: ${String(error)}`);
+				}),
+			),
+		);
+		const out = new Map<string, Coverage | null>();
+		for (const memos of byRepo.values()) {
+			for (const memo of memos) {
+				if (memo.review) out.set(memo.review.id, memo.coverage ?? null);
+			}
+		}
+		return out;
+	}
+
 	async #inRepo(
 		repo: string,
 		slug: string,
@@ -190,7 +289,7 @@ export class StartedReviews {
 		const memos = new Map<string, Memo>();
 		// Each review whose tips moved, and what it needs read.
 		const stale: { id: string; metaTip: string; progressTip: string }[] = [];
-		const toCover = new Map<string, Memo>();
+		const toCover: Memo[] = [];
 		for (const [id, progressTip] of progresses) {
 			const metaTip = metas.get(id);
 			// No meta (yet): not a review to show.
@@ -203,30 +302,20 @@ export class StartedReviews {
 					memo.coverage === undefined &&
 					this.#wants(memo.review, withCoverage)
 				) {
-					toCover.set(id, memo);
+					toCover.push(memo);
 				}
 			} else stale.push({ id, metaTip, progressTip });
 		}
-		const needed = [
-			...stale.flatMap((s) => [s.metaTip, s.progressTip]),
-			...[...toCover.values()]
-				.filter((m) => !m.events)
-				.map((m) => m.progressTip),
-		];
 		const read =
-			needed.length > 0
-				? await store.eventsOfTips(needed)
+			stale.length > 0
+				? await store.eventsOfTips(
+						stale.flatMap((s) => [s.metaTip, s.progressTip]),
+					)
 				: new Map<string, CrbEvent[] | Error>();
-		const eventsOf = (tip: string) => {
-			const events = read.get(tip);
-			if (events === undefined) throw new Error(`not read: ${tip}`);
-			if (events instanceof Error) throw events;
-			return events;
-		};
 		for (const { id, metaTip, progressTip } of stale) {
 			try {
-				const meta = eventsOf(metaTip);
-				const events = eventsOf(progressTip);
+				const meta = eventsOf(read, metaTip);
+				const events = eventsOf(read, progressTip);
 				const memo: Memo = {
 					metaTip,
 					progressTip,
@@ -235,7 +324,7 @@ export class StartedReviews {
 				memos.set(id, memo);
 				if (memo.review && this.#wants(memo.review, withCoverage)) {
 					memo.events = events;
-					toCover.set(id, memo);
+					toCover.push(memo);
 				}
 			} catch (error) {
 				// Kept as not started until a tip moves: a broken history is
@@ -244,21 +333,9 @@ export class StartedReviews {
 				console.error(`crb: skipped review ${id} in ${repo}: ${String(error)}`);
 			}
 		}
-		await Promise.all(
-			[...toCover.values()].map(async (memo) => {
-				try {
-					memo.events ??= eventsOf(memo.progressTip);
-				} catch (error) {
-					console.error(
-						`crb: no coverage for ${memo.review?.id} in ${repo}: ${String(error)}`,
-					);
-					return;
-				}
-				await this.#coverage(repo, slug, memo);
-			}),
-		);
 		// Reviews gone from the clone leave the memo with it.
 		this.#memos.set(memoKey, memos);
+		await this.#cover(repo, slug, toCover);
 		const out: StartedReview[] = [];
 		for (const memo of memos.values()) {
 			if (!memo.review) continue;
@@ -274,13 +351,58 @@ export class StartedReviews {
 	}
 
 	#wants(
-		review: { owner: string; repo: string },
+		review: { owner: string; repo: string; number: number },
 		withCoverage: ReadonlySet<string> | undefined,
 	): boolean {
 		return (
 			!withCoverage ||
-			withCoverage.has(`${review.owner}/${review.repo}`.toLowerCase())
+			withCoverage.has(prKey(review.owner, review.repo, review.number))
 		);
+	}
+
+	/**
+	 * Fills each memo's coverage (those without one): from the disk cache
+	 * when it was counted at the same tips, else counted from a snapshot
+	 * (its events read in one git log when not kept), then kept on disk.
+	 */
+	async #cover(repo: string, slug: string, memos: Memo[]): Promise<void> {
+		const wanted = memos.filter((m) => m.review && m.coverage === undefined);
+		if (wanted.length === 0) return;
+		const disk = await this.#readDisk(repo, slug);
+		const misses: Memo[] = [];
+		for (const memo of wanted) {
+			const hit = disk.get(memo.review?.id ?? "");
+			if (
+				hit &&
+				hit.metaTip === memo.metaTip &&
+				hit.progressTip === memo.progressTip
+			) {
+				memo.coverage = hit.coverage;
+				memo.events = undefined;
+			} else misses.push(memo);
+		}
+		if (misses.length === 0) return;
+		const unread = misses.filter((m) => !m.events).map((m) => m.progressTip);
+		const read =
+			unread.length > 0
+				? await this.#store(repo).eventsOfTips(unread)
+				: new Map<string, CrbEvent[] | Error>();
+		await Promise.all(
+			misses.map(async (memo) => {
+				try {
+					memo.events ??= eventsOf(read, memo.progressTip);
+				} catch (error) {
+					console.error(
+						`crb: no coverage for ${memo.review?.id} in ${repo}: ${String(error)}`,
+					);
+					return;
+				}
+				await this.#coverage(repo, slug, memo);
+			}),
+		);
+		if (misses.some((m) => m.coverage !== undefined)) {
+			await this.#writeDisk(repo, slug);
+		}
 	}
 
 	/** Fills `memo.coverage` from its events, which it then lets go. */
@@ -307,6 +429,109 @@ export class StartedReviews {
 			// (shown as none), tried again next time from the kept events.
 		}
 	}
+
+	/** The coverage file of `repo` and `slug` (hashed: no path or slug in its name). */
+	#diskPath(repo: string, slug: string): string {
+		const name = createHash("sha256").update(`${repo}\0${slug}`).digest("hex");
+		return join(coverageDir(), `${name}.json`);
+	}
+
+	/**
+	 * The clone's coverage file for `slug`, read once per server. A file
+	 * that can't be read or parsed, of another version, or of another clone
+	 * or slug is empty; an entry that doesn't check out is dropped alone.
+	 */
+	#readDisk(repo: string, slug: string): Promise<Map<string, DiskEntry>> {
+		const key = `${repo}\0${slug}`;
+		let disk = this.#disk.get(key);
+		if (!disk) {
+			disk = (async () => {
+				const entries = new Map<string, DiskEntry>();
+				let parsed: unknown;
+				try {
+					parsed = JSON.parse(
+						await readFile(this.#diskPath(repo, slug), "utf8"),
+					);
+				} catch {
+					return entries;
+				}
+				if (typeof parsed !== "object" || parsed === null) return entries;
+				const file = parsed as Record<string, unknown>;
+				if (
+					file.version !== COVERAGE_VERSION ||
+					file.repo !== repo ||
+					file.slug !== slug ||
+					typeof file.reviews !== "object" ||
+					file.reviews === null
+				) {
+					return entries;
+				}
+				for (const [id, value] of Object.entries(file.reviews)) {
+					const entry = diskEntry(value);
+					if (entry) entries.set(id, entry);
+				}
+				return entries;
+			})();
+			this.#disk.set(key, disk);
+		}
+		return disk;
+	}
+
+	/**
+	 * Keeps the counted coverage of the clone's reviews (as the last scan
+	 * holds them) on disk: one small file per clone and slug, bounded by the
+	 * started reviews that exist. A failed write keeps the memory copy.
+	 */
+	async #writeDisk(repo: string, slug: string): Promise<void> {
+		const key = `${repo}\0${slug}`;
+		const disk = await this.#readDisk(repo, slug);
+		const memos = this.#memos.get(key);
+		const next = new Map<string, DiskEntry>();
+		for (const [id, memo] of memos ?? []) {
+			if (memo.review && memo.coverage) {
+				next.set(id, {
+					metaTip: memo.metaTip,
+					progressTip: memo.progressTip,
+					coverage: memo.coverage,
+				});
+			} else {
+				// Not counted this time: what disk had at the same tips stays.
+				const kept = disk.get(id);
+				if (
+					kept &&
+					kept.metaTip === memo.metaTip &&
+					kept.progressTip === memo.progressTip
+				) {
+					next.set(id, kept);
+				}
+			}
+		}
+		this.#disk.set(key, Promise.resolve(next));
+		try {
+			await writeFileAtomic(
+				this.#diskPath(repo, slug),
+				JSON.stringify({
+					version: COVERAGE_VERSION,
+					repo,
+					slug,
+					reviews: Object.fromEntries(next),
+				}),
+			);
+		} catch (error) {
+			console.error(`crb: coverage not kept for ${repo}: ${String(error)}`);
+		}
+	}
+}
+
+/** A tip's events as `read` has them; throws when it hasn't, or failed. */
+function eventsOf(
+	read: Map<string, CrbEvent[] | Error>,
+	tip: string,
+): CrbEvent[] {
+	const events = read.get(tip);
+	if (events === undefined) throw new Error(`not read: ${tip}`);
+	if (events instanceof Error) throw events;
+	return events;
 }
 
 /** A review's summary from its meta and progress events; null: not started. */

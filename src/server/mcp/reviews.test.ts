@@ -45,6 +45,8 @@ const deps = (over: Partial<JoinableDeps> = {}): JoinableDeps => ({
 	open: () => [],
 	viewer: async () => "me",
 	started: async () => [],
+	coverage: async (_slug, reviews) =>
+		new Map(reviews.map((r) => [r.id, r.coverage])),
 	cached: () => undefined,
 	acpConfigured: async () => false,
 	spawned: () => false,
@@ -164,6 +166,50 @@ describe("listJoinable", () => {
 		expect(await listJoinable(d, ORIGIN, "ACME/WIDGET")).toHaveLength(
 			MAX_JOINABLE,
 		);
+	});
+
+	it("counts coverage only for the started reviews it answers with (CAR-324)", async () => {
+		const many = Array.from({ length: 70 }, (_, i) =>
+			started(i + 1, new Date(Date.UTC(2026, 9, 1, 0, i)).toISOString(), {
+				coverage: null,
+			}),
+		);
+		const asked: number[][] = [];
+		const rows = await listJoinable(
+			deps({
+				started: async () => many,
+				coverage: async (slug, reviews) => {
+					expect(slug).toBe("me");
+					asked.push(reviews.map((r) => r.number));
+					return new Map(
+						reviews.map((r) => [
+							r.id,
+							{ done: r.number, total: 100, unit: "lines" as const },
+						]),
+					);
+				},
+			}),
+			ORIGIN,
+			"#7",
+		);
+		// The answer is the PRs matching "#7" (#7, #70): coverage for those alone.
+		expect(asked).toEqual([rows.map((r) => r.pr)]);
+		expect(rows.length).toBeLessThan(70);
+		for (const r of rows) {
+			expect(r.progress).toEqual({ reviewed: r.pr, total: 100, unit: "lines" });
+		}
+		asked.length = 0;
+		await listJoinable(
+			deps({
+				started: async () => many,
+				coverage: async (_slug, reviews) => {
+					asked.push(reviews.map((r) => r.number));
+					return new Map();
+				},
+			}),
+			ORIGIN,
+		);
+		expect(asked[0]).toHaveLength(MAX_JOINABLE);
 	});
 
 	it("PR text (title, branches, author) comes out sanitised, one line each", async () => {

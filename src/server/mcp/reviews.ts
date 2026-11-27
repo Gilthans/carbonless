@@ -1,3 +1,4 @@
+import type { Coverage } from "../../shared/home.js";
 import { oneLine } from "../agent/prompt.js";
 import type { StartedReview } from "../home/facts.js";
 
@@ -49,7 +50,16 @@ export interface JoinableDeps {
 	open(): OpenReview[];
 	/** The reviewer's slug when known without asking GitHub, else null. */
 	viewer(): Promise<string | null>;
+	/** The started reviews, coverage not asked for (StartedReviews.list). */
 	started(slug: string): Promise<readonly StartedReview[]>;
+	/**
+	 * The coverage of the started reviews it answers with, by id: counted
+	 * only for those, never for every review ever started (CAR-324).
+	 */
+	coverage(
+		slug: string,
+		reviews: readonly StartedReview[],
+	): Promise<Map<string, Coverage | null>>;
 	/** Home's cached facts of a PR, if any. */
 	cached(
 		owner: string,
@@ -181,8 +191,26 @@ export async function listJoinable(
 			.join("\n")
 			.toLowerCase()
 			.includes(q);
-	return [...rows.values()]
-		.filter(matches)
-		.sort((a, b) => Date.parse(b.lastActivity) - Date.parse(a.lastActivity))
+	const answer = [...rows]
+		.filter(([, r]) => matches(r))
+		.sort(
+			([, a], [, b]) => Date.parse(b.lastActivity) - Date.parse(a.lastActivity),
+		)
 		.slice(0, MAX_JOINABLE);
+	// Coverage counted only for the started reviews in the answer (the
+	// list's own may be null: not asked for).
+	const startedById = new Map(started.map((s) => [s.id, s]));
+	const shown = answer
+		.map(([id]) => startedById.get(id))
+		.filter((s): s is StartedReview => s !== undefined);
+	if (slug && shown.length > 0) {
+		const coverage = await deps
+			.coverage(slug, shown)
+			.catch(() => new Map<string, Coverage | null>());
+		for (const [id, r] of answer) {
+			const c = coverage.get(id);
+			if (c) r.progress = { reviewed: c.done, total: c.total, unit: c.unit };
+		}
+	}
+	return answer.map(([, r]) => r);
 }

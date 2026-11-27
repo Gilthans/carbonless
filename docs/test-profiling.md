@@ -245,7 +245,11 @@ with the background work it sets off (settled before the next step).
   `--calls` adds every command line.
 - `src/server/spawnCounts.test.ts` runs it at 15 files / 15 threads and at
   4x that, and fails when any step's count differs: a process per file,
-  thread or commit shows up there.
+  thread or commit shows up there. It also runs the restart and reload
+  with 10 and 40 other started reviews in the clone (`measureOpen`'s
+  `seed`, `test/started-seed.ts`: reviews written with `git fast-import`),
+  and fails when a step's count differs: one review's page reads must not
+  grow with the others (CAR-324).
 
 ## One server for many tests (CAR-106)
 

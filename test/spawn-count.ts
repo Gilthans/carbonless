@@ -1,5 +1,11 @@
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import {
+	mkdirSync,
+	mkdtempSync,
+	readdirSync,
+	rmSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { buildApp } from "../src/server/app";
@@ -360,7 +366,14 @@ export interface OpenCounts {
  * machine's first open, after a restart (with a started review of three
  * patch sets), and on a reload.
  */
-export async function measureOpen(size: ScaleSize): Promise<OpenCounts> {
+export async function measureOpen(
+	size: ScaleSize,
+	/**
+	 * Run before the restart, on the clone and the review's reviewer: e.g.
+	 * other started reviews written into the same clone (CAR-324).
+	 */
+	seed?: (clone: string, slug: string) => void | Promise<void>,
+): Promise<OpenCounts> {
 	const fx = createScalePr(size);
 	const [h1, h2, h3] = fx.heads;
 	const cacheA = process.env.XDG_CACHE_HOME as string;
@@ -398,6 +411,23 @@ export async function measureOpen(size: ScaleSize): Promise<OpenCounts> {
 		await settleSpawns();
 		await server.stop();
 		fx.pointAt(h3, true);
+		if (seed) {
+			const repos = join(cacheA, "carbonless", "repos");
+			const [owner] = readdirSync(repos);
+			const repo = readdirSync(join(repos, owner as string)).find((n) =>
+				n.endsWith(".git"),
+			);
+			const clone = join(repos, owner as string, repo as string);
+			const progress = execFileSync(
+				"git",
+				["for-each-ref", "--format=%(refname)", "refs/crb/reviews/"],
+				{ cwd: clone, encoding: "utf8", env: testGitEnv() },
+			)
+				.split("\n")
+				.find((l) => l.endsWith("/progress"));
+			// refs/crb/reviews/<id>/reviewers/<slug>/progress
+			await seed(clone, progress?.split("/")[5] as string);
+		}
 
 		// The first open on another machine: a new clone, no review.
 		clearSnapshotCaches();

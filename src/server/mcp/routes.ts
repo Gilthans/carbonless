@@ -223,7 +223,9 @@ export function joinableDeps(
 	registry: SessionRegistry,
 	home: HomeService | undefined,
 ): JoinableDeps {
-	const started = new StartedReviews();
+	// Home's own scan when there is a Home: one set of memos and one
+	// coverage cache for both (CAR-324).
+	const started = home?.startedSource() ?? new StartedReviews();
 	const dir = (id: string, file: string) => join(agentsDir(), id, file);
 	return {
 		open: () =>
@@ -254,7 +256,10 @@ export function joinableDeps(
 			const login = home ? await home.viewerLogin() : "";
 			return login ? slugify(login) : null;
 		},
-		started: (slug) => started.list(slug),
+		// Listed without coverage; counted only for the rows it answers.
+		started: (slug) => started.list(slug, new Set()),
+		coverage: async (slug, reviews) =>
+			started.coverage ? started.coverage(slug, reviews) : new Map(),
 		cached: (owner, repo, number) => home?.cachedPr(owner, repo, number),
 		acpConfigured: async () => (await agentConfig()).agent !== null,
 		spawned: (id) => existsSync(dir(id, ACP_ON_FILE)),

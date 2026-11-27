@@ -509,9 +509,13 @@ describe("HomeService", () => {
 			now: () => T0,
 		});
 		const view = await refresh(home);
-		// Coverage is asked only for the view's repos: none for the view's
-		// suggestions, its own for a repo's rows.
-		expect(asked.map((s) => [...(s ?? [])])).toEqual([[], ["acme/api"]]);
+		// Coverage is asked only for rows' PRs: none for the view's
+		// suggestions, a repo's own PRs for its rows (CAR-324).
+		const [forView, forRepo] = asked.map((s) => [...(s ?? [])]);
+		expect(asked).toHaveLength(2);
+		expect(forView).toEqual([]);
+		expect(forRepo).toContain("acme/api#3");
+		expect(forRepo?.every((k) => /^acme\/api#\d+$/.test(k))).toBe(true);
 		// The view dialog's suggestions: every started review's repo, newest first.
 		expect(view.startedRepos).toEqual(["other/tool", "acme/api"]);
 		const rows = view.sections.flatMap((s) => s.rows);
