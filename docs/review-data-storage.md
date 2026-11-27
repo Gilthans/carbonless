@@ -164,13 +164,68 @@ refs/crb/inbox/<reviewer>                                         one per review
   without keeping a local ref. This replaces the parity spec's
   `refs/carbonless/pr/<n>/head`. The private clone sets `gc.auto=0`, so the
   `gc --auto` a fetch may trigger never prunes an unreferenced head, and the
-  fetch is redone on every open anyway.
+  fetch is redone on every open anyway. crb packs the clone itself instead,
+  without ever pruning: "Clone maintenance" below.
 
 Ref name limits with the default loose-file ref storage (tested on Linux): about
 250 bytes per path component (git adds `.lock` to the filename while writing),
 the full path must fit the OS path limit (about 4096 bytes on Linux, 260 on
 Windows without `core.longpaths`), and `Alice` and `alice` collide on
 case-insensitive filesystems. The layout above stays far inside these limits.
+
+### Clone maintenance
+
+With `gc.auto=0`, nothing in git ever packs the clone: every fetch adds a
+pack, every crb write and small fetch adds loose objects, and every git in the
+repo (diff, log, cat-file, merge-base) looks objects up through all of them.
+Measured on synthetic clones (CAR-325 audit): ~16k loose objects made
+`rev-list --objects` 4x slower than the same objects packed, and 25 → 100
+packs cost 1.5x. It is the one way reviews slow down other reviews of the
+same repo. So `crb serve` maintains its clones (`src/server/maintenance.ts`):
+
+- **What runs.** `git -c pack.threads=1 repack --geometric=2 -d --quiet
+  --no-write-bitmap-index`, then `git commit-graph write --reachable --split`.
+  The geometric repack packs every loose object, reachable or not, and rolls
+  the small packs into one so each pack is at least twice the next; `-d`
+  deletes only the packs and loose objects it has just copied. A clone
+  grown by 8 or 32 fetches and crb writes ends with 0 loose objects and at
+  most 3 packs (`maintenance.test.ts`). git before 2.32 has no geometric
+  repack: there it runs `git maintenance run --task=loose-objects
+  --task=incremental-repack`, which packs loose objects too and rolls small
+  packs up only once they reach git's batch size.
+- **Why it never prunes.** PR heads (and their bases as of a cutoff) are read
+  by commit ID with no ref; a review's snapshot must stay readable whatever
+  became unreachable. So no `gc`, no `prune`, no `repack -a`/`-A`, no cruft
+  expiry: an unreachable object is kept, in a pack, for as long as the clone
+  lives. The guard test fetches commits by ID with no ref, writes loose
+  objects nothing refers to, and checks every one of them after a run.
+  Compaction (below) makes old review commits unreachable; dropping them
+  needs a prune policy that knows which heads crb still reads, which is not
+  built.
+- **When.** At most once a day per clone (the time of the last run, failed
+  or not, is the clone's `crb.maintainedAt` config, read through `git
+  config`), in a background pass 10 minutes after `crb serve` starts and
+  then hourly, one clone at a time, off every request's path. A clone is
+  skipped while busy: when this crb used its repo lock within the last 5
+  minutes, or anyone holds the lock now (it never waits for it). The run
+  holds the repo lock itself, so no open or fetch, of this crb or another,
+  runs beside it; an open that comes meanwhile waits for it, as it waits for
+  another open's fetch. Its gits run at the lowest CPU priority. Not under
+  the test harness (`$CRB_TEST_HOOKS`): its gits would be a test's leftovers.
+- **Readers beside it.** Reads don't take the repo lock, so a diff or the
+  shared `cat-file --batch` may run during a repack; git re-reads its pack
+  list when an object isn't where it looked, as it does beside any `gc`. On
+  Windows a pack a running reader holds open can't be deleted yet: it stays
+  as a redundant pack and the next run rolls it up.
+- **Seen in** the server log (`maintenance owner/repo.git: N loose, P packs →
+  0 loose, Q packs (ms)`) and a `crb: maintenance` span with `git
+  count-objects -v` before and after.
+- **Refs are not packed yet.** `pack-refs` would make a ref scan flat in the
+  number of crb refs (2k/8k/32k loose ref files: `for-each-ref` 38/92/237 ms,
+  packed ~15 ms), but crb still reads some tips off git's ref files
+  (`refFiles.ts`), whose fallback scans `packed-refs` on every read of a
+  packed ref. That goes with CAR-326 (every read through git's CLI); then
+  `pack-refs` can join this run.
 
 ## Commit format
 
@@ -1316,7 +1371,10 @@ reviews.
   with crb refs gets no `refs/crb/*`; compaction keeps every event; a patch
   set's head is still readable after the branch is force-pushed and
   `git gc --prune=now` runs, and its merge base after the base branch is
-  deleted; with a git config that sets a real user email, crb commits still
+  deleted; clone maintenance leaves no loose objects and at
+  most 3 packs after 8 or 32 fetches, keeps every commit fetched by ID and
+  every unreferenced object, never runs beside a repo-lock holder and at
+  most once a day (`maintenance.test.ts`); with a git config that sets a real user email, crb commits still
   carry only the slug and tool identities; starting PS2 writes `since`, the
   carries and both pins in one commit and one transaction, twice at once
   ends with one PS2, a write against PS1 is then read-only, and against an

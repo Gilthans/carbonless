@@ -1,4 +1,5 @@
 import { type ChildProcess, spawn } from "node:child_process";
+import { setPriority } from "node:os";
 import { beginCall } from "./activity.js";
 import { noteSpawn } from "./spawnWatch.js";
 import { argsSummary, tracer } from "./trace.js";
@@ -17,6 +18,11 @@ export interface RunGitOptions {
 	 * aborted, git isn't started.
 	 */
 	signal?: AbortSignal;
+	/**
+	 * Runs git (and what it starts) at the lowest CPU priority: background
+	 * work no request waits on (clone maintenance).
+	 */
+	lowPriority?: boolean;
 }
 
 /**
@@ -231,6 +237,14 @@ export function runGitFull(
 			detached: opts.timeoutMs !== undefined,
 		});
 		if (opts.timeoutMs !== undefined) trackDetached(child);
+		if (opts.lowPriority && child.pid !== undefined) {
+			try {
+				// Its children (pack-objects) inherit it.
+				setPriority(child.pid, 19);
+			} catch {
+				// Not allowed here: it runs at normal priority.
+			}
+		}
 		running.set(child, args);
 		child.on("close", () => running.delete(child));
 		child.on("error", () => running.delete(child));

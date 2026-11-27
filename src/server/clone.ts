@@ -99,6 +99,16 @@ async function removeIfUnchanged(lock: string, content: string) {
 /** This process's holder of each repo lock: what a waiter shows. */
 const lockHolders = new Map<string, Activity>();
 
+/** When this process last took or released each repo's lock. */
+const lockUsed = new Map<string, number>();
+
+/**
+ * When this process last held `path`'s lock (taken or released, epoch ms),
+ * or undefined: how maintenance tells a clone in use from an idle one.
+ */
+export const repoLockLastUsed = (path: string): number | undefined =>
+	lockUsed.get(path);
+
 /**
  * Runs `fn` while holding `<path>.lock`, so concurrent crb processes never
  * clone or fetch into the same repository at once. The holder refreshes the
@@ -153,6 +163,7 @@ export async function withRepoLock<T>(
 	// waits on it, so it shows it too.
 	const holder = new Activity();
 	lockHolders.set(path, holder);
+	lockUsed.set(path, Date.now());
 	const heartbeat = setInterval(() => {
 		const now = new Date();
 		readLock(lock).then((c) => {
@@ -164,6 +175,7 @@ export async function withRepoLock<T>(
 		return await waitOn(runIn(holder, fn), () => holder);
 	} finally {
 		if (lockHolders.get(path) === holder) lockHolders.delete(path);
+		lockUsed.set(path, Date.now());
 		clearInterval(heartbeat);
 		if ((await readLock(lock)) === mine) await rm(lock, { force: true });
 	}
