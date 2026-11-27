@@ -1,8 +1,10 @@
 # CodeQL security scanning (CAR-259): command injection into git/gh argv,
 # XSS where comment markdown reaches HTML, path traversal where files are
-# served, slow regexes. Results land in the repo's Security tab and as PR
-# annotations. Not a required check: whether a new alert fails a PR is the
-# owner's call. Paths it skips: .github/codeql/codeql-config.yml.
+# served, slow regexes; and, with the quality queries (CAR-313), correctness
+# checks such as always-true conditions, unreachable code or a missing await.
+# Results land in the repo's Security tab and as PR annotations. Not a
+# required check: whether a new alert fails a PR is the owner's call. Paths
+# it skips: .github/codeql/codeql-config.yml.
 name: CodeQL
 
 on:
@@ -36,7 +38,7 @@ jobs:
         with:
           languages: javascript-typescript
           build-mode: none
-          queries: security-extended
+          queries: security-and-quality
           config-file: ./.github/codeql/codeql-config.yml
       - uses: github/codeql-action/analyze@v4
         with:
