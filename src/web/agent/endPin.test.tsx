@@ -31,6 +31,12 @@ function scrollBox(height: number, client = 100) {
 	};
 }
 
+/** Lays `el` out from `top` to `bottom` (px from the viewport's top). */
+function rect(el: Element, top: number, bottom: number) {
+	el.getBoundingClientRect = () =>
+		({ top, bottom, height: bottom - top, left: 0, right: 100 }) as DOMRect;
+}
+
 let observers: { cb: ResizeObserverCallback; on: boolean }[] = [];
 const resize = () =>
 	act(() => {
@@ -55,6 +61,7 @@ beforeEach(() => {
 });
 afterEach(() => {
 	cleanup();
+	document.body.replaceChildren();
 	globalThis.ResizeObserver = saved;
 });
 
@@ -65,6 +72,8 @@ function setup(
 ) {
 	const box = scrollBox(height);
 	const content = document.createElement("div");
+	document.body.append(box.el);
+	box.el.append(content);
 	const refs = { box: { current: box.el }, content: { current: content } };
 	const hook = renderHook(
 		(p: { active: boolean }) =>
@@ -79,7 +88,7 @@ function setup(
 			} as unknown as UIEvent<HTMLElement>),
 		);
 	};
-	return { box, hook, scroll };
+	return { box, content, hook, scroll };
 }
 
 describe("useEndPin", () => {
@@ -153,6 +162,46 @@ describe("useEndPin", () => {
 		box.grow(800);
 		resize();
 		expect(box.el.scrollTop).toBe(700);
+	});
+
+	it("scrolled up, a change above what is read is made up for; one below moves nothing (CAR-316)", () => {
+		const { box, content, scroll } = setup(1000);
+		const above = document.createElement("div");
+		const read = document.createElement("p");
+		content.append(above, read);
+		rect(box.el, 0, 100);
+		rect(content, -300, 700);
+		rect(above, -300, 30);
+		rect(read, 30, 80);
+		// Scrolled up: the paragraph across the middle (50) is what is read.
+		scroll(300);
+		// Something above it went: it moved 48px up, and is put back.
+		rect(read, -18, 32);
+		box.grow(952);
+		resize();
+		expect(box.el.scrollTop).toBe(252);
+		// A change below it (it didn't move): nothing moves.
+		rect(read, 30, 80);
+		box.grow(1300);
+		resize();
+		expect(box.el.scrollTop).toBe(252);
+	});
+
+	it("a focused box whose top is scrolled out keeps its bottom (CAR-316)", () => {
+		const { box, content, scroll } = setup(1000);
+		const text = document.createElement("textarea");
+		content.append(text);
+		rect(box.el, 0, 100);
+		rect(text, -40, 60);
+		text.focus();
+		scroll(300);
+		// It grew 20px by its top (the other way would move its bottom).
+		rect(text, -60, 60);
+		resize();
+		expect(box.el.scrollTop).toBe(300);
+		rect(text, -60, 80);
+		resize();
+		expect(box.el.scrollTop).toBe(320);
 	});
 
 	it("starts once active, at the end", () => {

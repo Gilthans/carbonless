@@ -161,12 +161,10 @@ describe("ThreadAgentPanel", () => {
 		const scroller = within(panel()).getByTestId("thread-agent-scroll");
 		// Pinned to its end (useEndPin), the browser's scroll anchoring off;
 		// not reversed, where a reply landing moved a reader scrolled up
-		// (CAR-316). jsdom has no layout: the end is scrollTop 0 here.
+		// (CAR-316). jsdom has no layout, so only the classes are checked
+		// here: the pin itself is endPin.test's and the e2e tests'.
 		expect(scroller.className).toContain("[overflow-anchor:none]");
 		expect(scroller.className).not.toContain("flex-col-reverse");
-		expect(scroller.scrollTop).toBe(
-			scroller.scrollHeight - scroller.clientHeight,
-		);
 		expect(within(panel()).getByText("Only here.")).toBeInTheDocument();
 		// The composer takes the focus.
 		expect(screen.getByRole("textbox", { name: "Ask agent" })).toHaveFocus();

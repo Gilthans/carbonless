@@ -540,10 +540,20 @@ function CommentText(props: {
 		// card's), which clamps that box's scrollTop: kept across the
 		// measurement, so typing never moves the comment (CAR-246). The page
 		// itself is left as it was.
+		// Its top scrolled out of such a box (the line typed on in sight
+		// below it), it grows upward there: what is below it stays put
+		// (CAR-316).
 		const kept = scrolledAncestors(el);
+		const was = el.offsetHeight;
 		el.style.height = "auto";
 		el.style.height = `${el.scrollHeight + 2}px`;
-		for (const [a, top] of kept) if (a.scrollTop !== top) a.scrollTop = top;
+		const grew = el.offsetHeight - was;
+		for (const [a, top] of kept) {
+			const above =
+				el.getBoundingClientRect().top < a.getBoundingClientRect().top;
+			const want = above ? top + grew : top;
+			if (a.scrollTop !== want) a.scrollTop = want;
+		}
 	}, [props.value, props.hidden]);
 	return (
 		<textarea

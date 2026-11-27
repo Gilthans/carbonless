@@ -992,7 +992,6 @@ test("scrolled up, an answer streaming in keeps what you read in place; at the e
 
 	// Scrolled up, a question sent: it and its answer land below what is in
 	// sight, which stays put.
-	releaseAcp(acpScenario, "prompt");
 	const p5 = answers.nth(1).getByText("Paragraph 5.", { exact: true });
 	await scrollTopTo(p5, scroller, 40);
 	await expect.poll(() => inBox(p5, scroller)).toBe(true);
@@ -1072,4 +1071,78 @@ test("a suggested comment mid-view stays put through Write, typing and Preview (
 	await box.getByRole("button", { name: "Write" }).click();
 	await expect(text).toBeVisible();
 	await stays();
+	// Its top scrolled out, the line typed on in sight: it grows upward,
+	// what is below it stays put.
+	await scrollTopTo(text, scroller, -30);
+	const bottom = () =>
+		topIn(text, scroller).then(
+			async (top) =>
+				top + (await text.evaluate((e) => e.getBoundingClientRect().height)),
+		);
+	await text.click({ position: { x: 20, y: 50 } });
+	await page.keyboard.press("ControlOrMeta+End");
+	const was = await bottom();
+	for (let i = 0; i < 3; i++) {
+		await page.keyboard.press("Enter");
+		await page.keyboard.type(`Again ${i + 1}`);
+		expect(Math.abs((await bottom()) - was)).toBeLessThanOrEqual(2);
+	}
+	await expect(text).toHaveValue(/Again 3$/);
+});
+
+test("scrolled up, the resolve suggestion going from an earlier answer keeps what you read in place (CAR-316)", async ({
+	page,
+	pr,
+	agentCrb,
+	acpScenario,
+}) => {
+	await setup(pr);
+	const s = await agentCrb({
+		scenario: {
+			agent: AGENT,
+			answers: [
+				{ match: "follow-up", text: "Not yet." },
+				{ text: `${tall("Fixed here.")}\n[suggest-resolve]` },
+			],
+			hold: ["prompt"],
+		},
+	});
+	await holdSeen(page);
+	await page.goto(s.url);
+	const card = overviewCard(page);
+	await openPanel(card);
+	await sendToAgent(card, "Is this resolved?");
+	releaseAcp(acpScenario, "prompt");
+	const suggest = panel(card).getByRole("button", {
+		name: "Resolve By Agent Suggestion",
+	});
+	await expect(suggest).toBeVisible();
+	// The follow-up held after its first chunk: the suggestion still stands
+	// under the first answer, above the follow-up's question.
+	holdAcp(acpScenario, "prompt");
+	// A long question: mid-view, with more below it than the box shows.
+	const lines = Array.from({ length: 8 }, (_, i) => `Line ${i + 1}.`);
+	await sendToAgent(card, ["A follow-up question", ...lines].join("\n"));
+	const answering = panel(card).getByTestId("agent-answering");
+	await expect(answering).toBeVisible();
+	await expect(suggest).toBeVisible();
+	const scroller = panel(card).getByTestId("thread-agent-scroll");
+	const question = panel(card)
+		.getByTestId("agent-message-human")
+		.filter({ hasText: "A follow-up question" });
+	await scrollTopTo(question, scroller, 40);
+	const before = await topIn(question, scroller);
+	expect(Math.abs(before - 40)).toBeLessThanOrEqual(2);
+	// Not at the end: the pin isn't what keeps it.
+	expect(
+		await scroller.evaluate(
+			(el) => el.scrollHeight - el.clientHeight - el.scrollTop,
+		),
+	).toBeGreaterThan(20);
+	// Stored, the answer retracts the suggestion above what is in sight.
+	releaseAcp(acpScenario, "prompt");
+	await expect(answering).toHaveCount(0);
+	await expect(suggest).toHaveCount(0);
+	const after = await topIn(question, scroller);
+	expect(Math.abs(after - before)).toBeLessThanOrEqual(2);
 });

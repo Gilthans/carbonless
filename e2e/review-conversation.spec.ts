@@ -911,7 +911,6 @@ test("scrolled up, an answer streaming in keeps what you read in place; at the e
 
 	// Scrolled up, a question sent: it and its answer land below what is in
 	// sight, which stays put.
-	releaseAcp(acpScenario, "prompt");
 	const p5 = answers.nth(1).getByText("Paragraph 5.", { exact: true });
 	await scrollTopTo(p5, scroller, 40);
 	await expect.poll(() => inBox(p5, scroller)).toBe(true);
