@@ -239,9 +239,10 @@ for a line on the old side, which GitHub counts against its own merge
 base).
 `rewritten` means a real trace found the lines replaced but can't tell
 where they went (too large to pair, a line with no word, two equally
-likely places, an identical block in two places), or past the end of the
-file. A thread whose block moved elsewhere in its file follows it and says
-"moved since".
+likely places, an identical block in two places, two look-alike lines
+that may have swapped places), or past the end of the file. A thread whose
+block moved elsewhere in its file, or whose line clearly swapped places
+with a look-alike, follows it and says "moved since".
 `docs/product-rules.md`, "A thread with nothing to trace from sits on
 GitHub's line".
 

@@ -57,9 +57,9 @@ const rows = (from: number, lines: string[], side: DiffSide = "RIGHT") =>
 	Object.fromEntries(lines.map((t, i) => [`${side}:${from + i}`, t]));
 
 describe("tracePosition", () => {
-	it("exports TRACER_VERSION 3 from the index", () => {
-		expect(TRACER_VERSION).toBe(3);
-		expect(tracer.TRACER_VERSION).toBe(3);
+	it("exports TRACER_VERSION 4 from the index", () => {
+		expect(TRACER_VERSION).toBe(4);
+		expect(tracer.TRACER_VERSION).toBe(4);
 		expect(tracer.createLineMapper).toBe(createLineMapper);
 		expect(tracer.tracePosition).toBe(tracePosition);
 	});
@@ -397,6 +397,388 @@ describe("tracePosition", () => {
 				diffs({ cd: IDENTITY, newLineCount: { LEFT: 10, RIGHT: 9 } }),
 			),
 		).toStrictEqual({ kind: "unplaced", reason: "outside", nearest: null });
+	});
+});
+
+/**
+ * A file whose changed lines were edited in place, line for line (old and
+ * new the same length): each differing line its own one-line hunk, as
+ * `git diff -U0` splits them around the kept lines between.
+ */
+function inPlace(old: string[], now: string[]): TraceDiffs {
+	const hunks: MapHunk[] = [];
+	old.forEach((t, i) => {
+		if (t !== now[i]) {
+			hunks.push({
+				oldStart: i + 1,
+				oldCount: 1,
+				newStart: i + 1,
+				newCount: 1,
+			});
+		}
+	});
+	return withHunks(old, now, hunks);
+}
+
+/** `old` to `now` through the given `git diff -U0` hunks. */
+const withHunks = (old: string[], now: string[], hunks: MapHunk[]) =>
+	diffs({
+		bd: createLineMapper(hunks),
+		texts: rows(1, old),
+		now: rows(1, now),
+	});
+
+/** A one-line hunk: `[old, new]` start and count, as `@@ -o,oc +n,nc @@`. */
+const hunk = (o: number, oc: number, n: number, nc: number): MapHunk => ({
+	oldStart: o,
+	oldCount: oc,
+	newStart: n,
+	newCount: nc,
+});
+
+/** Where old line `n` of the swap's thread lands: its line, or its unplaced reason. */
+function landing(d: TraceDiffs, n: number): number | string {
+	const p = tracePosition(R(n), d);
+	return p.kind === "unplaced" ? p.reason : p.line;
+}
+
+describe("tracePosition: look-alike lines swapped around a kept line (CAR-279)", () => {
+	it("Markdown items swapped and edited follow their own text across the kept line", () => {
+		const d = inPlace(
+			[
+				"# Steps",
+				"",
+				"- Run the build script for the web package",
+				"Note: kept.",
+				"- Run the build script for the server package",
+				"",
+				"End.",
+			],
+			[
+				"# Steps",
+				"",
+				"- Run the build script for the server package twice",
+				"Note: kept.",
+				"- Run the build script for the web package twice",
+				"",
+				"End.",
+			],
+		);
+		expect(tracePosition(R(3), d)).toStrictEqual({
+			kind: "changed",
+			side: "RIGHT",
+			line: 5,
+			oldText: "- Run the build script for the web package",
+			moved: true,
+		});
+		expect(tracePosition(R(5), d)).toStrictEqual({
+			kind: "changed",
+			side: "RIGHT",
+			line: 3,
+			oldText: "- Run the build script for the server package",
+			moved: true,
+		});
+	});
+
+	it("YAML keys swapped and edited follow their own key", () => {
+		const d = inPlace(
+			[
+				"primary_database_host: db-1.internal",
+				"timeout: 30",
+				"replica_database_host: db-2.internal",
+			],
+			[
+				"replica_database_host: db-3.internal",
+				"timeout: 30",
+				"primary_database_host: db-4.internal",
+			],
+		);
+		expect(landing(d, 1)).toBe(3);
+		expect(landing(d, 3)).toBe(1);
+	});
+
+	it("Go statements swapped and edited follow their own call", () => {
+		const d = inPlace(
+			[
+				"func f() {",
+				'\tbuildPackage("web", opts)',
+				"\tkept()",
+				'\tbuildPackage("server", opts)',
+				"}",
+			],
+			[
+				"func f() {",
+				'\tbuildPackage("server", opts, twice)',
+				"\tkept()",
+				'\tbuildPackage("web", opts, twice)',
+				"}",
+			],
+		);
+		expect(landing(d, 2)).toBe(4);
+		expect(landing(d, 4)).toBe(2);
+	});
+
+	it("lines swapped as they were follow their text", () => {
+		const d = inPlace(
+			["value = compute(alpha)", "kept()", "value = compute(beta)"],
+			["value = compute(beta)", "kept()", "value = compute(alpha)"],
+		);
+		expect(landing(d, 1)).toBe(3);
+		expect(landing(d, 3)).toBe(1);
+	});
+
+	it("crossed one way only: can't tell, never a guess", () => {
+		// `register(web…)` resembles the line below more than its own
+		// replacement; `register(server…)` stays closest to its own.
+		const d = inPlace(
+			["register(web, opts)", "kept()", "register(server, opts)"],
+			["register(web_v2, opts)", "kept()", "register(server, web, opts)"],
+		);
+		expect(landing(d, 1)).toBe("rewritten");
+		expect(landing(d, 3)).toBe("rewritten");
+	});
+
+	it("crossed both ways by less than the margin: can't tell", () => {
+		// Both crossings are under SWAP_MARGIN (0.875 over 0.857, 0.615
+		// over 0.533).
+		const d = inPlace(
+			[
+				"send the report to the web team now",
+				"kept()",
+				"fetch the report for the server team",
+			],
+			[
+				"send the report to the team",
+				"kept()",
+				"send the report to the web team later",
+			],
+		);
+		expect(landing(d, 1)).toBe("rewritten");
+		expect(landing(d, 3)).toBe("rewritten");
+	});
+
+	it("a near miss (ten-word items, one word apart, swapped with a word added) can't be told", () => {
+		// Crosses by 0.087 both ways, just under SWAP_MARGIN.
+		const d = inPlace(
+			[
+				"- Run the full build script for the main web package now",
+				"Note: kept.",
+				"- Run the full build script for the main server package now",
+			],
+			[
+				"- Run the full build script for the main server package now twice",
+				"Note: kept.",
+				"- Run the full build script for the main web package now twice",
+			],
+		);
+		expect(landing(d, 1)).toBe("rewritten");
+		expect(landing(d, 3)).toBe("rewritten");
+	});
+
+	it("values swapped under keys that stay put: each thread stays on its key", () => {
+		const d = inPlace(
+			[
+				"primary_host: db-west-1.internal.example.com",
+				"timeout: 30",
+				"replica_host: db-east-2.internal.example.com",
+			],
+			[
+				"primary_host: db-east-2.internal.example.com",
+				"timeout: 30",
+				"replica_host: db-west-1.internal.example.com",
+			],
+		);
+		expect(tracePosition(R(1), d)).toStrictEqual({
+			kind: "changed",
+			side: "RIGHT",
+			line: 1,
+			oldText: "primary_host: db-west-1.internal.example.com",
+		});
+		expect(landing(d, 3)).toBe(3);
+	});
+
+	it("values swapped under call subjects that stay put: each thread stays on its call", () => {
+		const d = inPlace(
+			[
+				'\texpect(primary).toBe("db-east-1.internal.example.com")',
+				"\tkept()",
+				'\texpect(replica).toBe("db-west-2.internal.example.com")',
+			],
+			[
+				'\texpect(primary).toBe("db-west-2.internal.example.com")',
+				"\tkept()",
+				'\texpect(replica).toBe("db-east-1.internal.example.com")',
+			],
+		);
+		expect(landing(d, 1)).toBe(1);
+		expect(landing(d, 3)).toBe(3);
+	});
+
+	it("generic short lines that cross never move: can't tell", () => {
+		const d = inPlace(
+			["if err != nil {", "\treturn err", "}", "return nil"],
+			["if err != nil {", "\treturn nil", "}", "return err"],
+		);
+		expect(landing(d, 2)).toBe("rewritten");
+		expect(landing(d, 4)).toBe("rewritten");
+	});
+
+	it("short generic lines swapped between branches never move: can't tell", () => {
+		const bools = inPlace(
+			["if missing {", "\treturn false", "}", "return true"],
+			["if missing {", "\treturn true", "}", "return false"],
+		);
+		expect(landing(bools, 2)).toBe("rewritten");
+		expect(landing(bools, 4)).toBe("rewritten");
+		const results = inPlace(
+			["if err != nil {", "\treturn nil, err", "}", "return res, nil"],
+			["if err != nil {", "\treturn res, nil", "}", "return nil, err"],
+		);
+		expect(landing(results, 2)).toBe("rewritten");
+		expect(landing(results, 4)).toBe("rewritten");
+	});
+
+	it("a swap never overrides a block that moved elsewhere: can't tell", () => {
+		// Old 1-3 found again word for word at new 6-8, and old 2 also
+		// crosses with old 5 at home.
+		const d = withHunks(
+			[
+				"setupAlphaConnection(pool)",
+				"value = computeTotal(alpha)",
+				"logAlphaTotals(value)",
+				"kept()",
+				"value = computeTotal(beta)",
+				"other()",
+				"more()",
+			],
+			[
+				"value = computeTotal(beta, 2)",
+				"kept()",
+				"value = computeTotal(alpha, 2)",
+				"other()",
+				"more()",
+				"setupAlphaConnection(pool)",
+				"value = computeTotal(alpha)",
+				"logAlphaTotals(value)",
+			],
+			[hunk(1, 3, 1, 1), hunk(5, 1, 3, 1), hunk(7, 0, 6, 3)],
+		);
+		expect(landing(d, 2)).toBe("rewritten");
+		expect(landing(d, 5)).toBe("rewritten");
+	});
+
+	it("a swap decides the same for both lines when a deletion unanchors one", () => {
+		const d = withHunks(
+			[
+				"value = compute(alpha)",
+				"kept()",
+				"value = compute(beta)",
+				"k2()",
+				"drop_this_line(now)",
+			],
+			[
+				"value = compute(beta, 1)",
+				"kept()",
+				"value = compute(alpha, 1)",
+				"k2()",
+			],
+			[hunk(1, 1, 1, 1), hunk(3, 1, 3, 1), hunk(5, 1, 4, 0)],
+		);
+		expect(landing(d, 1)).toBe(3);
+		expect(landing(d, 3)).toBe(1);
+	});
+
+	it("the same, mirrored: a deletion above the first line unanchors it", () => {
+		const mirror = withHunks(
+			[
+				"drop_this_line(now)",
+				"k0()",
+				"value = compute(alpha)",
+				"kept()",
+				"value = compute(beta)",
+			],
+			[
+				"k0()",
+				"value = compute(beta, 1)",
+				"kept()",
+				"value = compute(alpha, 1)",
+			],
+			[hunk(1, 1, 0, 0), hunk(3, 1, 2, 1), hunk(5, 1, 4, 1)],
+		);
+		expect(landing(mirror, 3)).toBe(4);
+		expect(landing(mirror, 5)).toBe(2);
+	});
+
+	it("look-alikes both edited in place, not swapped, stay in place", () => {
+		const d = inPlace(
+			[
+				"- Run the build script for the web package",
+				"Note: kept.",
+				"- Run the build script for the server package",
+			],
+			[
+				"- Run the build script for the web package twice",
+				"Note: kept.",
+				"- Run the build script for the server package twice",
+			],
+		);
+		expect(tracePosition(R(1), d)).toStrictEqual({
+			kind: "changed",
+			side: "RIGHT",
+			line: 1,
+			oldText: "- Run the build script for the web package",
+		});
+		expect(landing(d, 3)).toBe(3);
+	});
+
+	it("a line edited in place next to an unrelated look-alike edit stays in place", () => {
+		const d = inPlace(
+			[
+				"- Deploy the web package",
+				"Note: kept.",
+				"- Deploy the server package",
+			],
+			[
+				"- Deploy the web package to staging",
+				"Note: kept.",
+				"- Deploy the server package to staging",
+			],
+		);
+		expect(landing(d, 1)).toBe(1);
+		expect(landing(d, 3)).toBe(3);
+		// A look-alike that stayed as it was is no candidate.
+		const kept = inPlace(
+			[
+				"- Deploy the web package",
+				"Note: kept.",
+				"- Deploy the server package",
+			],
+			[
+				"- Deploy the web package now",
+				"Note: kept.",
+				"- Deploy the server package",
+			],
+		);
+		expect(landing(kept, 1)).toBe(1);
+	});
+
+	it("twins (the same text twice) stay as they were: no crossing", () => {
+		const d = inPlace(
+			["retry(3, web)", "kept()", "retry(3, web)"],
+			["retry(4, web)", "kept()", "retry(4, web)"],
+		);
+		// Which of the two went where can't be told, and needn't be: either
+		// way each lands on a line of its own text, edited alike.
+		expect(landing(d, 1)).toBe(1);
+		expect(landing(d, 3)).toBe(3);
+		// Twins edited apart resemble both replacements alike: a tie, no
+		// crossing.
+		const apart = inPlace(
+			["retry(3, web)", "kept()", "retry(3, web)"],
+			["retry(4, web)", "kept()", "retry(5, web)"],
+		);
+		expect(landing(apart, 1)).toBe(1);
+		expect(landing(apart, 3)).toBe(3);
 	});
 });
 

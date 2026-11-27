@@ -18,15 +18,17 @@
  * Pure: no git, no I/O, nothing from `src/server/`.
  */
 
-import { alignOrOver, similarityTo } from "../linePairing.js";
+import { alignOrOver, lineSimilarity, similarityTo } from "../linePairing.js";
 import { HAS_WORD, WORD_DIFF_MAX } from "../tokenize.js";
 import type { DiffSide } from "../types.js";
 import type { LineMapper, MapHunk } from "./lineMapper.js";
 import {
+	alnum,
 	claimedByMove,
 	contested,
 	hasTwin,
 	movedTo,
+	onlyCopyAt,
 	sameFileTexts,
 	TUNING,
 	tellingLine,
@@ -37,9 +39,10 @@ import {
  * replaced hunk goes to its similar partner, else unplaced (was: the same
  * offset in the replacement). 3: a line moved with its block follows it
  * elsewhere in the file (`moved`); a partner that a line elsewhere
- * resembles as much is `rewritten`.
+ * resembles as much is `rewritten`. 4: two look-alike lines swapped around
+ * a kept line follow their text across (a crossing by less, `rewritten`).
  */
-export const TRACER_VERSION = 3;
+export const TRACER_VERSION = 4;
 
 export interface Position {
 	side: DiffSide;
@@ -472,7 +475,8 @@ function partnerIn(hunk: MapHunk, line: number, diffs: TraceDiffs): Partner {
 
 /**
  * The replacing line that carries old line `line`: its partner nearby
- * (`localPartner`) when equal ignoring whitespace, or when the line was
+ * (`localPartner`) when equal ignoring whitespace; the look-alike's
+ * partner when the two swapped (`swappedWith`); its own when the line was
  * edited in place (`anchored`); else the partner, where it went with its
  * moved block (moved.ts) and the file's look-alikes compete on likeness
  * plus context (`contested`), or, with no partner nearby, the moved
@@ -504,12 +508,35 @@ function findPartner(hunk: MapHunk, line: number, diffs: TraceDiffs): Partner {
 	if (own === null || !HAS_WORD.test(own) || !diffs.newLineText) {
 		return plain(local);
 	}
-	if (
-		local !== null &&
-		local !== "unknown" &&
-		anchored(hunk, line, local.line, diffs)
-	) {
-		return plain(local);
+	// Found again in its own hunk (a re-indented block too large to pair):
+	// rewritten there, not moved.
+	const away = (at: number): Found =>
+		diffs.bd.hunkAddingNew(at) === hunk
+			? { line: at }
+			: { line: at, moved: true };
+	if (local !== null && local !== "unknown") {
+		// Swapped with a look-alike nearby: decided here, for both lines of
+		// the pair alike, whether or not a neighbour's deletion unanchors one.
+		const swap = swappedWith(hunk, line, local, diffs);
+		if (swap === "unknown") return swap;
+		if (swap !== null) {
+			// A block moved elsewhere, or one claiming the crossed line, is
+			// other evidence of where either line went: can't tell.
+			const elsewhere = (o: number, to: number) => {
+				const m = movedTo(o, readers, false);
+				// Found again as it was only on the crossed line: the swap.
+				const there =
+					m === null ||
+					(m === "copies" && onlyCopyAt(o, to, readers)) ||
+					(typeof m === "object" && m.line === to);
+				return !there || claimedByMove(o, to, readers);
+			};
+			if (elsewhere(line, swap.line) || elsewhere(swap.other, local.line)) {
+				return "unknown";
+			}
+			return away(swap.line);
+		}
+		if (anchored(hunk, line, local.line, diffs)) return plain(local);
 	}
 	// Its partner nearby is where another line moved with its block: that
 	// line's, not this one's.
@@ -520,12 +547,6 @@ function findPartner(hunk: MapHunk, line: number, diffs: TraceDiffs): Partner {
 	) {
 		local = null;
 	}
-	// Found again in its own hunk (a re-indented block too large to pair):
-	// rewritten there, not moved.
-	const away = (at: number): Found =>
-		diffs.bd.hunkAddingNew(at) === hunk
-			? { line: at }
-			: { line: at, moved: true };
 	// No partner nearby: a move must carry its whole hunk.
 	const moved = movedTo(line, readers, local === null || local === "unknown");
 	if (moved === "ambiguous") return "unknown";
@@ -543,6 +564,124 @@ function findPartner(hunk: MapHunk, line: number, diffs: TraceDiffs): Partner {
 		moved === null || moved === "copies" ? null : moved.line,
 	);
 	return won === "unknown" ? won : won.moved ? away(won.line) : won;
+}
+
+/**
+ * How much more each of two lines a hunk apart must resemble the other's
+ * replacement than its own for the two to have swapped places (CAR-279),
+ * on lineSimilarity's scale. A look-alike line differs from its sibling
+ * in a word or two: the closest swap measured (two Markdown items of
+ * eight words each, swapped and each given one more word) crosses by
+ * 0.118; YAML keys swapped with their values edited cross by 0.25, Go
+ * calls by 0.29. Lines edited in place beside a look-alike, not swapped,
+ * don't cross at all (the corpus's, CAR-95's, and the tests'). Below
+ * this, a crossing is too close to say which way the lines went:
+ * "unknown", never a guess (ten-word items one word apart, given a word
+ * each, cross by 0.087: unplaced, never wrong). A tie is no crossing.
+ */
+export const SWAP_MARGIN = 0.1;
+
+/**
+ * Letters and digits each line of a swap needs to move (CAR-279): generic
+ * statements swapped between branches have 9 to 12 (`return nil` 9,
+ * `return true` 10, `return false` 11, `return nil, err` 12) and are
+ * `unknown`; the shortest real swaps measured have 16 and more
+ * (`value = compute(beta)` 16, `buildPackage("web", opts)` 19). Two clear
+ * of each side. A single line falls short of git's --color-moved minimum
+ * (20, TUNING.minAlnum, which is for a block): a swap is two lines that
+ * cross-check each other.
+ */
+export const SWAP_MIN_ALNUM = 14;
+
+/** A line's words (letters, digits, `_`), for what tells two lines apart. */
+const words = (t: string) => new Set(t.match(/[\p{L}\p{N}_]+/gu) ?? []);
+
+/**
+ * Whether replacement `mine` kept a word that told old `own` apart from its
+ * look-alike `other` (a key, a call's subject: `primary_host`, `primary` in
+ * `expect(primary)`), one the look-alike's replacement `theirs` lacks.
+ */
+function keepsOwn(
+	own: string,
+	other: string,
+	mine: string,
+	theirs: string,
+): boolean {
+	const o = words(other);
+	const m = words(mine);
+	const t = words(theirs);
+	for (const w of words(own))
+		if (!o.has(w) && m.has(w) && !t.has(w)) return true;
+	return false;
+}
+
+/**
+ * Whether `line`, edited in place onto `local` by its own hunk's pairing,
+ * swapped with a look-alike: another removed line nearby (in a hunk of its
+ * joined run, or within TUNING.contextLines) whose own replacement it
+ * resembles more, while that line resembles `line`'s replacement more than
+ * its own. Both crossed by SWAP_MARGIN: the look-alike's replacement, the
+ * new line it went to, and the look-alike's old line. Crossed one way
+ * only, by less, with more than one look-alike, between generic lines, or
+ * with only one of the two keeping what told it apart: "unknown". null:
+ * nothing crossed, or both kept their key and only values swapped: it
+ * stayed. A window of a few lines: no
+ * whole-file work.
+ */
+function swappedWith(
+	hunk: MapHunk,
+	line: number,
+	local: { line: number; score: number },
+	diffs: TraceDiffs,
+): { line: number; other: number } | "unknown" | null {
+	const own = read(diffs.oldLineText, line);
+	const mine = read(diffs.newLineText, local.line);
+	if (own === null || mine === null) return null;
+	const memo = memoOf(diffs);
+	const run = runOf(hunk, diffs, memo);
+	const index = memo.index;
+	let found: { line: number; other: number } | null = null;
+	let unsure = false;
+	// A run joins hunks at most REGION_GAP old lines apart.
+	const reach = REGION_GAP + 1;
+	for (let n = Math.max(1, line - reach); n <= line + reach; n++) {
+		if (n === line) continue;
+		const theirs = diffs.bd.hunkRemovingOld(n);
+		if (!theirs || theirs === hunk) continue;
+		const i = index?.get(theirs);
+		const inRun = i !== undefined && i >= run.first && i <= run.last;
+		if (!inRun && Math.abs(n - line) > TUNING.contextLines) continue;
+		const other = read(diffs.oldLineText, n);
+		if (other === null || !HAS_WORD.test(other)) continue;
+		const p = localPartner(theirs, n, diffs);
+		if (p === null || p === "unknown" || p.line === local.line) continue;
+		const their = read(diffs.newLineText, p.line);
+		if (their === null) continue;
+		const ahead = lineSimilarity(own, their) - local.score;
+		const back = lineSimilarity(other, mine) - p.score;
+		if (ahead <= EPS && back <= EPS) continue;
+		// Each kept what told it from the other (its key, its subject): the
+		// values swapped, the lines stayed. Only one did: can't tell.
+		const keptMine = keepsOwn(own, other, mine, their);
+		const keptTheirs = keepsOwn(other, own, their, mine);
+		if (keptMine && keptTheirs) continue;
+		if (
+			found === null &&
+			!keptMine &&
+			!keptTheirs &&
+			// Generic lines (`return err`, `return nil`): too little text
+			// to say they moved.
+			Math.min(alnum(own), alnum(other)) >= SWAP_MIN_ALNUM &&
+			ahead >= SWAP_MARGIN - EPS &&
+			back >= SWAP_MARGIN - EPS
+		) {
+			found = { line: p.line, other: n };
+		} else {
+			unsure = true;
+		}
+	}
+	if (unsure) return "unknown";
+	return found;
 }
 
 /**

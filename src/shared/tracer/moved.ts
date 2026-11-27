@@ -147,7 +147,8 @@ function sameMemo(): Same {
 	};
 }
 
-const alnum = (t: string) => t.match(ALNUM)?.length ?? 0;
+/** Letters and digits in `t` (TUNING.minAlnum counts these). */
+export const alnum = (t: string) => t.match(ALNUM)?.length ?? 0;
 
 const indent = (t: string) => t.length - t.trimStart().length;
 
@@ -603,6 +604,18 @@ function oldCounts(r: TextReaders, x: FileIndex): Map<string, number> {
 	}
 	x.oldCounts = counts;
 	return counts;
+}
+
+/**
+ * Whether new line `n` is the one added line with old line `o`'s text
+ * (`same`): a "copies" from `movedTo` that only says `o` went to `n`.
+ */
+export function onlyCopyAt(o: number, n: number, r: TextReaders): boolean {
+	const x = indexOf(r);
+	const t = readOld(r, o);
+	if (t === null) return false;
+	const at = x.addedBySame.get(x.same(t)) ?? [];
+	return at.length === 1 && at[0] === n;
 }
 
 /** Whether another removed line has old line `o`'s text (`same`). */
