@@ -6,6 +6,7 @@ import {
 	useRef,
 } from "react";
 import { usePageActive } from "../pageActive";
+import { viewBarOver } from "./viewBar";
 
 /**
  * Whether the cluster run around it stacks its touch controls (DiffBody's
@@ -141,7 +142,12 @@ export function useStickyControls(
 				.closest("section")
 				?.querySelector<HTMLElement>(":scope > header");
 			if (!header) return;
-			const top = header.getBoundingClientRect().bottom;
+			// Under the view bar too, once it pins under the header (CAR-317).
+			const bar = viewBarOver(box);
+			const top = Math.max(
+				header.getBoundingClientRect().bottom,
+				bar?.getBoundingClientRect().bottom ?? 0,
+			);
 			const edge = scroller.current?.getBoundingClientRect().left ?? 0;
 			const slots = box.querySelectorAll<HTMLElement>(`[${SLOT}]`);
 			// Measure everything first, then write: one layout per frame.

@@ -107,6 +107,18 @@ export function pressedView(
 	return renderer === "image" ? (modes ? mode : "image") : renderer;
 }
 
+/**
+ * The row the view switch sits in (over Text and Binary, over a Markdown
+ * file's Rendered view, the image toolbar), marked `data-view-bar`: pinned
+ * under the file's sticky header (`--file-head`, FileDiff) while any of
+ * what it sits over is on screen, so the view can be swapped mid-file
+ * (CAR-317). In the flow, so it pushes what follows and never covers the
+ * header; the stack's other readers (stickyBottom, the cluster controls)
+ * count it.
+ */
+export const VIEW_BAR =
+	"sticky top-[calc(var(--app-header,0px)+var(--files-bar,0px)+var(--file-head,0px))] z-[9] flex min-h-12 flex-wrap items-center gap-2 border-line border-b bg-band px-2 py-1";
+
 export const ICON_BUTTON =
 	"flex h-10 w-10 items-center justify-center text-muted hover:bg-overlay hover:text-ink focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-accent aria-pressed:bg-pressed aria-pressed:text-ink";
 

@@ -168,7 +168,7 @@ function ThreadAgentPanel(props: {
 					data-testid="thread-agent-strip"
 					onClick={props.onClose}
 					style={{ width: props.stripWidth }}
-					className="absolute inset-y-0 left-0 z-10 cursor-pointer rounded-l-md hover:bg-overlay focus-visible:outline-2 focus-visible:outline-accent"
+					className="absolute inset-y-0 left-0 z-[8] cursor-pointer rounded-l-md hover:bg-overlay focus-visible:outline-2 focus-visible:outline-accent"
 				/>
 			)}
 			<section
@@ -178,7 +178,7 @@ function ThreadAgentPanel(props: {
 				aria-hidden={!open}
 				inert={!open}
 				style={{ width: `calc(100% - ${props.stripWidth}px)` }}
-				className={`absolute inset-y-0 right-0 z-10 flex flex-col rounded-md border border-agent-edge bg-surface shadow-control transition-transform duration-250 ease-out motion-reduce:transition-none ${
+				className={`absolute inset-y-0 right-0 z-[8] flex flex-col rounded-md border border-agent-edge bg-surface shadow-control transition-transform duration-250 ease-out motion-reduce:transition-none ${
 					shown ? "" : "hidden"
 				} ${entered ? "translate-x-0" : "translate-x-[calc(100%+2px)]"}`}
 			>

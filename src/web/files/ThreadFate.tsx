@@ -983,7 +983,7 @@ export function WaitingThreads(props: { waiting: readonly ReviewThread[] }) {
 			<ul
 				data-testid="placing-threads"
 				aria-busy={failed ? undefined : true}
-				className="absolute top-1 right-2 z-10 flex max-w-[calc(100%-1rem)] flex-col items-end gap-1"
+				className="absolute top-1 right-2 z-[8] flex max-w-[calc(100%-1rem)] flex-col items-end gap-1"
 			>
 				{props.waiting.map((t) => (
 					<li

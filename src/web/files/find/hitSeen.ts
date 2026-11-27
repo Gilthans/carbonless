@@ -1,3 +1,4 @@
+import { viewBarOver } from "../viewBar";
 import type { Hit } from "./findInPr";
 
 /** The find bar's element on the page (FindBar's root). */
@@ -48,7 +49,7 @@ export function hitSeen(hit: Hit, stackTop: number): boolean {
 		hit.side === "path" || hit.side === "oldPath"
 			? 0
 			: ((section?.querySelector(":scope > header") as HTMLElement | null)
-					?.offsetHeight ?? 0);
+					?.offsetHeight ?? 0) + (viewBarOver(el)?.offsetHeight ?? 0);
 	if (r.top < stackTop + header - 1 || r.bottom > window.innerHeight + 1)
 		return false;
 	const bar = findBarElement()?.getBoundingClientRect();

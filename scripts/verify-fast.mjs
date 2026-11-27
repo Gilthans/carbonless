@@ -224,6 +224,8 @@ const E2E_MAP = [
 		/^src\/web\/files\/renderers\/|^src\/shared\/imageTypes|^src\/web\/files\/(FileDiff|DiffBody)\.tsx$/,
 		["image-renderer"],
 	],
+	// The view switch's bar pinned mid-file, a switch keeping the place (CAR-317).
+	[/^src\/web\/files\/(renderers\/|FileDiff\.tsx$)/, ["view-bar"]],
 	[/^src\/server\/review\//, ["files", "persistence"]],
 	// score-carry.test.ts's example corpus.
 	[/^test\/fixtures\/score-carry\//, []],

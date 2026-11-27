@@ -1,6 +1,7 @@
 import { CommentIcon, DatabaseIcon } from "@primer/octicons-react";
 import { useQuery } from "@tanstack/react-query";
 import {
+	type CSSProperties,
 	type MouseEvent,
 	type ReactNode,
 	useCallback,
@@ -45,6 +46,7 @@ import {
 import { hunksQuery, overviewQuery, sessionQuery } from "../api";
 import type { FindMark } from "../code/Invisibles";
 import { Spinner } from "../Spinner";
+import { useHeight } from "../sticky";
 import { Tooltip, TooltipPath, type TooltipTriggerProps } from "../Tooltip";
 import { newThreadKey, useDrafts } from "../threads/drafts";
 import { NewThread } from "../threads/NewThread";
@@ -82,6 +84,7 @@ import {
 	resolveRenderer,
 } from "./renderers";
 import { ImageView } from "./renderers/image/ImageView";
+import { keepPlace } from "./renderers/keepPlace";
 import type { ImageFile } from "./renderers/markdown/images";
 import {
 	documentContextQuery,
@@ -90,6 +93,7 @@ import {
 import {
 	imageModesOf,
 	pressedView,
+	VIEW_BAR,
 	type ViewOption,
 	ViewSwitch,
 	viewOptions,
@@ -696,6 +700,13 @@ export function FileDiff(props: {
 	const expandedNow = useRef(expanded);
 	expandedNow.current = expanded;
 	const headerEl = useRef<HTMLElement>(null);
+	const sectionEl = useRef<HTMLElement>(null);
+	// The open header's height, for the view bar pinned under it
+	// (`--file-head`: VIEW_BAR).
+	const headHeight = useHeight(() => headerEl.current, expanded);
+	// A pick's wait for its view to keep the reader's place (keepPlace.ts).
+	const placeWait = useRef<(() => void) | null>(null);
+	useEffect(() => () => placeWait.current?.(), []);
 	const toggleButton = useRef<HTMLButtonElement>(null);
 	const otherOpenNow = useRef(props.otherOpen ?? false);
 	otherOpenNow.current = props.otherOpen ?? false;
@@ -743,6 +754,12 @@ export function FileDiff(props: {
 	// renderer. A pick only changes the view: never a review state.
 	const mode = imageMode.use();
 	const pickView = (option: ViewOption) => {
+		// Mid-file, what the reader is on stays where it is (CAR-317).
+		placeWait.current?.();
+		placeWait.current = null;
+		const section = sectionEl.current;
+		const follow = section ? keepPlace(section) : null;
+		if (follow) placeWait.current = follow(option.renderer);
 		asText.clear();
 		setRenderFailed(false);
 		// Kept per path only when it differs from what the file shows
@@ -1417,7 +1434,9 @@ export function FileDiff(props: {
 
 	return (
 		<section
+			ref={sectionEl}
 			id={`file-${file.index}`}
+			style={{ "--file-head": `${headHeight}px` } as CSSProperties}
 			data-file-index={file.index}
 			// How the body shows it (renderers/), open or closed.
 			data-renderer={renderer}
@@ -1640,10 +1659,7 @@ export function FileDiff(props: {
 				) : (
 					<>
 						{switchRow && (
-							<div
-								data-testid="view-bar"
-								className="flex min-h-12 flex-wrap items-center gap-2 border-line border-b bg-band px-2 py-1"
-							>
+							<div data-testid="view-bar" data-view-bar className={VIEW_BAR}>
 								{viewSwitch(imageModes)}
 							</div>
 						)}
