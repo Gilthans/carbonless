@@ -389,7 +389,6 @@ describe("agentEnv secret names", () => {
 		"STRIPE_KEY_LIVE",
 		"DB_PASSWORD",
 		"MYSQL_PWD",
-		"SSH_AUTH_SOCK",
 		"DB_PASSWD",
 		"REDIS_PASS",
 		"SSH_PASSPHRASE",
@@ -413,6 +412,10 @@ describe("agentEnv secret names", () => {
 		"GITHUBTOKEN",
 		"clientSecret",
 		"apiKey",
+		"ID_JWT",
+		"API_BEARER",
+		"BW_SESSION",
+		"OP_SESSION_my",
 	];
 	const kept = [
 		"HOME",
@@ -439,6 +442,11 @@ describe("agentEnv secret names", () => {
 		"DBUS_SESSION_BUS_ADDRESS",
 		"HTTP_PROXY",
 		"URL_BASE",
+		"SSH_AUTH_SOCK",
+		"KUBECONFIG",
+		"NETRC",
+		"GNUPGHOME",
+		"SALT",
 	];
 
 	it("drops every secret-looking name and keeps the rest", () => {
@@ -455,10 +463,41 @@ describe("agentEnv secret names", () => {
 		}
 	});
 
-	it("the config's own env passes as written, secret names too", () => {
-		const env = agentEnv({ CLAUDE_CODE_OAUTH_TOKEN: "t", MY_PAT: "p" });
+	it("drops a value that is a URL with a password, keeps one without", () => {
+		const withPassword = {
+			REDIS_URL: "redis://:hunter2@cache:6379/0",
+			MONGODB_URI: "mongodb+srv://app:hunter2@cluster0.example.net/db",
+			HTTPS_PROXY: "http://me:hunter2@proxy:3128",
+		};
+		const without = {
+			PLAIN_URL: "https://example.com:8443/path@v1",
+			USER_ONLY_URL: "ssh://git@example.com/repo.git",
+			NOT_A_URL: "a:b@c",
+		};
+		const saved = { ...process.env };
+		try {
+			Object.assign(process.env, withPassword, without);
+			const env = agentEnv({});
+			for (const name of Object.keys(withPassword))
+				expect(env[name], name).toBeUndefined();
+			for (const [name, value] of Object.entries(without))
+				expect(env[name], name).toBe(value);
+		} finally {
+			for (const k of Object.keys(process.env))
+				if (!(k in saved)) delete process.env[k];
+			Object.assign(process.env, saved);
+		}
+	});
+
+	it("the config's own env passes as written, secret names and values too", () => {
+		const env = agentEnv({
+			CLAUDE_CODE_OAUTH_TOKEN: "t",
+			MY_PAT: "p",
+			REDIS_URL: "redis://:pw@cache",
+		});
 		expect(env.CLAUDE_CODE_OAUTH_TOKEN).toBe("t");
 		expect(env.MY_PAT).toBe("p");
+		expect(env.REDIS_URL).toBe("redis://:pw@cache");
 	});
 });
 

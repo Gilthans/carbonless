@@ -159,6 +159,8 @@ const SECRET_PARTS = new Set([
 	"COOKIE",
 	"COOKIES",
 	"DSN",
+	"JWT",
+	"BEARER",
 ]);
 
 /** Parts that, together, name a connection string (DATABASE_URL). */
@@ -168,8 +170,17 @@ const CONNECTION_PARTS = [
 	["CONNECTION", "STRING"],
 ];
 
-/** Names the agent needs as they are, whatever the rules above say. */
-const ALWAYS_KEPT = new Set(["HOME", "PATH", "PWD", "OLDPWD"]);
+/** Live password-manager sessions (Bitwarden, 1Password's OP_SESSION_<account>). */
+const SESSION_NAME = /^(?:BW_SESSION|OP_SESSION_.*)$/i;
+
+/**
+ * Names the agent needs as they are, whatever the rules above say.
+ * SSH_AUTH_SOCK is a socket path: the checkout may fetch over SSH.
+ */
+const ALWAYS_KEPT = new Set(["HOME", "PATH", "PWD", "OLDPWD", "SSH_AUTH_SOCK"]);
+
+/** A URL with a password in it: scheme://user:pass@host… */
+const URL_WITH_PASSWORD = /[a-z][a-z0-9+.-]*:\/\/[^\s/@:]*:[^\s/@]+@/i;
 
 /**
  * Whether a name of the server's environment is a secret never passed to
@@ -179,7 +190,7 @@ const ALWAYS_KEPT = new Set(["HOME", "PATH", "PWD", "OLDPWD"]);
  */
 function isSecretEnvName(name: string): boolean {
 	if (ALWAYS_KEPT.has(name.toUpperCase())) return false;
-	if (SECRET_WORDS.test(name)) return true;
+	if (SECRET_WORDS.test(name) || SESSION_NAME.test(name)) return true;
 	const parts = name
 		.replace(/([a-z0-9])([A-Z])/g, "$1_$2")
 		.toUpperCase()
@@ -193,8 +204,9 @@ function isSecretEnvName(name: string): boolean {
 
 /**
  * The agent's environment: the server's (without the GIT_* variables that
- * redirect git, inheritedEnv) minus secrets, HOME and PATH as they are, and
- * the config's `env` on top.
+ * redirect git, inheritedEnv) minus secrets (by name, or a value that is a
+ * URL with a password), HOME and PATH as they are, and the config's `env`
+ * on top, passed as written.
  */
 export function agentEnv(
 	extra: Record<string, string>,
@@ -206,7 +218,7 @@ export function agentEnv(
 	const env: Record<string, string> = {};
 	for (const [key, value] of Object.entries(inheritedEnv())) {
 		if (value === undefined || replaced.has(fold(key))) continue;
-		if (isSecretEnvName(key)) continue;
+		if (isSecretEnvName(key) || URL_WITH_PASSWORD.test(value)) continue;
 		env[key] = value;
 	}
 	return { ...env, ...extra };
