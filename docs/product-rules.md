@@ -339,6 +339,12 @@ else acceptable". GitHub keeps the latest APPROVED or CHANGES_REQUESTED
 review standing through later comments, so without the dismissal the
 switch wouldn't happen.
 
+- **The telemetry mailbox is the one push crb makes on its own**, and only
+  after the reviewer turns it on and names the repo (`crb telemetry on
+  <repo>`): it pushes the device's own branch `device/<device>` of that
+  repo, nothing else, with the device's git credentials
+  ([telemetry-mailbox.md](telemetry-mailbox.md)).
+
 - **Withdrawing an opinion by Comment.** The comment posts first, then the
   dismissal, so a failed dismissal never leaves the reviewer with neither.
   The review dismissed is the viewer's latest opinionated one, from a fresh

@@ -399,4 +399,84 @@ describe("config", () => {
 			updateConfig((c) => ({ ...c, views: [{ name: "x", repos: ["bad"] }] })),
 		).rejects.toThrow(/not owner\/repo/);
 	});
+	describe("telemetry", () => {
+		it("is off unless the file names a mailbox and a device", async () => {
+			expect((await readConfig()).config.telemetry).toBeUndefined();
+			write(
+				JSON.stringify({
+					telemetry: {
+						mailbox: " git@example.com:me/m.git ",
+						device: "laptop",
+					},
+				}),
+			);
+			expect(await readConfig()).toMatchObject({
+				config: {
+					telemetry: {
+						mailbox: "git@example.com:me/m.git",
+						device: "laptop",
+						every: 15,
+					},
+				},
+				problems: [],
+			});
+		});
+
+		it("a bad section is off, with a problem; a bad interval is the default", async () => {
+			for (const telemetry of [
+				"yes",
+				{ device: "laptop" },
+				{ mailbox: "--upload-pack=evil", device: "laptop" },
+				{ mailbox: "/m.git", device: "My Laptop" },
+				{ mailbox: "/m.git", device: "../x" },
+			]) {
+				write(JSON.stringify({ telemetry }));
+				const read = await readConfig();
+				expect(read.config.telemetry).toBeUndefined();
+				expect(read.problems).toEqual([expect.stringMatching(/telemetry/)]);
+			}
+			write(
+				JSON.stringify({
+					telemetry: { mailbox: "/m.git", device: "pc", every: 0 },
+				}),
+			);
+			const read = await readConfig();
+			expect(read.config.telemetry?.every).toBe(15);
+			expect(read.problems).toEqual([expect.stringMatching(/every/)]);
+		});
+
+		it("an unreadable section stays as written through other updates", async () => {
+			const typo = { mailbox: "/m.git", device: "My Laptop" };
+			write(JSON.stringify({ telemetry: typo }));
+			await updateConfig((c) => ({ ...c, refresh: { minutes: 5 } }));
+			expect(onDisk().telemetry).toEqual(typo);
+			expect(onDisk().refresh).toEqual({ minutes: 5 });
+			// …and crb telemetry off removes it all the same.
+			await updateConfig(({ telemetry: _t, ...c }) => c, {
+				removeTelemetry: true,
+			});
+			expect(onDisk().telemetry).toBeUndefined();
+		});
+
+		it("updateConfig turns it on and off, keeping its unknown keys while on", async () => {
+			write(
+				JSON.stringify({
+					telemetry: { mailbox: "/a.git", device: "pc", note: 1 },
+				}),
+			);
+			await updateConfig((c) => ({
+				...c,
+				telemetry: { mailbox: "/b.git", device: "pc", every: 30 },
+			}));
+			expect(onDisk().telemetry).toEqual({
+				mailbox: "/b.git",
+				device: "pc",
+				every: 30,
+				note: 1,
+			});
+			await updateConfig(({ telemetry: _t, ...c }) => c);
+			expect(onDisk().telemetry).toBeUndefined();
+			expect((await readConfig()).config.telemetry).toBeUndefined();
+		});
+	});
 });

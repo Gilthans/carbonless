@@ -11,7 +11,10 @@ import {
 	rotateAccessKey,
 	writeServerState,
 } from "./serverState.js";
+import { startOwnLog } from "./telemetry/ownLog.js";
+import { startMailboxTimer } from "./telemetry/schedule.js";
 import { TEST_HOOKS_ENV, testHookToken } from "./testHooks.js";
+import { tracer } from "./trace.js";
 import { serveChecksOff, updaterFor } from "./update/updater.js";
 import { BUILD } from "./version.js";
 import { ViewerCache } from "./viewerCache.js";
@@ -54,6 +57,10 @@ export async function startServer(opts: {
 }): Promise<StartedServer> {
 	const log = opts.log ?? (() => {});
 	const { config, problems } = await readConfig();
+	// While the mailbox is on, what crb serve writes to stderr also goes to
+	// serve-own.log, however it was started (telemetry/ownLog.ts).
+	let mailboxOn = config.telemetry !== undefined;
+	const stopOwnLog = startOwnLog({ enabled: () => mailboxOn });
 	for (const problem of problems) log(`config: ${problem}`);
 	const host = opts.host ?? config.serve.host;
 	const port = opts.port ?? config.serve.port;
@@ -114,6 +121,7 @@ export async function startServer(opts: {
 	try {
 		await app.listen({ port, host });
 	} catch (error) {
+		stopOwnLog();
 		await registry.closeAll();
 		if ((error as NodeJS.ErrnoException).code === "EADDRINUSE") {
 			throw new Error(`Port ${port} on ${host} is already in use`);
@@ -136,6 +144,18 @@ export async function startServer(opts: {
 		version: BUILD,
 		...(key ? { keyed: true } : {}),
 		...(publicUrl ? { publicUrl } : {}),
+		...(tracer().dir ? { traceDir: tracer().dir as string } : {}),
+	});
+
+	// The telemetry mailbox (docs/telemetry-mailbox.md): off unless config
+	// names one; read anew each minute, so turning it on needs no restart.
+	const mailbox = startMailboxTimer({
+		readConfig,
+		traceDir: () => tracer().dir,
+		log,
+		onState: (on) => {
+			mailboxOn = on;
+		},
 	});
 
 	// Asks npm in the background: never delays or fails a start.
@@ -149,6 +169,8 @@ export async function startServer(opts: {
 		close: () => {
 			closed ??= (async () => {
 				updater.stop();
+				await mailbox.stop();
+				stopOwnLog();
 				await removeServerState();
 				await app.close();
 				// Their background reads of GitHub and the clones stop with them.

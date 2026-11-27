@@ -24,6 +24,8 @@ export interface ServerState {
 	 * machines must not make one trust another's pid.
 	 */
 	hostname?: string;
+	/** Where it traces ($CRB_TRACE_DIR, or the mailbox's default), if it does. */
+	traceDir?: string;
 }
 
 const PRIVATE = 0o600;

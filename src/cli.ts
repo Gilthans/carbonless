@@ -20,4 +20,13 @@ try {
 	// Starts without it.
 }
 
+// The telemetry mailbox turns crb serve's tracing on (docs/telemetry-mailbox.md),
+// before anything makes the tracer.
+if (process.argv[2] === "serve") {
+	const { applyMailboxTracing } = await import(
+		"./server/telemetry/traceDir.js"
+	);
+	await applyMailboxTracing();
+}
+
 await import("./main.js");

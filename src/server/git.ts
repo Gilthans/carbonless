@@ -17,6 +17,12 @@ export interface RunGitOptions {
 	 * aborted, git isn't started.
 	 */
 	signal?: AbortSignal;
+	/**
+	 * A timed git that stays in crb's session (not detached), so it can
+	 * prompt on the terminal (`crb telemetry on|send`); its timeout kills it
+	 * alone, not its children.
+	 */
+	attached?: boolean;
 }
 
 /**
@@ -228,9 +234,11 @@ export function runGitFull(
 			// children too (a credential helper, an alias, a remote helper).
 			// An untimed one stays in ours and goes with a Ctrl-C; a timed one
 			// is killed when crb exits (killDetachedGits).
-			detached: opts.timeoutMs !== undefined,
+			detached: opts.timeoutMs !== undefined && !opts.attached,
+			// Windows: a detached console child would get a window of its own.
+			windowsHide: true,
 		});
-		if (opts.timeoutMs !== undefined) trackDetached(child);
+		if (opts.timeoutMs !== undefined && !opts.attached) trackDetached(child);
 		running.set(child, args);
 		child.on("close", () => running.delete(child));
 		child.on("error", () => running.delete(child));
@@ -243,7 +251,7 @@ export function runGitFull(
 			timedOut = true;
 			endStep();
 			span?.end({ exit: "killed" }, message);
-			if (opts.timeoutMs !== undefined) killGroup(child);
+			if (opts.timeoutMs !== undefined && !opts.attached) killGroup(child);
 			else child.kill("SIGKILL");
 			child.stdout.destroy();
 			child.stderr.destroy();

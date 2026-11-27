@@ -29,7 +29,28 @@ export interface CrbConfig {
 	 * (src/server/update/updater.ts); unset: remembered, else by version.
 	 */
 	updates: { check: boolean; channel?: "rc" | "latest" };
+	/**
+	 * The telemetry mailbox (docs/telemetry-mailbox.md): a git remote the
+	 * reviewer owns that crb pushes its traces, logs and state to, on the
+	 * device's own branch. Absent: off (the default; there is no default
+	 * remote).
+	 */
+	telemetry?: TelemetryConfig;
 }
+
+export interface TelemetryConfig {
+	/** The git remote URL (a private repo of the reviewer's). */
+	mailbox: string;
+	/** This device's name: its branch is `device/<device>`. */
+	device: string;
+	/** Minutes between pushes. */
+	every: number;
+}
+
+/** A device name: a branch path segment, safe on every OS. */
+export const DEVICE_NAME = /^[a-z0-9][a-z0-9_-]{0,63}$/;
+/** Minutes between pushes by default. */
+export const TELEMETRY_EVERY = 15;
 
 /** The config as read, and what was bad in the file and replaced by a default. */
 export interface ConfigRead {
@@ -211,7 +232,53 @@ function validate(raw: Json | null): ConfigRead {
 			}
 		}
 	}
-	return { config: { serve, views, refresh, agent, updates }, problems };
+	const telemetry = validateTelemetry(raw?.telemetry, problems);
+	return {
+		config: {
+			serve,
+			views,
+			refresh,
+			agent,
+			updates,
+			...(telemetry ? { telemetry } : {}),
+		},
+		problems,
+	};
+}
+
+/** The telemetry section: undefined (off) when absent, null or unusable. */
+function validateTelemetry(
+	raw: unknown,
+	problems: string[],
+): TelemetryConfig | undefined {
+	if (raw === undefined || raw === null) return undefined;
+	if (!isObject(raw)) {
+		problems.push("telemetry must be an object or null; telemetry off");
+		return undefined;
+	}
+	const { mailbox, device, every } = raw;
+	// Never an option to git (it goes in config, not argv, but still).
+	if (typeof mailbox !== "string" || !mailbox.trim() || /^-/.test(mailbox)) {
+		problems.push("telemetry.mailbox must be a git remote URL; telemetry off");
+		return undefined;
+	}
+	if (typeof device !== "string" || !DEVICE_NAME.test(device)) {
+		problems.push(
+			"telemetry.device must be lowercase letters, digits, - or _; telemetry off",
+		);
+		return undefined;
+	}
+	let minutes = TELEMETRY_EVERY;
+	if (every !== undefined) {
+		if (typeof every === "number" && every >= 1 && every <= 1440) {
+			minutes = every;
+		} else {
+			problems.push(
+				`telemetry.every must be minutes from 1 to 1440; using ${TELEMETRY_EVERY}`,
+			);
+		}
+	}
+	return { mailbox: mailbox.trim(), device, every: minutes };
 }
 
 /** The agent section: null when absent, null, or without a usable command. */
@@ -277,10 +344,13 @@ let updates: Promise<unknown> = Promise.resolve();
  */
 export function updateConfig(
 	change: (c: CrbConfig) => CrbConfig,
+	/** `removeTelemetry`: drop the section even when it doesn't read (crb telemetry off). */
+	options: { removeTelemetry?: boolean } = {},
 ): Promise<CrbConfig> {
 	const run = updates.then(async () => {
 		const { raw } = await readRaw();
-		const next = change(validate(raw).config);
+		const before = validate(raw).config;
+		const next = change(before);
 		const checked = validate(next as unknown as Json);
 		if (checked.problems.length > 0) {
 			throw new Error(checked.problems.join("; "));
@@ -297,13 +367,28 @@ export function updateConfig(
 			const i = unused.findIndex((u) => u.name === name);
 			return i < 0 ? {} : (unused.splice(i, 1)[0]?.v ?? {});
 		};
+		const { telemetry: oldTelemetry, ...rest } = raw ?? {};
+		// A section that doesn't read (hand-edited, a typo) stays as written
+		// through an unrelated update: it was off already, and a fix to it
+		// shouldn't be lost. Only turning a valid one off removes it.
+		const keptBad =
+			!c.telemetry &&
+			!before.telemetry &&
+			!options.removeTelemetry &&
+			oldTelemetry !== undefined
+				? { telemetry: oldTelemetry }
+				: {};
 		const out = {
-			...(raw ?? {}),
+			...rest,
 			serve: { ...keep(raw?.serve), ...c.serve },
 			views: c.views.map((v) => ({ ...rawOf(v.name), ...v })),
 			refresh: { ...keep(raw?.refresh), ...c.refresh },
 			agent: c.agent === null ? null : { ...keep(raw?.agent), ...c.agent },
 			updates: { ...keep(raw?.updates), ...c.updates },
+			// Off is no section at all.
+			...(c.telemetry
+				? { telemetry: { ...keep(raw?.telemetry), ...c.telemetry } }
+				: keptBad),
 		};
 		await writeFileAtomic(configFile(), `${JSON.stringify(out, null, "\t")}\n`);
 		return c;

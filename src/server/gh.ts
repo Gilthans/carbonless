@@ -135,6 +135,8 @@ function spawnGh(args: string[], run: GhRun = {}): Promise<GhResult> {
 			cwd: run.cwd,
 			env,
 			stdio: ["pipe", "pipe", "pipe"],
+			// Windows: no console window flashing up per call.
+			windowsHide: true,
 		});
 		children.set(child, args);
 		child.on("close", () => children.delete(child));
