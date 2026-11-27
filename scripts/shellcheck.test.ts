@@ -247,12 +247,52 @@ describe("workflowRunBlocks", () => {
 		expect(out.split("\n")[3]).toBe("other:1:1: y");
 	});
 
-	it("reads every step of our own workflows", () => {
+	it("reads every step of our own workflows, leaving out only the known non-steps", () => {
 		const dir = join(import.meta.dirname, "..", ".github", "workflows");
-		const steps = readdirSync(dir).flatMap((f) =>
-			workflowRunBlocks(readFileSync(join(dir, f), "utf8"), f),
+		const uncovered = readdirSync(dir).flatMap((f) => {
+			const lines = readFileSync(join(dir, f), "utf8").split("\n");
+			// A block's script starts on the line after its `run:`.
+			const covered = new Set(
+				workflowRunBlocks(lines.join("\n"), f).map((b) =>
+					/^\s*(?:- )?run:/.test(lines[b.line - 1] ?? "") ? b.line : b.line - 1,
+				),
+			);
+			return lines.flatMap((l, n) =>
+				/^\s*(?:- )?run:/.test(l) && !covered.has(n + 1)
+					? [`${f}: ${l.trim()}`]
+					: [],
+			);
+		});
+		expect(uncovered.sort()).toEqual(
+			[
+				// The Windows job's PowerShell steps.
+				"ci.yml: run: pnpm install --frozen-lockfile",
+				"ci.yml: run: pnpm exec vitest run src/server/agent/acp.test.ts src/server/agent/runner.test.ts src/server/update/updateHelper.test.ts src/server/update/install.test.ts",
+				// workflow_dispatch's `inputs: run:`.
+				"release-finish.yml: run:",
+				// Top-level `defaults: run:`.
+				"release-finish.yml: run:",
+				"release.yml: run:",
+			].sort(),
 		);
-		expect(steps.length).toBeGreaterThan(50);
+	});
+
+	it("a job key with a comment ends the Windows job before it", () => {
+		const text = [
+			"jobs:",
+			"  win:",
+			"    runs-on: windows-latest # pwsh",
+			"    steps:",
+			"      - run: Get-ChildItem",
+			"  lin: # linux",
+			"    runs-on: ubuntu-latest",
+			"    steps:",
+			"      - run: echo $A",
+			"",
+		].join("\n");
+		expect(workflowRunBlocks(text)).toEqual([
+			{ line: 9, col: 13, shell: "bash", script: "echo $A\n" },
+		]);
 	});
 
 	it("checks each block in its own shell, with set -e", () => {

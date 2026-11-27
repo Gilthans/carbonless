@@ -199,11 +199,12 @@ export function workflowRunBlocks(text, file = "workflow") {
 			inJobs = /^jobs:\s*(?:#.*)?$/.test(l);
 		if (!inJobs) continue;
 		// A job (two-space key under `jobs:`): note whether it runs on Windows.
-		if (/^ {2}[\w-]+:\s*$/.test(l)) {
+		if (/^ {2}[\w-]+:\s*(?:#.*)?$/.test(l)) {
 			windowsJob = false;
 			for (let j = i + 1; j < lines.length; j++) {
 				if (/^ {0,2}\S/.test(lines[j])) break;
-				if (/^ {4}runs-on:.*windows/.test(lines[j])) windowsJob = true;
+				const runsOn = lines[j].replace(/\s+#.*$/, "");
+				if (/^ {4}runs-on:.*windows/.test(runsOn)) windowsJob = true;
 			}
 		}
 		const m = /^(\s*)(- )?run:(?:\s+(.*))?$/.exec(l);
