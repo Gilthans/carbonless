@@ -1,5 +1,6 @@
 import { readdir } from "node:fs/promises";
 import { join } from "node:path";
+import { pauseCatFile } from "./catFile.js";
 import { repoLockLastUsed, withRepoLock } from "./clone.js";
 import { GitError, runGit } from "./git.js";
 import { cacheDir } from "./paths.js";
@@ -187,10 +188,17 @@ async function run(
 		try {
 			const before = await countObjects(path);
 			span.set(prefixed("before", before));
-			for (const args of maintenanceCommands(
-				version ?? (await gitVersion(path)),
-			)) {
-				await runGit(path, args, { lowPriority: true });
+			// No long-running reader holds a pack open while they go
+			// (Windows can't delete one); reads meanwhile run their own.
+			const resume = await pauseCatFile(path);
+			try {
+				for (const args of maintenanceCommands(
+					version ?? (await gitVersion(path)),
+				)) {
+					await runGit(path, args, { lowPriority: true });
+				}
+			} finally {
+				resume();
 			}
 			const after = await countObjects(path);
 			const ms = Date.now() - started;

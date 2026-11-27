@@ -362,6 +362,8 @@ export async function readObject(
 	) {
 		return readAlone(repo, name, signal);
 	}
+	// Paused (clone maintenance): no process held open beside a repack.
+	if (paused.has(repo)) return readAlone(repo, name, signal);
 	return processOf(repo).read(name, signal);
 }
 
@@ -392,6 +394,42 @@ export async function closeCatFiles(): Promise<void> {
 	processes.clear();
 	for (const p of all) p.close();
 	await Promise.all([...ending]);
+}
+
+/** Clones whose reads each run a `cat-file` of their own for now, and by how many pausers. */
+const paused = new Map<string, number>();
+
+/** Longest a pause waits for the reads out to be answered before closing. */
+const DRAIN_MS = 10_000;
+
+/**
+ * Keeps `repo` without a long-running process until the returned resume is
+ * called (clone maintenance: on Windows an open reader keeps a repack from
+ * deleting the packs it rolled up). Reads meanwhile each run a `cat-file`
+ * of their own; the process up now gets its reads out answered (up to
+ * DRAIN_MS), then closes, and this settles once it has exited.
+ */
+export async function pauseCatFile(repo: string): Promise<() => void> {
+	paused.set(repo, (paused.get(repo) ?? 0) + 1);
+	let resumed = false;
+	const resume = () => {
+		if (resumed) return;
+		resumed = true;
+		const left = (paused.get(repo) ?? 1) - 1;
+		if (left > 0) paused.set(repo, left);
+		else paused.delete(repo);
+	};
+	const up = processes.get(repo);
+	if (up) {
+		processes.delete(repo);
+		const deadline = Date.now() + DRAIN_MS;
+		while (!up.dead && !up.idle && Date.now() < deadline) {
+			await new Promise((r) => setTimeout(r, 10));
+		}
+		up.close();
+		await up.exited;
+	}
+	return resume;
 }
 
 /** How many clones have a process up (tests). */

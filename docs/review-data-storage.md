@@ -215,11 +215,14 @@ same repo. So `crb serve` maintains its clones (`src/server/maintenance.ts`):
   runs beside it; an open that comes meanwhile waits for it, as it waits for
   another open's fetch. Its gits run at the lowest CPU priority. Not under
   the test harness (`$CRB_TEST_HOOKS`): its gits would be a test's leftovers.
-- **Readers beside it.** Reads don't take the repo lock, so a diff or the
-  shared `cat-file --batch` may run during a repack; git re-reads its pack
-  list when an object isn't where it looked, as it does beside any `gc`. On
-  Windows a pack a running reader holds open can't be deleted yet: it stays
-  as a redundant pack and the next run rolls it up.
+- **Readers beside it.** Reads don't take the repo lock. The clone's
+  long-running `cat-file --batch` (`catFile.ts`) is paused for the run: its
+  reads out are answered, it closes and exits before the repack starts, and
+  reads meanwhile each run a `cat-file` of their own (it starts again after).
+  Other short gits (a diff) may still run beside the repack; git re-reads
+  its pack list when an object isn't where it looked, as it does beside any
+  `gc`. On Windows a pack such a reader holds open can't be deleted yet: it
+  stays as a redundant pack and the next run rolls it up.
 - **Seen in** the server log (`maintenance owner/repo.git: N loose, P packs →
   0 loose, Q packs (ms)`) and a `crb: maintenance` span with `git
   count-objects -v` before and after.

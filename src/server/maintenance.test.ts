@@ -11,6 +11,7 @@ import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { GIT_TEST_TIMEOUTS, testGitEnv } from "../../test/git-fixture";
+import { catFileCount, closeCatFiles, readObject } from "./catFile";
 import { withRepoLock } from "./clone";
 import {
 	countObjects,
@@ -142,7 +143,11 @@ describe("clone maintenance", () => {
 	beforeEach(() => {
 		tmp = mkdtempSync(join(tmpdir(), "crb-maint-"));
 	});
-	afterEach(() => rmSync(tmp, { recursive: true, force: true }));
+	afterEach(async () => {
+		// Windows keeps a running process's directory.
+		await closeCatFiles();
+		rmSync(tmp, { recursive: true, force: true });
+	});
 
 	it.each([
 		[8, "geometric"],
@@ -253,6 +258,20 @@ describe("clone maintenance", () => {
 		expect(
 			missing(clone, [...grown.dangling, ...grown.looseUnreachable]),
 		).toEqual([]);
+	});
+
+	it("closes the clone's long-running reader for the run; reads after start one again", async () => {
+		const grown = grow(tmp, 2);
+		const { clone } = grown;
+		await readObject(clone, grown.dangling[0] as string);
+		expect(catFileCount()).toBe(1);
+		expect(await maintainClone(clone)).toMatchObject({ ran: true });
+		// Closed before the repack, not reopened by it.
+		expect(catFileCount()).toBe(0);
+		expect((await readObject(clone, grown.dangling[1] as string))?.type).toBe(
+			"commit",
+		);
+		expect(catFileCount()).toBe(1);
 	});
 
 	it("runs at most once a day per clone, and records when", async () => {
