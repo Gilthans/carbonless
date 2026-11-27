@@ -641,7 +641,7 @@ describe("the verdict card since your verdict", () => {
 			expect(b).not.toHaveAttribute("aria-disabled");
 		// From here on, nothing in the card goes dead or busy, and no row comes.
 		const seen: string[] = [];
-		const watch = new MutationObserver((records) => {
+		const note = (records: MutationRecord[]) => {
 			for (const r of records) {
 				const el = r.target as HTMLElement;
 				if (r.type === "attributes" && el.getAttribute("aria-disabled"))
@@ -654,7 +654,8 @@ describe("the verdict card since your verdict", () => {
 						seen.push(`${(busy as HTMLElement).dataset.testid} came`);
 				}
 			}
-		});
+		};
+		const watch = new MutationObserver(note);
 		watch.observe(c, {
 			subtree: true,
 			childList: true,
@@ -687,6 +688,8 @@ describe("the verdict card since your verdict", () => {
 			() => client.getQueryState(["verdict"])?.fetchStatus === "idle",
 		);
 		await act(async () => {});
+		// Any mutation still queued counts too.
+		note(watch.takeRecords());
 		watch.disconnect();
 		expect(seen).toEqual([]);
 		expect(within(c).queryByTestId("verdict-since")).toBeNull();
