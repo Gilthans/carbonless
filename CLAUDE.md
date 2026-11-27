@@ -162,9 +162,11 @@ loading never looking empty, interdiffs first-class, checking against a real PR)
     (uncommitted ones without it). `pnpm test <path or name>` for one file.
   - `pnpm test:e2e e2e/files.spec.ts -g "<title>" --project=chromium`: builds,
     then runs the given specs only.
-- Agent worktrees: `scripts/agent-worktree.sh <name> [base]` makes
-  `.worktrees/<name>` on branch `<name>` and installs from the shared pnpm
-  store. Playwright browsers are global. Tests take random ports and their own
+- Agent worktrees: `scripts/agent-worktree.sh <name> [base]` fetches
+  `origin`, makes `.worktrees/<name>` on branch `<name>` from `base`
+  (default `origin/master`; any branch, ref or SHA; printed as `Base:`, with
+  its date) and installs from the shared pnpm store. A failed fetch warns
+  and goes on from the local refs. Playwright browsers are global. Tests take random ports and their own
   temp dirs and `XDG_CACHE_HOME`/`XDG_STATE_HOME`/`XDG_CONFIG_HOME`, so
   `pnpm verify` runs in parallel worktrees; for `pnpm dev` in two at once, set
   `CRB_API_PORT`. Before running `crb` by hand in a worktree, `source` its
