@@ -1,4 +1,4 @@
-import type { Span } from "./load";
+import { extent, type Span } from "./load";
 
 /*
  * What `pnpm test-profile` prints: a run's spans summed into wall and test
@@ -7,7 +7,7 @@ import type { Span } from "./load";
  */
 
 /** The phases of an e2e test, in print order (spans.ts tags them). */
-export const PHASES = [
+const PHASES = [
 	"setup.fixture",
 	"setup.crb_serve",
 	"setup.crb_open",
@@ -20,7 +20,7 @@ export const PHASES = [
 	"teardown.other",
 ] as const;
 
-export interface Calls {
+interface Calls {
 	n: number;
 	ms: number;
 	/** Per test, the median count and time (tests without any count as 0). */
@@ -28,7 +28,7 @@ export interface Calls {
 	medianMs: number;
 }
 
-export interface TestRow {
+interface TestRow {
 	key: string;
 	title: string;
 	file: string;
@@ -37,7 +37,7 @@ export interface TestRow {
 	status: string;
 }
 
-export interface HotSpot {
+interface HotSpot {
 	name: string;
 	n: number;
 	ms: number;
@@ -62,7 +62,7 @@ export interface Summary {
 }
 
 /** Medians over a set of e2e tests; null when there is nothing to take one of. */
-export interface Wave {
+interface Wave {
 	tests: number;
 	/** The test's duration. */
 	testMs: number | null;
@@ -260,7 +260,8 @@ export function summarize(spans: Span[], top = 8): Summary {
 			if (t && !listen.has(key(t))) listen.set(key(t), dur(s));
 		}
 		const ran = tests.filter((t) => t.attrs["test.status"] !== "skipped");
-		const firstEnd = Math.min(...ran.map((t) => t.endMs));
+		const firstEnd =
+			extent(ran.map((t) => t.endMs))?.[0] ?? Number.POSITIVE_INFINITY;
 		const wave = (list: Span[]): Wave => ({
 			tests: list.length,
 			testMs: orNull(list.map(dur)),
@@ -294,7 +295,7 @@ export function summarize(spans: Span[], top = 8): Summary {
 				n: d.length,
 				ms: d.reduce((a, b) => a + b, 0),
 				p50: median(d),
-				max: Math.max(...d),
+				max: extent(d)?.[1] ?? 0,
 			}))
 			.sort((a, b) => b.ms - a.ms)
 			.slice(0, 12),

@@ -27,7 +27,7 @@ const wordOf = (kind: ChipKind, from?: number) =>
 		: kind;
 
 /** What each chip means, in its tooltip. */
-export function kindTip(
+function kindTip(
 	kind: ChipKind,
 	from?: number,
 	rule?: "exact" | "rename",

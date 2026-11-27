@@ -8,6 +8,7 @@ import {
 } from "../../shared/lineRanges.js";
 import {
 	clusterAt,
+	fileLevelSides,
 	lineRuns,
 	type SincePiece,
 	sincePieces,
@@ -44,7 +45,7 @@ import type {
 import { matchDisplayHunk, whitespaceLines } from "../../shared/whitespace.js";
 import { buildAllClusters } from "../diff/clusters.js";
 import { listChangedFiles } from "../diff/files.js";
-import { buildDisplayHunks, contextLines } from "../diff/hunks.js";
+import { buildDisplayHunks, contextLines, inDiffHunks } from "../diff/hunks.js";
 import { type HumanMarks, humanMarksOf } from "../review/coverage.js";
 import type { LinesCarriedEntry } from "../review/events.js";
 import type { PatchsetRecord, StateEntry } from "../review/fold.js";
@@ -57,7 +58,7 @@ import {
 import { detectShape, type Shape } from "./shape.js";
 
 /** Bumped when the engine's cached, state-free result could change for the same inputs. */
-export const ENGINE_VERSION = 5;
+const ENGINE_VERSION = 7;
 
 /** The patch set a comparison is from, with its snapshot and folded states. */
 export type SincePatchset = PatchsetRecord & {
@@ -132,6 +133,15 @@ export interface Traced {
 		 * head's path on that commit (CAR-233).
 		 */
 		earlierMoved?: Record<string, number[]>;
+		/**
+		 * By the virtual rebase's path, for each file of the since patch set
+		 * whose head file pairs with it: interdiff removed lines `baseLine`
+		 * has no place for because the base move brought or changed them
+		 * (not in the patch set's head, or a base line of the old base the
+		 * bases' diff changed), never one the patch set added (CAR-277).
+		 * Only these may be placed by `githubLeft` instead, for ownership.
+		 */
+		baseMoved?: Record<string, number[]>;
 	};
 }
 
@@ -470,6 +480,7 @@ export async function traceRereview(
 		const cd = t ? linesMapper(t.clusters) : null;
 		// Each removed line the since view shows, as the new base's line.
 		const baseLines: Record<number, number> = {};
+		const moved: number[] = [];
 		const shownFile = interdiffByOld.get(primePath);
 		if (t && shownFile && !shownFile.conflict) {
 			const own = linesMapper(file.clusters);
@@ -480,8 +491,16 @@ export async function traceRereview(
 					const b1 = h1 === null ? null : own.newToOld(h1);
 					const b2 = b1 === null ? null : t.ac.oldToNew(b1);
 					if (b2 !== null) baseLines[ic.oldStart + i] = b2;
+					// Not placed, and not the patch set's own (h1 there, b1
+					// none): the base move's line.
+					else if (h1 === null || b1 !== null) moved.push(ic.oldStart + i);
 				}
 			}
+		}
+		if (moved.length > 0) {
+			const all = lineKeys.baseMoved ?? {};
+			all[primePath] = moved;
+			lineKeys.baseMoved = all;
 		}
 		const placed = lineKeys.baseLine ?? {};
 		placed[primePath] = baseLines;
@@ -795,6 +814,32 @@ export function answerRereview(
 				clusters: counted.length,
 			};
 		}
+		// A reworked or new cluster is whitespace-only to a reader with
+		// "Ignore whitespace" on when every unit of it is (none of it left
+		// to read with the switch on); one with no unit keeps counting.
+		const unitsOfCluster = new Map<string, boolean>();
+		for (const u of units) {
+			if (u.cluster === undefined) continue;
+			const id = `${u.index}:${u.cluster}`;
+			unitsOfCluster.set(
+				id,
+				(unitsOfCluster.get(id) ?? true) && u.whitespaceOnly === true,
+			);
+		}
+		for (const f of files) {
+			for (const c of f.clusters) {
+				if (c.kind !== "reworked" && c.kind !== "new") continue;
+				if (unitsOfCluster.get(`${f.index}:${c.key}`)) c.whitespaceOnly = true;
+			}
+		}
+	} else {
+		for (const f of files) {
+			for (const c of f.clusters) {
+				if ((c.kind === "reworked" || c.kind === "new") && wsKeys.has(c.key)) {
+					c.whitespaceOnly = true;
+				}
+			}
+		}
 	}
 	// One carried event per (source patch set, rule).
 	const events = new Map<string, PatchsetStart["carried"][number]>();
@@ -864,6 +909,37 @@ function interdiffFileAt(
 			? (traced.interdiff.files.find((f) => f.path === entry.path) ?? null)
 			: null;
 	return { entry, file };
+}
+
+/**
+ * What the since view shows of file `index` (the agent's `diff`, CAR-182):
+ * whether it changes it at all (the interdiff's clusters of it, lines or
+ * file-level, a cluster gone since, or a conflict: never the hunks'
+ * count, so a binary, submodule or mode change counts), the interdiff's file-level
+ * labels (as the page shows them) and its old path in the interdiff.
+ * RangeError for an index the answer hasn't.
+ */
+export function interdiffFileFacts(
+	traced: Traced,
+	answer: RereviewAnswer,
+	index: number,
+): { changed: boolean; labels: string[]; oldPath?: string } {
+	const { entry, file } = interdiffFileAt(traced, answer, index);
+	const labels = (file?.clusters ?? [])
+		.filter((c) => c.kind === "file" && c.label)
+		.map((c) => c.label as string);
+	// The interdiff's own change (lines or file-level), a cluster gone
+	// since, or a conflict. Not the clusters' kinds: an unchanged cluster
+	// with no mark to carry is `new` to the engine (to read), not changed.
+	const changed =
+		entry.conflict ||
+		(file?.clusters.length ?? 0) > 0 ||
+		entry.clusters.some((c) => c.kind === "gone");
+	return {
+		changed,
+		labels,
+		...(file?.oldPath !== undefined ? { oldPath: file.oldPath } : {}),
+	};
 }
 
 /**
@@ -969,29 +1045,125 @@ export function interdiffFileHunks(
 	const { entry, file } = interdiffFileAt(traced, answer, index);
 	const targetClusters =
 		target.files.find((f) => f.path === entry.path)?.clusters ?? [];
-	const plain = sinceFileHunks(
-		traced,
-		entry,
-		file,
-		targetClusters,
-		[],
-		sources,
+	const withFile = (hunks: FileHunks) =>
+		withFileLevel(hunks, traced, target, answer, entry, file);
+	const plain = withFile(
+		sinceFileHunks(traced, entry, file, targetClusters, [], sources),
 	);
 	if (!withOrphans) return plain;
 	const orphans = orphanLines(entry, targetClusters, plain.pieces ?? []);
 	if (orphans.length === 0) return plain;
 	try {
-		return sinceFileHunks(
-			traced,
-			entry,
-			file,
-			targetClusters,
-			orphans,
-			sources,
+		return withFile(
+			sinceFileHunks(traced, entry, file, targetClusters, orphans, sources),
 		);
 	} catch {
 		return plain;
 	}
+}
+
+/**
+ * `hunks` with the interdiff's file-level change as a piece of its own
+ * (SincePiece.file, CAR-297) when the interdiff has one for the file (a
+ * mode, a binary file, a submodule pointer, a rename that differs since)
+ * and no reworked or new file-level cluster of the viewed snapshot shows
+ * it: one the author reverted since (back to the base), or anything else
+ * the clusters miss (principle 2: it is to read until marked). Keyed by
+ * the gone since cluster it undoes when exactly one gone cluster of the
+ * file has no line in the interdiff (a file-level one: lines are keyed by
+ * theirs), so it reads "gone".
+ *
+ * A rename PS1 made and the author undid since: the interdiff renames the
+ * file back, from the path PS1 gave it; the piece goes on that path's
+ * gone file (its PS1 cluster is gone there), with the interdiff's whole
+ * label, "Renamed from …" included, and none on the path it went back to.
+ * A rename made since the compared patch set is the rename carry's (a
+ * file the interdiff only renames is one whole-file gap): only what else
+ * changed with it is a piece.
+ *
+ * Deliberately unlabelled: when a reworked or new file-level cluster of
+ * the snapshot shows the file (say the binary changed and the mode was
+ * put back), that cluster is what is read and counted; the interdiff's
+ * own label for the file isn't named apart.
+ */
+function withFileLevel(
+	hunks: FileHunks,
+	traced: Traced,
+	target: Snapshot,
+	answer: RereviewAnswer,
+	entry: RereviewAnswer["files"][number],
+	own: InterdiffFile | null,
+): FileHunks {
+	if (traced.interdiff.status !== "available") return hunks;
+	// A rename PS1 made, undone since: the interdiff's file left this path.
+	const away = own
+		? undefined
+		: traced.interdiff.files.find(
+				(f) => f.status === "renamed" && f.oldPath === entry.path,
+			);
+	const file = own ?? away;
+	const level = file?.clusters.find((c) => c.kind === "file");
+	if (!file || !level?.label) return hunks;
+	const lineKeys = new Set([
+		...Object.values(traced.lineKeys.old[file.oldPath ?? file.path] ?? {}),
+		...Object.values(traced.lineKeys.new[file.path] ?? {}),
+	]);
+	const goneOf = (e: RereviewAnswer["files"][number] | undefined) =>
+		(e?.clusters ?? []).filter(
+			(c) => c.kind === "gone" && !lineKeys.has(c.key),
+		);
+	// A reworked or new file-level cluster of the snapshot at `path` shows it.
+	const shownAt = (path: string) => {
+		const at = answer.files.find((f) => f.path === path);
+		const kinds = new Map((at?.clusters ?? []).map((c) => [c.key, c.kind]));
+		return (target.files.find((f) => f.path === path)?.clusters ?? []).some(
+			(c) => {
+				const kind = kinds.get(c.key);
+				return c.kind === "file" && (kind === "reworked" || kind === "new");
+			},
+		);
+	};
+	let label = level.label;
+	if (away) {
+		// Nothing of PS1 gone here: no rename of PS1's to undo.
+		if (goneOf(entry).length === 0 || shownAt(file.path)) return hunks;
+	} else {
+		const from =
+			file.status === "renamed" && file.oldPath !== undefined
+				? answer.files.find((f) => f.path === file.oldPath)
+				: undefined;
+		// The path PS1 renamed it to takes the piece (above).
+		if (goneOf(from).length > 0) return hunks;
+		label = withoutRename(label, file);
+		if (!label || shownAt(entry.path)) return hunks;
+	}
+	const gone = goneOf(entry);
+	const targetClusters =
+		target.files.find((f) => f.path === entry.path)?.clusters ?? [];
+	const piece: SincePiece = {
+		hunk: -1,
+		line: 0,
+		...(gone.length === 1 ? { key: (gone[0] as { key: string }).key } : {}),
+		owns: null,
+		...fileLevelSides(),
+		kind: targetClusters.some((c) => c.kind === "file")
+			? "removed"
+			: "reverted",
+		file: label,
+	};
+	return { ...hunks, pieces: [piece, ...(hunks.pieces ?? [])] };
+}
+
+/**
+ * A file-level label (fileLevelCluster's) without its "Renamed from …"
+ * part, the next part capitalised as the first; "" when that was all.
+ */
+function withoutRename(label: string, file: InterdiffFile): string {
+	if (file.status !== "renamed" || file.oldPath === undefined) return label;
+	const rename = `Renamed from ${file.oldPath}`;
+	if (!label.startsWith(rename)) return label;
+	const rest = label.slice(rename.length).replace(/^, /, "");
+	return rest.charAt(0).toUpperCase() + rest.slice(1);
 }
 
 /** A line of the since view no piece shows and nothing carried (CAR-216): where it goes, as a row. */
@@ -1010,7 +1182,7 @@ export interface Orphan {
  * never from matching text. In file order, a place's removed lines
  * before its added ones.
  */
-export function orphanLines(
+function orphanLines(
 	entry: RereviewAnswer["files"][number],
 	targetClusters: readonly Cluster[],
 	pieces: readonly SincePiece[],
@@ -1257,9 +1429,35 @@ function sinceFileHunks(
 			: file.conflict
 				? line.oldNo
 				: mapped?.[line.oldNo];
+	// For ownership only (CAR-277): a line the base move brought or
+	// changed has no place through the old base; GitHub's LEFT line (the
+	// virtual rebase against the new base) places it then, only when the
+	// tracer names it the base move's (`baseMoved`), the compared patch
+	// set didn't add it, and no row the old base places claims that base
+	// line (that placement wins). pieceRanges's text guard still applies:
+	// anything else leaves it unplaced, and the cluster's line an orphan
+	// row of its own (principle 2: shown twice, never hidden). A
+	// conflicted file has neither map (its old side is the base).
+	const left = file.conflict
+		? undefined
+		: traced.lineKeys.githubLeft?.[file.oldPath ?? file.path];
+	const baseMoved = new Set(
+		left ? (traced.lineKeys.baseMoved?.[file.oldPath ?? file.path] ?? []) : [],
+	);
+	const addedThen = traced.lineKeys.old[file.oldPath ?? file.path] ?? {};
+	const claimed = new Set(Object.values(mapped ?? {}));
+	const placedOrLeft = (line: DiffLine): number | undefined => {
+		const b = baseNo(line);
+		if (b !== undefined || !mapped || !left) return b;
+		const n = line.oldNo;
+		if (line.kind !== "del" || n === undefined) return undefined;
+		if (!baseMoved.has(n) || addedThen[n] !== undefined) return undefined;
+		const l = left[n];
+		return l === undefined || claimed.has(l) ? undefined : l;
+	};
 	// An orphan's is its cluster's (it has no old number here).
 	const baseOf = (line: DiffLine): number | undefined =>
-		line.orphan ? (line.baseNo ?? undefined) : baseNo(line);
+		line.orphan ? (line.baseNo ?? undefined) : placedOrLeft(line);
 	/** The target cluster that removes a removed base line (by its place in the new base). */
 	const removedBy = (line: DiffLine): string | undefined => {
 		const b = baseNo(line);
@@ -1332,9 +1530,6 @@ function sinceFileHunks(
 	// conflicted file's old side is the base; else the virtual rebase's
 	// diff against it (null: a line only the patch sets had). A file with
 	// no such map leaves it unset, which the page refuses (fails closed).
-	const left = file.conflict
-		? undefined
-		: traced.lineKeys.githubLeft?.[file.oldPath ?? file.path];
 	const earlier = file.conflict
 		? undefined
 		: traced.lineKeys.earlierRight?.[file.oldPath ?? file.path];
@@ -1356,6 +1551,17 @@ function sinceFileHunks(
 				else if (line.baseNo === null && moved.has(line.oldNo)) {
 					line.psMoved = true;
 				}
+			}
+		}
+	}
+	// An added or context line GitHub's diff (the head's, against its
+	// merge base: the target's clusters, with their context) hasn't: it
+	// reads as the base there, so GitHub refuses a comment on it (CAR-293).
+	for (const hunk of hunks) {
+		for (const line of hunk.lines) {
+			if (line.newNo === undefined) continue;
+			if (!inDiffHunks(targetClusters, line.newNo, file.newLines.length)) {
+				line.offGithub = true;
 			}
 		}
 	}
@@ -1618,7 +1824,7 @@ export function sinceLineSources(
  * marked then, gets nothing (principle 2: it stays to read). A conflicted
  * file carries nothing.
  */
-export function sinceLineCarries(
+function sinceLineCarries(
 	traced: Traced,
 	target: Snapshot,
 	answer: RereviewAnswer,

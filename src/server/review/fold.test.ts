@@ -223,6 +223,37 @@ describe("foldProgress", () => {
 		);
 	});
 
+	it("orders events sharing a timestamp by id, whatever order they come in", () => {
+		// Every order of four states stamped alike: the greatest id wins.
+		const first = state(K1, "reviewed");
+		const evs = [
+			first,
+			{ ...state(K1, "crossed-off"), ts: first.ts },
+			{ ...state(K1, "unreviewed"), ts: first.ts },
+			{ ...state(K1, "reviewed"), ts: first.ts },
+		];
+		const last = [...evs].sort((a, b) => (a.id < b.id ? -1 : 1)).at(-1);
+		const orders = (items: CrbEvent[]): CrbEvent[][] =>
+			items.length <= 1
+				? [items]
+				: items.flatMap((e, i) =>
+						orders(items.filter((_, j) => j !== i)).map((rest) => [e, ...rest]),
+					);
+		for (const order of orders(evs)) {
+			expect(foldProgress([started(), ...order]).states.get(K1)).toEqual({
+				state: last?.state,
+			});
+		}
+	});
+
+	it("orders two different events sharing an id and a timestamp (forged) the same, whatever order they come in", () => {
+		const a = state(K1, "reviewed");
+		const b = { ...state(K1, "crossed-off"), id: a.id, ts: a.ts };
+		expect(foldProgress([started(), a, b]).states.get(K1)).toEqual(
+			foldProgress([started(), b, a]).states.get(K1),
+		);
+	});
+
 	it("last event per cluster wins", () => {
 		const progress = foldProgress([
 			started(),
@@ -448,6 +479,18 @@ describe("foldProgress", () => {
 			expect(statesOf(evs, OTHER_REV)).toEqual({ [K4]: { state: "reviewed" } });
 		});
 
+		it("are ignored unless the engine wrote them, even past the parser", () => {
+			const before = twoSets();
+			const human = {
+				...carried([entry(K4, K1, "reviewed")]),
+				by: "human" as const,
+			};
+			expect(statesOf([...before, human], OTHER_REV)).toEqual({});
+			// The same event by the engine carries.
+			const auto = carried([entry(K4, K1, "reviewed")]);
+			expect(statesOf([...before, auto], OTHER_REV)).toHaveProperty(K4);
+		});
+
 		it("apply entry by entry: a bad entry doesn't take the good ones with it", () => {
 			const evs = [
 				...twoSets(),
@@ -587,6 +630,15 @@ describe("foldProgress", () => {
 				},
 			]);
 			expect(progress.sinceMarks.get(OTHER_REV)).toBeUndefined();
+			// One mark per (since, path): another since's mark on the path
+			// is a mark of its own.
+			expect(
+				foldProgress([
+					started(),
+					sinceMark(1, "a.ts", [[10, 12]]),
+					sinceMark(2, "a.ts", [[3, 4]]),
+				]).sinceMarks.get(REV),
+			).toHaveLength(2);
 			// They never touch a cluster's state.
 			expect(progress.states.size).toBe(0);
 		});
@@ -1008,6 +1060,63 @@ describe("lines-carried (CAR-195)", () => {
 			],
 		);
 		expect(states.get(K2)).toEqual({ state: "unreviewed", lines: [[3, 4]] });
+	});
+
+	it("never over a human whole mark: a crossed-off cluster stays crossed off", () => {
+		const states = fold(
+			[state(K1, "reviewed")],
+			[state(K2, "crossed-off", { patchset: OTHER_REV }), hop(1, 2, K2, K1)],
+		);
+		expect(states.get(K2)).toEqual({ state: "crossed-off" });
+	});
+
+	it("never over a human unmark either: a cluster the reviewer left unreviewed stays so", () => {
+		const states = fold(
+			[state(K1, "reviewed")],
+			[state(K2, "unreviewed", { patchset: OTHER_REV }), hop(1, 2, K2, K1)],
+		);
+		expect(states.get(K2)).toEqual({ state: "unreviewed" });
+	});
+
+	it("fails closed on a forged entry or event: lines not matching their source's, an unknown patch set, a hop not forward, a human's", () => {
+		// More lines than the source lines they stand for.
+		expect(
+			fold(
+				[state(K1, "reviewed")],
+				[
+					linesCarried([
+						{
+							key: K2,
+							fromKey: K1,
+							state: "reviewed",
+							lines: [[0, 3]],
+							fromLines: [[0, 1]],
+						},
+					]),
+				],
+			).get(K2),
+		).toBeUndefined();
+		// From a patch set there is none of.
+		expect(
+			foldProgress([
+				started(REV, 1),
+				state(K1, "reviewed"),
+				started(OTHER_REV, 2, 1),
+				hop(5, 2, K2, K1),
+			]).states.get(K2),
+		).toBeUndefined();
+		// Into a patch set there is none of (nothing to throw on either).
+		expect(() =>
+			foldProgress([started(REV, 1), state(K1, "reviewed"), hop(1, 5, K2, K1)]),
+		).not.toThrow();
+		// Within one patch set (one that names itself as the one it follows).
+		expect(
+			foldProgress([
+				started(REV, 1, 1),
+				state(K1, "reviewed"),
+				hop(1, 1, K2, K1),
+			]).states.get(K2),
+		).toBeUndefined();
 	});
 
 	it("only from the patch set the target follows: a hop past one is ignored", () => {

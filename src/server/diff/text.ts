@@ -20,7 +20,7 @@ export function chooseEncoding(...sides: Uint8Array[]): TextEncoding {
 	return sides.every(isUtf8) ? "utf8" : "latin1";
 }
 
-export function decode(bytes: Uint8Array, encoding: TextEncoding): string {
+function decode(bytes: Uint8Array, encoding: TextEncoding): string {
 	return encoding === "utf8"
 		? strictUtf8.decode(bytes)
 		: Buffer.from(bytes).toString("latin1");

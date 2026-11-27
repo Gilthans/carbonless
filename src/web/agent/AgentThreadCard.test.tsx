@@ -1,5 +1,9 @@
 // @vitest-environment jsdom
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import {
+	QueryClient,
+	QueryClientProvider,
+	useQuery,
+} from "@tanstack/react-query";
 import {
 	act,
 	cleanup,
@@ -22,7 +26,12 @@ import {
 	activitySummary,
 	floatingTurn,
 } from "./AgentThreadCard";
-import { resetAgentWrites, resetRepliesTyped } from "./agentWrites";
+import {
+	replyAgent,
+	resetAgentWrites,
+	resetRepliesTyped,
+	useAgentWrites,
+} from "./agentWrites";
 import { agentThreadsQuery } from "./api";
 import { closeAgentSetup, useAgentSetupOpen } from "./setupStore";
 import { SEEN_AFTER_MS } from "./threadAgent";
@@ -177,6 +186,54 @@ describe("a follow-up typed in the reply box", () => {
 	});
 });
 
+describe("a reply that lands", () => {
+	it("swaps its pending row for the stored message in one render: the conversation never shrinks by the row between (CAR-301)", async () => {
+		const client = new QueryClient({
+			defaultOptions: { queries: { retry: false, enabled: false } },
+		});
+		client.setQueryData(agentThreadsQuery.queryKey, { threads: [answered()] });
+		const stored = answered({
+			waiting: true,
+			messages: [
+				...answered().messages,
+				{ id: "m3", by: "human", at: "2026-11-07T10:02:00Z", text: "More?" },
+			],
+		});
+		fetchMock.mockResolvedValue(
+			new Response(JSON.stringify(stored), {
+				status: 200,
+				headers: { "content-type": "application/json" },
+			}),
+		);
+		// What each render shows: the reply pending, stored, or neither (the
+		// box a row shorter for a moment). As in the card: its thread comes
+		// from the list as a prop (a parent's useQuery), its pending replies
+		// from the writes store.
+		const renders: string[] = [];
+		function Card(props: { thread: AgentThread | undefined }) {
+			const { pending } = useAgentWrites();
+			const has = props.thread?.messages.some((m) => m.id === "m3");
+			const now = pending.has("r1") ? "pending" : has ? "stored" : "neither";
+			// From the first render with the reply on its way.
+			if (now === "pending" || renders.length > 0) renders.push(now);
+			return null;
+		}
+		function Probe() {
+			const list = useQuery({ ...agentThreadsQuery, enabled: false }).data;
+			return <Card thread={list?.threads[0]} />;
+		}
+		render(
+			<QueryClientProvider client={client}>
+				<Probe />
+			</QueryClientProvider>,
+		);
+		act(() => replyAgent(client, "T1", "More?", "r1"));
+		await waitFor(() => expect(renders.at(-1)).toBe("stored"));
+		expect(renders[0]).toBe("pending");
+		expect(renders).not.toContain("neither");
+	});
+});
+
 describe("AgentThreadCard", () => {
 	it("waiting: a yellow dot, no reply yet, named by the agent", () => {
 		show(thread(), status());
@@ -297,12 +354,13 @@ describe("AgentThreadCard", () => {
 		expect(screen.queryByTestId("agent-stop")).toBeNull();
 	});
 
-	it("answered: the reply as Markdown in the agent tint, its activity, a reply box", () => {
+	it("answered: the reply as Markdown in the agent's railed box, its activity, a reply box", () => {
 		show(answered(), status());
 		const card = screen.getByTestId("agent-thread");
 		expect(card.getAttribute("aria-label")).toBe("Agent thread, answered");
 		const reply = within(card).getByTestId("agent-message-ai");
-		expect(reply.className).toContain("bg-agent");
+		expect(reply.className).toContain("border-agent-edge");
+		expect(reply.className).toContain("border-l-agent-ink");
 		expect(reply.querySelector("strong")?.textContent).toBe("skips");
 		expect(within(card).getByTestId("agent-message-human").className).toMatch(
 			/bg-person-\d/,
@@ -317,6 +375,25 @@ describe("AgentThreadCard", () => {
 			"Resolve",
 		);
 		expect(screen.queryByTestId("agent-stop-chip")).toBeNull();
+	});
+
+	it("the agent's answers stand apart (CAR-270): a neutral ground, the answer railed, the reviewer's on their filled tint", () => {
+		show(answered(), status());
+		const card = screen.getByTestId("agent-thread");
+		// The open card's ground is neutral, not the agent's wash...
+		expect(card.className).toContain("bg-surface");
+		expect(card.className).not.toMatch(/\bbg-agent\b/);
+		// ...the answer a raised box in the agent's edge with its teal rail...
+		const reply = within(card).getByTestId("agent-message-ai");
+		expect(reply.className).toContain("bg-raised");
+		expect(reply.className).toMatch(/\bborder-l-3\b/);
+		expect(reply.className).toContain("border-l-agent-ink");
+		expect(reply.className).not.toMatch(/\bbg-person-\d/);
+		// ...and the reviewer's a filled person wash, never railed.
+		const mine = within(card).getByTestId("agent-message-human");
+		expect(mine.className).toMatch(/\bbg-person-\d/);
+		expect(mine.className).not.toContain("border-l-");
+		expect(mine.className).not.toMatch(/\bbg-agent\b/);
 	});
 
 	it("the messages scroll in a capped box; the reply row, header and Stop stay outside it", () => {

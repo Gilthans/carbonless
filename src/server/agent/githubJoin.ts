@@ -96,7 +96,7 @@ export function orphanAnchor(a: ThreadAnchor): AgentAnchor {
  * snapshot's merge base): the right is the viewed patch set's head or the
  * viewed head; the left is the compared-from patch set's head, or for the
  * base branch the viewed patch set's merge base (a head's patch set's, else
- * `base`). Null for a patch set that isn't one, or a head that isn't an OID.
+ * `base`); `base`, that merge base (what LEFT lines are numbered in). Null for a patch set that isn't one, or a head that isn't an OID.
  */
 export function resolveView(
 	view: Omit<AgentView, "left" | "right">,
@@ -124,5 +124,5 @@ export function resolveView(
 		if (!from) return null;
 		left = from.head;
 	}
-	return { target: view.target, from: view.from, left, right };
+	return { target: view.target, from: view.from, left, right, base: mergeBase };
 }

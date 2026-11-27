@@ -170,6 +170,14 @@ export interface DiffLine {
 	 * in a piece of its own (SincePiece.orphan).
 	 */
 	orphan?: true;
+	/**
+	 * The since view's added and context lines only (CAR-293): GitHub's
+	 * diff (the head's merge base → the head) hasn't this line (its
+	 * `newNo`): the since view shows it, but it reads as the base, so
+	 * GitHub refuses a comment on it (e.g. a line a later patch set put
+	 * back as the base had it). Absent: GitHub's diff has it.
+	 */
+	offGithub?: true;
 }
 
 export interface DisplayHunk {
@@ -379,7 +387,7 @@ export interface CodeWindow {
  * rows shown (another old side, other lines changed, other numbers, or the
  * range not in it).
  */
-export type SnapshotReason = "no-host-diff" | "diff-differs";
+type SnapshotReason = "no-host-diff" | "diff-differs";
 
 export type CodeSnapshot =
 	| { same: true }
@@ -583,7 +591,7 @@ export interface ReviewThread {
 }
 
 /** A commenter, as a thread's row shows them. */
-export interface ThreadAuthor {
+interface ThreadAuthor {
 	login: string;
 	/** Their avatar image ("" when the host gave none). */
 	avatarUrl: string;
@@ -901,6 +909,17 @@ export interface VerdictSince {
 				new: number;
 				gone: number;
 				identical: boolean;
+				/**
+				 * The same counts without the whitespace-only clusters, for a
+				 * reader with "Ignore whitespace" on (the page picks by its
+				 * switch, the whole line from one choice); absent when they
+				 * would be the same. As RereviewAnswer's toRead.
+				 */
+				withoutWhitespaceOnly?: {
+					files: number;
+					reworked: number;
+					new: number;
+				};
 		  };
 }
 
@@ -954,6 +973,13 @@ export interface VerdictAnswer {
 /** The longest reply GitHub takes (a comment body's limit). */
 export const MAX_REPLY = 65536;
 
+/**
+ * Why no comment can go on a RIGHT line GitHub's diff hasn't (DiffLine.offGithub,
+ * CAR-293): the page's and the server's refusal.
+ */
+export const SAME_AS_BASE =
+	"Same as the base: GitHub can't take a comment here";
+
 /** Threads whose comments one `GET /api/comments` asks for, at most. */
 export const COMMENTS_BATCH = 50;
 
@@ -961,7 +987,7 @@ export const COMMENTS_BATCH = 50;
 export const HUNKS_BATCH = 25;
 
 /** One file of a batched hunks answer. */
-export interface HunksBatchFile {
+interface HunksBatchFile {
 	index: number;
 	hunks?: FileHunks;
 	/** The file's text couldn't be read: this file only, never the batch. */
@@ -1037,7 +1063,7 @@ export interface TimelineReviewComment {
 }
 
 /** A submitted review with a verdict or text of its own. */
-export interface TimelineReview {
+interface TimelineReview {
 	kind: "review";
 	at: string;
 	state: ReviewVerdict;
@@ -1047,7 +1073,7 @@ export interface TimelineReview {
 }
 
 /** A comment on the PR's conversation (not on the code). */
-export interface TimelineConversationComment {
+interface TimelineConversationComment {
 	kind: "conversation";
 	at: string;
 	text: string;
@@ -1166,6 +1192,14 @@ export interface RereviewAnswer {
 			 * reviewer marked there, as carried (CAR-195).
 			 */
 			lines?: { reviewed?: LineRanges; crossed?: LineRanges };
+			/**
+			 * reworked and new: nothing of it is left to read with "Ignore
+			 * whitespace" on, judged as toRead.withoutWhitespaceOnly judges
+			 * (every since unit of it whitespace-only, or without an
+			 * interdiff the snapshot cluster's flag). The verdict's since
+			 * line counts by it (src/server/verdict.ts sinceOf).
+			 */
+			whitespaceOnly?: true;
 		}[];
 		/**
 		 * The file's since-view pieces (pieces.ts SincePiece), what the since

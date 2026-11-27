@@ -11,12 +11,13 @@ import type {
 import type { Mark } from "../code/Invisibles";
 import { type SpanRange, spanMarks } from "../threads/spanMarks";
 import { fileGaps } from "./gaps";
+import { type LeftRow, leftNo } from "./orphanLeft";
 
 /** A diff row by its number on one side: `RIGHT:12` is the row whose new number is 12. */
 export type LineKey = `${DiffSide}:${number}`;
 
 /** Where a thread hidden in a gap will show once its lines are loaded. */
-export interface GapTarget {
+interface GapTarget {
 	/** New-side lines `[from, to]` of its range, inside its gap. */
 	show: [number, number];
 	/** The row it ends on, as `FilePlacement.end` will key it. */
@@ -71,6 +72,11 @@ export interface FilePlacement<T extends Placeable = ReviewThread> {
 		thread: T;
 		placement: Extract<ThreadPlacement, { kind: "unplaced" }>;
 	}[];
+	/**
+	 * Threads still being placed (`pending`, CAR-8): listed under the
+	 * header with a spinner, never on a line meanwhile.
+	 */
+	waiting: T[];
 }
 
 /**
@@ -185,6 +191,15 @@ export function shownThread(
 				...cols,
 			},
 		};
+	} else if (p.kind === "pending") {
+		// Still being placed (CAR-8): on no line of this head meanwhile.
+		shown = {
+			...t,
+			madeOn: t.madeOn ?? t.commit,
+			path: p.path,
+			commit: snapshotHead,
+			anchor: null,
+		};
 	} else {
 		shown = {
 			...t,
@@ -283,7 +298,7 @@ export function outsideThreads(
  * The threads made on the viewed head, in their order. One on no known
  * commit ("") is on no head. Agent threads, never traced, show this way.
  */
-export function threadsOnHead<T extends Placeable>(
+function threadsOnHead<T extends Placeable>(
 	threads: T[],
 	snapshotHead: string,
 ): T[] {
@@ -312,12 +327,12 @@ export function threadOrder(t: ReviewThread, hunks: FileHunks | null): number {
 	return newNumberOf(t.anchor.side, t.anchor.line, hunks?.hunks ?? []);
 }
 
-/** The row a line key names: RIGHT matches `newNo`, LEFT matches `oldNo`. */
+/** The row a line key names: RIGHT matches `newNo`, LEFT matches `leftNo`. */
 export function lineKey(
 	side: DiffSide,
-	line: Pick<DiffLine, "oldNo" | "newNo">,
+	line: Pick<DiffLine, "newNo"> & LeftRow,
 ): LineKey | null {
-	const n = side === "RIGHT" ? line.newNo : line.oldNo;
+	const n = side === "RIGHT" ? line.newNo : leftNo(line);
 	return n === undefined ? null : `${side}:${n}`;
 }
 
@@ -384,7 +399,8 @@ function newNumberOf(side: DiffSide, n: number, hunks: DisplayHunk[]): number {
  * head): through the full diff's line clusters (base → head), the head
  * line it became, as the full diff shows it; only when the full diff
  * deleted it, the removed row the since view shows it on (its `baseNo`,
- * keyed by its own old number there); null when neither. Never a removed
+ * keyed by its own old number there, an orphan's by leftNo); null when
+ * neither. Never a removed
  * row for a base line the full diff keeps (a twin git aligns otherwise in
  * the interdiff): both views put a thread on the same line.
  */
@@ -402,8 +418,9 @@ export function sinceLeft(
 	const removed = new Map<number, number>();
 	for (const h of hunks ?? []) {
 		for (const l of h.lines) {
-			if (typeof l.baseNo === "number" && l.oldNo !== undefined) {
-				removed.set(l.baseNo, l.oldNo);
+			const n = leftNo(l);
+			if (typeof l.baseNo === "number" && n !== undefined) {
+				removed.set(l.baseNo, n);
 			}
 		}
 	}
@@ -544,6 +561,7 @@ export function placeThreads<T extends Placeable = ReviewThread>(args: {
 		gapTargets: new Map(),
 		header: [],
 		fates: [],
+		waiting: [],
 	};
 	const mine = fileThreads(args.threads, args.path, args.snapshotHead);
 	const spans = args.spans ?? [];
@@ -578,7 +596,7 @@ export function placeThreads<T extends Placeable = ReviewThread>(args: {
 		let startRow = endRow;
 		for (let i = 0; i < endRow; i++) {
 			const row = rows[i] as DiffLine;
-			const n = range.startSide === "RIGHT" ? row.newNo : row.oldNo;
+			const n = range.startSide === "RIGHT" ? row.newNo : leftNo(row);
 			if (n !== undefined && n >= range.startLine) {
 				startRow = i;
 				break;
@@ -645,6 +663,10 @@ export function placeThreads<T extends Placeable = ReviewThread>(args: {
 	}
 	for (const t of mine) {
 		const traced = t.id === undefined ? undefined : args.placements?.get(t.id);
+		if (traced?.kind === "pending") {
+			placement.waiting.push(t);
+			continue;
+		}
 		if (traced?.kind === "unplaced") {
 			// Made on the compared patch set's head on a line only it had
 			// (CAR-233): on the since view's removed row that shows it.

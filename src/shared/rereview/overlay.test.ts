@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { FileView, RereviewAnswer, ReviewView } from "../types.js";
-import { overlayCarries } from "./overlay.js";
+import { linesCarriedView, overlayCarries } from "./overlay.js";
 
 const cluster = (key: string): FileView["clusters"][number] => ({
 	key,
@@ -141,5 +141,41 @@ describe("overlayCarries", () => {
 	it("returns the view itself when nothing carries", () => {
 		const v = view();
 		expect(overlayCarries(v, answer([{ key: "k1", kind: "new" }]))).toBe(v);
+	});
+});
+
+describe("linesCarriedView", () => {
+	const four = {
+		...cluster("k"),
+		removed: ["a", "b"],
+		added: ["c", "d"],
+		oldCount: 2,
+		newCount: 2,
+		lines: 4,
+	};
+
+	it("marks an unmarked cluster's lines as carried", () => {
+		expect(linesCarriedView(four, { reviewed: [[0, 2]] }, 1)).toMatchObject({
+			state: "unreviewed",
+			reviewedLines: [[0, 2]],
+			linesCarried: { from: 1, lines: [[0, 2]] },
+		});
+	});
+
+	it("leaves a cluster holding a mark of its own, whole or of lines, as it is", () => {
+		const lines = { reviewed: [[0, 4]] as [number, number][] };
+		for (const marked of [
+			{ ...four, state: "crossed-off" as const },
+			{ ...four, state: "reviewed" as const },
+			{ ...four, reviewedLines: [[3, 4]] as [number, number][] },
+			{ ...four, crossedLines: [[3, 4]] as [number, number][] },
+		]) {
+			expect(linesCarriedView(marked, lines, 1)).toBe(marked);
+		}
+	});
+
+	it("fails closed: no lines, or lines past the cluster, carry nothing", () => {
+		expect(linesCarriedView(four, {}, 1)).toBe(four);
+		expect(linesCarriedView(four, { reviewed: [[2, 9]] }, 1)).toBe(four);
 	});
 });

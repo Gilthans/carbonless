@@ -46,7 +46,10 @@ import { useSendView } from "./threadAgent";
  * file, lines in the diff, the head's, the latest.
  */
 export type AgentCommentContext = Partial<
-	Pick<SelectionContext, "file" | "inDiff" | "headUnsure" | "readOnly">
+	Pick<
+		SelectionContext,
+		"file" | "inDiff" | "sameAsBase" | "headUnsure" | "readOnly"
+	>
 > & {
 	/** Asked on a head other than the one the diff shows. */
 	stale?: boolean;
@@ -153,6 +156,7 @@ export function AgentComposer(props: {
 						commentLeft: overview.commentLeft !== false,
 						file: props.comment?.file ?? { binary: false, submodule: false },
 						inDiff: props.comment?.inDiff,
+						sameAsBase: props.comment?.sameAsBase,
 						headUnsure: props.comment?.headUnsure,
 						readOnly: props.comment?.readOnly,
 					});

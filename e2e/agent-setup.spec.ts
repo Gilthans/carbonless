@@ -425,3 +425,72 @@ test("ask with a config but nothing spawned: the thread's button opens the modal
 	await expect(setupDialog(page)).toBeVisible();
 	expect(spawns(acpLogPath)).toBe(0);
 });
+
+test("Copy in the modal works without the Clipboard API, and a copy that didn't happen shows the error, never the check (CAR-278)", async ({
+	page,
+	context,
+	pr,
+	agentCrb,
+}) => {
+	await pr(fixture);
+	const s = await agentCrb({ spawn: false });
+	await context.grantPermissions(["clipboard-read", "clipboard-write"]);
+	// As over plain http on a tailnet address: no Clipboard API, so Copy
+	// falls back to execCommand. The test keeps its own handle to read the
+	// clipboard back.
+	await page.addInitScript(() => {
+		const c = navigator.clipboard;
+		const w = window as unknown as Record<string, unknown>;
+		w.__readClipboard = () => c.readText();
+		w.__writeClipboard = (t: string) => c.writeText(t);
+		Object.defineProperty(Navigator.prototype, "clipboard", {
+			configurable: true,
+			get: () => undefined,
+		});
+	});
+	const clipboard = () =>
+		page.evaluate(() =>
+			(
+				(window as unknown as Record<string, unknown>)
+					.__readClipboard as () => Promise<string>
+			)(),
+		);
+	await page.goto(s.url);
+	await openAgentModal(page);
+	const d = setupDialog(page);
+	const field = d.getByTestId("join-setup-line");
+	await expect(field).toBeVisible();
+	const line = await field.inputValue();
+	expect(line).not.toBe("");
+	await page.evaluate(() =>
+		(
+			(window as unknown as Record<string, unknown>).__writeClipboard as (
+				t: string,
+			) => Promise<void>
+		)("before"),
+	);
+
+	const copy = d.getByRole("button", { name: "Copy setup line" });
+	await copy.click();
+	await expect(copy.locator(".octicon-check")).toBeVisible();
+	await expect.poll(clipboard).toBe(line);
+	await expect(copy).toBeFocused();
+
+	// A copy the browser didn't make (the textarea never took the focus
+	// or the selection, as on an inert page) while execCommand still
+	// answers true: the error, the text selected to copy by hand, never
+	// the check.
+	await page.evaluate(() => {
+		const t = HTMLTextAreaElement.prototype;
+		t.focus = () => {};
+		t.select = () => {};
+		t.setSelectionRange = () => {};
+	});
+	const join = d.getByTestId("join-line");
+	const copyJoin = d.getByRole("button", { name: "Copy join line" });
+	await copyJoin.click();
+	await expect(copyJoin.locator(".octicon-x")).toBeVisible();
+	await expect(copyJoin.locator(".octicon-check")).toHaveCount(0);
+	await expect(join).toBeFocused();
+	expect(await clipboard()).toBe(line);
+});

@@ -27,7 +27,7 @@ export async function copyInto(
 	shown: HTMLElement | null,
 	done: (copied: Copied) => void,
 ) {
-	const ok = await copyText(text);
+	const ok = await copyText(text, shown);
 	done(ok ? "ok" : "failed");
 	if (!ok && shown) select(shown);
 }

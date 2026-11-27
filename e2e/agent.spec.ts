@@ -311,6 +311,7 @@ test("a reply goes on the same thread and is answered", async ({
 	page,
 	pr,
 	agentCrb,
+	isMobile,
 }) => {
 	await pr(fixture);
 	const s = await agentCrb({
@@ -336,6 +337,7 @@ test("a reply goes on the same thread and is answered", async ({
 		"Why?",
 		"A follow-up",
 	]);
+	await shot(page, "agent-reply", isMobile);
 });
 
 test("a long conversation scrolls in its capped box, opens at its end and keeps there for a new answer; scrolled up, it stays put (CAR-246)", async ({
@@ -511,6 +513,20 @@ test("typing in a suggested comment at the end of a long conversation keeps the 
 	const scroller = card.getByTestId("agent-thread-scroll");
 	const gap = () =>
 		scroller.evaluate((el) => el.scrollHeight - el.clientHeight - el.scrollTop);
+	/** The gap once the page has drawn a frame: a keystroke grows the box
+	 * at once, the pin follows in that frame's ResizeObserver (before it
+	 * paints), so a read straight after the key can come before it. */
+	const gapDrawn = () =>
+		scroller.evaluate(
+			(el) =>
+				new Promise<number>((done) =>
+					requestAnimationFrame(() =>
+						requestAnimationFrame(() =>
+							done(el.scrollHeight - el.clientHeight - el.scrollTop),
+						),
+					),
+				),
+		);
 	await expect.poll(gap).toBeLessThanOrEqual(1);
 	/** `el`'s bottom inside the scroller's view. */
 	const bottomInBox = async (el: typeof text) =>
@@ -536,7 +552,7 @@ test("typing in a suggested comment at the end of a long conversation keeps the 
 	for (let i = 0; i < 4; i++) {
 		await page.keyboard.press("Enter");
 		await page.keyboard.type(`More ${i + 1}`);
-		expect(await gap()).toBeLessThanOrEqual(1);
+		expect(await gapDrawn()).toBeLessThanOrEqual(1);
 	}
 	await expect(text).toHaveValue(/More 4$/);
 	await expect.poll(gap).toBeLessThanOrEqual(1);
@@ -757,9 +773,10 @@ test("a jump to the question while an answer lands stays where it went: the pin 
 	// the test's cue, right as the jump starts.
 	const held: Array<() => Promise<void>> = [];
 	let holding = true;
-	await page.route("**/agent/threads", (route) => {
+	await page.route("**/agent/threads", async (route) => {
 		if (!holding || route.request().method() !== "GET") {
-			return route.continue();
+			await route.continue();
+			return;
 		}
 		held.push(() => route.continue());
 	});
@@ -1266,7 +1283,10 @@ test("from the answering view to the stored reply, the card never empties and wa
 			const c = [
 				...document.querySelectorAll('[data-testid="agent-thread"]'),
 			].find((e) => e.textContent?.includes("Stream?"));
-			if (!c) return w.crbSeen.push("no card");
+			if (!c) {
+				w.crbSeen.push("no card");
+				return;
+			}
 			if (c.querySelector('[data-testid="agent-waiting"]'))
 				w.crbSeen.push("waiting");
 			if (
@@ -1284,9 +1304,10 @@ test("from the answering view to the stored reply, the card never empties and wa
 	// The threads read after the reply is held.
 	const held: Array<() => Promise<void>> = [];
 	let holding = true;
-	await page.route("**/agent/threads", (route) => {
+	await page.route("**/agent/threads", async (route) => {
 		if (!holding || route.request().method() !== "GET") {
-			return route.continue();
+			await route.continue();
+			return;
 		}
 		held.push(() => route.continue());
 	});
@@ -1341,9 +1362,10 @@ test("elsewhere: a second server leaves the agent to the first, which answers wh
 	// and only its threadsRev says the threads moved.
 	const held: Array<() => Promise<void>> = [];
 	let holding = true;
-	await other.route("**/agent", (route) => {
+	await other.route("**/agent", async (route) => {
 		if (!holding || route.request().method() !== "GET") {
-			return route.continue();
+			await route.continue();
+			return;
 		}
 		held.push(() => route.continue());
 	});

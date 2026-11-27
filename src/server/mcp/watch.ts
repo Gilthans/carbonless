@@ -7,7 +7,7 @@
 
 export const REVIEW_ID = /^[0-9a-hjkmnp-tv-z]{26}$/;
 /** `<review id>.<secret>`: the secret is 32 random bytes, base64url. */
-export const SESSION_TOKEN = /^([0-9a-hjkmnp-tv-z]{26})\.([A-Za-z0-9_-]{43})$/;
+const SESSION_TOKEN = /^([0-9a-hjkmnp-tv-z]{26})\.([A-Za-z0-9_-]{43})$/;
 const ORIGIN = /^https?:\/\/(\[[0-9A-Fa-f:.]+\]|[A-Za-z0-9.-]+)(:\d{1,5})?$/;
 const KEY = /^[A-Za-z0-9_-]{1,256}$/;
 
@@ -31,7 +31,7 @@ export function parseSessionToken(
 export const WATCH_TRIES = 60;
 
 /** curl's connect timeout, in seconds: an address that drops packets counts as a try this soon. */
-export const WATCH_CONNECT_S = 10;
+const WATCH_CONNECT_S = 10;
 
 /** Thrown for a server access key a shell line can't carry (code bad-key). */
 export class UnsafeKeyError extends Error {

@@ -57,7 +57,7 @@ export function useAgentOn(): boolean {
 	return useQuery({ ...overviewQuery, enabled: false }).data?.writes === "on";
 }
 
-export const fetchAgentStatus = () => review<AgentStatus>("agent");
+const fetchAgentStatus = () => review<AgentStatus>("agent");
 
 /** While the agent starts or answers: often enough for its text to stream. */
 export const AGENT_BUSY_POLL_MS = 1000;
@@ -107,7 +107,7 @@ export type JoinPoll = Pick<AgentStatus, "joinRequest" | "left">;
  * `GET /api/r/<id>/agent/join`: a pure lookup on the server (it never
  * opens the review, counts as a use, or wakes its agent).
  */
-export const joinPollQuery = queryOptions({
+const joinPollQuery = queryOptions({
 	queryKey: ["agent-join"],
 	queryFn: () => review<JoinPoll>("agent/join"),
 	refetchInterval: AGENT_HIDDEN_POLL_MS,
@@ -124,7 +124,7 @@ const subscribeVisibility = (onChange: () => void) => {
 const hiddenNow = () => document.visibilityState === "hidden";
 
 /** Whether the tab is hidden, kept current. */
-export function useTabHidden(): boolean {
+function useTabHidden(): boolean {
 	return useSyncExternalStore(subscribeVisibility, hiddenNow, () => false);
 }
 
@@ -213,7 +213,7 @@ export const joinSetupQuery = queryOptions({
 });
 
 /** The MCP URL of this crb, with its access key when one is needed. */
-export const mcpUrl = (origin: string, key: string | null): string =>
+const mcpUrl = (origin: string, key: string | null): string =>
 	`${origin}/mcp${key ? `?${new URLSearchParams({ key })}` : ""}`;
 
 /** The one-time setup line that adds this crb's /mcp to harness `h` (Other: the URL). */
@@ -248,7 +248,7 @@ export const agentThreadsQuery = queryOptions({
  * (the new one is on the viewed head, placed as asked). A failure is
  * retried (useAgentPlacementsFor drops an answer for another snapshot).
  */
-export const agentPlacementsQuery = (
+const agentPlacementsQuery = (
 	to: RereviewTo,
 	revision: string,
 	ids: readonly string[],

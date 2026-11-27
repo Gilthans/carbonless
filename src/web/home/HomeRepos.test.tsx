@@ -141,7 +141,7 @@ describe("Home's repos", () => {
 		);
 		await waitFor(() =>
 			expect(repoGets(api.calls, "acme/nowhere").map((c) => c.url)).toContain(
-				"/api/home/repos/acme/nowhere?fresh=1",
+				"/api/home/repos/acme/nowhere?fresh=1&whole=1",
 			),
 		);
 		console.release();
@@ -186,6 +186,196 @@ describe("Home's repos", () => {
 		expect(screen.queryAllByTestId("row-skeleton")).toHaveLength(0);
 		within(section("Reviewing")).getByTestId("section-none");
 		expect(within(section("Mine")).queryByTestId("section-none")).toBeNull();
+	});
+
+	it("a first read still landing: its rows so far show, the chip spins, no counts or none; more come in below, then the counts (CAR-290)", async () => {
+		const more = held();
+		const all = [1, 2, 3, 4].map((n) =>
+			row({
+				number: n,
+				title: `API ${n}`,
+				updatedAt: `2026-10-0${5 - n}T00:00:00Z`,
+			}),
+		);
+		const answer = (rows: typeof all, complete: boolean, progress: number) => ({
+			repo: "acme/api",
+			rows,
+			refreshedAt: complete ? "2026-10-05T00:00:00Z" : null,
+			error: null,
+			failures: 0,
+			complete,
+			progress,
+		});
+		let asked = 0;
+		const api = fakeApi(
+			view({}, { view: { name: "My PRs", repos: ["acme/api"] } }),
+			{
+				"GET /api/home/repos/acme/api": async () => {
+					asked++;
+					if (asked === 1) return answer(all.slice(0, 2), false, 1);
+					await more.gate;
+					return answer(all, true, 1);
+				},
+			},
+		);
+		renderWithQuery(<HomePage />);
+		await waitFor(() => expect(titles("Mine")).toEqual(["API 1", "API 2"]));
+		// More are coming: the chip spins, the sections count nothing yet.
+		expect(chip("acme/api")).toHaveAttribute("data-state", "loading");
+		within(chip("acme/api") as HTMLElement).getByRole("img", {
+			name: "Loading acme/api",
+		});
+		expect(screen.getByRole("status", { name: "Loading" })).toBeInTheDocument();
+		for (const name of ["Mine", "Reviewing", "Up for grabs", "Other open"]) {
+			const s = section(name);
+			within(s).getByRole("img", { name: "Loading" });
+			expect(within(s).getByRole("heading").textContent).not.toMatch(/\d/);
+			expect(within(s).queryByTestId("section-none")).toBeNull();
+			expect(within(s).getAllByTestId("row-skeleton").length).toBeGreaterThan(
+				0,
+			);
+		}
+		// The next ask says what it has seen: the server answers at the next batch.
+		await waitFor(() =>
+			expect(repoGets(api.calls, "acme/api").map((c) => c.url)).toContain(
+				"/api/home/repos/acme/api?seen=1",
+			),
+		);
+		const shown = within(section("Mine")).getAllByTestId("home-row");
+		more.release();
+		await waitFor(() =>
+			expect(titles("Mine")).toEqual(["API 1", "API 2", "API 3", "API 4"]),
+		);
+		// The rows shown before stay put (the same nodes, first), the new ones below.
+		const after = within(section("Mine")).getAllByTestId("home-row");
+		expect(after[0]).toBe(shown[0]);
+		expect(after[1]).toBe(shown[1]);
+		expect(chip("acme/api")).toHaveAttribute("data-state", "ready");
+		await waitFor(() =>
+			expect(screen.queryByRole("status", { name: "Loading" })).toBeNull(),
+		);
+		expect(within(section("Mine")).getByRole("heading")).toHaveTextContent(
+			/Mine\s*4/,
+		);
+		expect(screen.queryAllByTestId("row-skeleton")).toHaveLength(0);
+	});
+
+	it("a whole list stays whole: Refresh on a cold server asks for a whole answer, never shrinks to a batch (CAR-290 fix round 1)", async () => {
+		const all = [1, 2, 3].map((n) =>
+			row({
+				number: n,
+				title: `API ${n}`,
+				updatedAt: `2026-10-0${5 - n}T00:00:00Z`,
+			}),
+		);
+		const api = fakeApi(
+			view({}, { view: { name: "My PRs", repos: ["acme/api"] } }),
+			{
+				// A cold server: a whole answer only when asked for one.
+				"GET /api/home/repos/acme/api": ({ url }) => ({
+					repo: "acme/api",
+					rows:
+						asked() === 1 || url.includes("whole=1") ? all : all.slice(0, 1),
+					refreshedAt:
+						asked() === 1 || url.includes("whole=1")
+							? "2026-10-05T00:00:00Z"
+							: null,
+					error: null,
+					failures: 0,
+					complete: asked() === 1 || url.includes("whole=1"),
+					progress: asked() === 1 ? 0 : 1,
+				}),
+			},
+		);
+		const asked = () => repoGets(api.calls, "acme/api").length;
+		renderWithQuery(<HomePage />);
+		await waitFor(() =>
+			expect(titles("Mine")).toEqual(["API 1", "API 2", "API 3"]),
+		);
+		await userEvent.click(screen.getByRole("button", { name: "Refresh" }));
+		await waitFor(() => expect(asked()).toBe(2));
+		expect(repoGets(api.calls, "acme/api")[1]?.url).toBe(
+			"/api/home/repos/acme/api?fresh=1&whole=1",
+		);
+		await waitFor(() =>
+			expect(screen.queryByRole("status", { name: "Loading" })).toBeNull(),
+		);
+		expect(titles("Mine")).toEqual(["API 1", "API 2", "API 3"]);
+	});
+
+	it("a whole list stays when a cold server's read fails: its rows kept, the failure on them (CAR-290 fix round 2)", async () => {
+		const all = [1, 2, 3].map((n) =>
+			row({
+				number: n,
+				title: `API ${n}`,
+				updatedAt: `2026-10-0${5 - n}T00:00:00Z`,
+			}),
+		);
+		const api = fakeApi(
+			view({}, { view: { name: "My PRs", repos: ["acme/api"] } }),
+			{
+				// Whole first; then a cold server whose first read failed after a batch.
+				"GET /api/home/repos/acme/api": () =>
+					asked() === 1
+						? {
+								repo: "acme/api",
+								rows: all,
+								refreshedAt: "2026-10-05T00:00:00Z",
+								error: null,
+								failures: 0,
+								complete: true,
+							}
+						: {
+								repo: "acme/api",
+								rows: all.slice(0, 1),
+								refreshedAt: null,
+								error: "Rate limited by GitHub",
+								failures: 1,
+								complete: true,
+								progress: 1,
+							},
+			},
+		);
+		const asked = () => repoGets(api.calls, "acme/api").length;
+		renderWithQuery(<HomePage />);
+		await waitFor(() =>
+			expect(titles("Mine")).toEqual(["API 1", "API 2", "API 3"]),
+		);
+		await userEvent.click(screen.getByRole("button", { name: "Refresh" }));
+		await waitFor(() =>
+			within(chip("acme/api") as HTMLElement).getByRole("img", {
+				name: "acme/api: Rate limited by GitHub",
+			}),
+		);
+		expect(titles("Mine")).toEqual(["API 1", "API 2", "API 3"]);
+		// Kept rows, not unknown ones: counted, with no "Without" alert.
+		expect(within(section("Mine")).getByRole("heading")).toHaveTextContent(
+			/Mine\s*3/,
+		);
+	});
+
+	it("a retry of a failed first read spins while it lands, never the old error (CAR-290 fix round 1)", async () => {
+		fakeApi(
+			view(
+				{ mine: [row({ number: 1, title: "API 1" })] },
+				{
+					view: { name: "My PRs", repos: ["acme/api"] },
+					repos: {
+						"acme/api": {
+							complete: false,
+							progress: 1,
+							refreshedAt: null,
+							error: "Rate limited by GitHub",
+							failures: 1,
+						},
+					},
+				},
+			),
+		);
+		renderWithQuery(<HomePage />);
+		await waitFor(() => expect(titles("Mine")).toEqual(["API 1"]));
+		expect(chip("acme/api")).toHaveAttribute("data-state", "loading");
+		expect(screen.queryByRole("button", { name: "Retry acme/api" })).toBeNull();
 	});
 
 	it("before the view answers: placeholders in every section, no counts", async () => {
@@ -302,11 +492,12 @@ describe("Home's repos", () => {
 			expect(
 				repoGets(api.calls)
 					.map((c) => c.url)
-					.filter((u) => u.endsWith("?fresh=1"))
+					.filter((u) => u.includes("?fresh=1"))
 					.sort(),
 			).toEqual([
-				"/api/home/repos/acme/api?fresh=1",
-				"/api/home/repos/acme/console?fresh=1",
+				// Whole lists shown: whole answers only (CAR-290).
+				"/api/home/repos/acme/api?fresh=1&whole=1",
+				"/api/home/repos/acme/console?fresh=1&whole=1",
 			]),
 		);
 		expect(api.calls.some((c) => c.url === "/api/home/refresh")).toBe(false);
@@ -546,7 +737,7 @@ describe("Home's repos", () => {
 		await userEvent.click(screen.getByRole("button", { name: "Refresh" }));
 		await waitFor(() =>
 			expect(repoGets(api.calls, "acme/api").map((c) => c.url)).toContain(
-				"/api/home/repos/acme/api?fresh=1",
+				"/api/home/repos/acme/api?fresh=1&whole=1",
 			),
 		);
 		gate.release();

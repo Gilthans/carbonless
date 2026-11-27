@@ -1,3 +1,4 @@
+import { spawnSync } from "node:child_process";
 import {
 	mkdirSync,
 	mkdtempSync,
@@ -21,8 +22,25 @@ import {
 	testSpanContext,
 	traceRoot,
 } from "../../test/trace-run";
-import { compactRun, readRequests, type Span, spansOf, viewRun } from "./load";
+import {
+	compactRun,
+	extent,
+	readRequests,
+	type Span,
+	spansOf,
+	viewRun,
+} from "./load";
 import { findRun, resolveRun } from "./runs";
+import {
+	buildOf,
+	formatServer,
+	formatServerCompare,
+	isServerDir,
+	ofBuild,
+	parseSince,
+	readServerSpans,
+	summarizeServer,
+} from "./server";
 import { type StepLike, testSpans } from "./spans";
 import { fmt, formatCompare, formatSummary, summarize } from "./summary";
 
@@ -496,6 +514,28 @@ describe("the run directory", () => {
 		expect(process.env.CRB_TRACE_DIR).toBe(DIR_BEFORE);
 	});
 
+	it("packs a rotated file by its pid, not its date", () => {
+		const dir = tempDir();
+		const line = `${otlpLine("crb", {}, [
+			{
+				name: "x",
+				context: { traceId: "a".repeat(32), spanId: "b".repeat(16) },
+				parent: null,
+				startMs: T0,
+				endMs: T0 + 1,
+			},
+		])}\n`;
+		writeFileSync(join(dir, "crb-101-bbbbbb.20261124.000.jsonl"), line);
+		writeFileSync(join(dir, "crb-200-cccccc.20261124.003.jsonl"), line);
+		writeFileSync(join(dir, "run.json"), "{}\n");
+		expect(compactRun(dir, (pid) => pid === 200)).toBe(1);
+		expect(readdirSync(dir).sort()).toEqual([
+			"crb-200-cccccc.20261124.003.jsonl",
+			expect.stringMatching(/^packed-/),
+			"run.json",
+		]);
+	});
+
 	it("packs the files of exited processes, leaves live ones, and reads both", () => {
 		const dir = tempDir();
 		const span = (name: string): RecordedSpan => ({
@@ -740,5 +780,360 @@ describe("the run directory", () => {
 		expect(() => resolveRun(local, "e2e", "/here")).toThrow(
 			/no test traces match/,
 		);
+	});
+});
+
+describe("a crb serve's trace directory", () => {
+	let n = 0;
+	const sp = (
+		name: string,
+		startMs: number,
+		ms: number,
+		attrs?: RecordedSpan["attrs"],
+		error?: string,
+	): RecordedSpan => ({
+		name,
+		context: {
+			traceId: "c".repeat(32),
+			spanId: (n++).toString(16).padStart(16, "0"),
+		},
+		parent: null,
+		startMs,
+		endMs: startMs + ms,
+		attrs,
+		error,
+	});
+	const write = (
+		dir: string,
+		file: string,
+		spans: RecordedSpan[],
+		mtimeMs?: number,
+	) => {
+		writeFileSync(join(dir, file), `${otlpLine("crb", {}, spans)}\n`);
+		if (mtimeMs !== undefined) {
+			utimesSync(join(dir, file), new Date(mtimeMs), new Date(mtimeMs));
+		}
+	};
+
+	it("is told from a test run: no run.json, crb serve's files", () => {
+		const server = tempDir();
+		write(server, "crb-101-aaaaaa.20261124.000.jsonl", [sp("GET /a", T0, 1)]);
+		expect(isServerDir(server)).toBe(true);
+		const run = tempDir();
+		write(run, "crb-101-aaaaaa.jsonl", [sp("GET /a", T0, 1)]);
+		writeFileSync(join(run, "run.json"), "{}\n");
+		expect(isServerDir(run)).toBe(false);
+		const other = tempDir();
+		write(other, "fake-gh-1-aaaaaa.jsonl", [sp("x", T0, 1)]);
+		expect(isServerDir(other)).toBe(false);
+		expect(resolveRun(tempDir(), server)).toMatchObject({
+			dir: server,
+			server: true,
+		});
+	});
+
+	it("is never packed: a dead server's files keep their names for retention", () => {
+		const dir = tempDir();
+		write(dir, "crb-101-aaaaaa.20261124.000.jsonl", [sp("GET /a", T0, 1)]);
+		expect(readServerSpans(dir).map((s) => s.name)).toEqual(["GET /a"]);
+		expect(readdirSync(dir)).toEqual(["crb-101-aaaaaa.20261124.000.jsonl"]);
+	});
+
+	it("--since: a span of time back, or a date", () => {
+		const now = Date.UTC(2026, 10, 24, 12);
+		expect(parseSince("1d", now)).toBe(now - 86_400_000);
+		expect(parseSince("6h", now)).toBe(now - 6 * 3_600_000);
+		expect(parseSince("30m", now)).toBe(now - 30 * 60_000);
+		expect(parseSince("2w", now)).toBe(now - 14 * 86_400_000);
+		expect(parseSince("2026-11-20", now)).toBe(Date.UTC(2026, 10, 20));
+		expect(() => parseSince("soon", now)).toThrow(/--since/);
+	});
+
+	it("reads only the window: older spans and older files are left out", () => {
+		const dir = tempDir();
+		const day = 86_400_000;
+		write(
+			dir,
+			"crb-101-aaaaaa.20261101.000.jsonl",
+			[sp("GET /old", T0 - 10 * day, 5)],
+			T0 - 10 * day,
+		);
+		write(dir, "crb-102-bbbbbb.20261109.000.jsonl", [
+			sp("GET /before", T0 - 2 * day, 5),
+			sp("GET /after", T0 - 1000, 5),
+		]);
+		expect(
+			readServerSpans(dir, T0 - day)
+				.map((s) => s.name)
+				.sort(),
+		).toEqual(["GET /after"]);
+		expect(
+			readServerSpans(dir)
+				.map((s) => s.name)
+				.sort(),
+		).toEqual(["GET /after", "GET /before", "GET /old"]);
+	});
+
+	it("summarizes routes (p50, p95, max), gh/git by kind and by command", () => {
+		const spans = [
+			...Array.from({ length: 20 }, (_, i) =>
+				sp("GET /api/home/repos/:repo", T0 + i, (i + 1) * 100, {
+					status: 200,
+				}),
+			),
+			sp("GET /api/reviews/:id/overview", T0, 50, { status: 200 }),
+			sp("GET /api/reviews/:id/overview", T0, 70, { status: 500 }),
+			sp("POST /api/reviews", T0, 30, { status: "aborted" }),
+			sp("git fetch", T0, 1900),
+			sp("git fetch", T0, 2100),
+			sp("git cat-file", T0, 5),
+			sp("gh api graphql", T0, 3000, undefined, "exit 1"),
+			sp("session: open", T0, 9000),
+		];
+		const dir = tempDir();
+		write(dir, "crb-1-aaaaaa.20261109.000.jsonl", spans);
+		const s = summarizeServer(readServerSpans(dir));
+		expect(s.spans).toBe(spans.length);
+		expect(s.routes[0]).toEqual({
+			name: "GET /api/home/repos/:repo",
+			n: 20,
+			ms: 21_000,
+			p50: 1000,
+			p95: 1900,
+			max: 2000,
+			errors: 0,
+		});
+		expect(s.routes.find((r) => r.name.includes("overview"))).toMatchObject({
+			n: 2,
+			errors: 1,
+			max: 70,
+		});
+		expect(s.routes.find((r) => r.name === "POST /api/reviews")?.errors).toBe(
+			1,
+		);
+		expect(s.kinds.map((k) => [k.name, k.n, k.ms, k.errors])).toEqual([
+			["gh", 1, 3000, 1],
+			["git", 3, 4005, 0],
+		]);
+		expect(s.commands.map((c) => c.name)).toEqual([
+			"git fetch",
+			"gh api graphql",
+			"git cat-file",
+		]);
+		const text = formatServer("traces", s);
+		expect(text).toContain("slowest routes");
+		expect(text).toMatch(
+			/GET \/api\/home\/repos\/:repo +20 +21\.0s +1\.0s +1\.9s +2\.0s/,
+		);
+		expect(text).toMatch(/git fetch +2 +4\.0s/);
+		expect(text).not.toContain("session: open");
+	});
+
+	it("summarizes a long window: 200k spans, no stack overflow", () => {
+		const many: Span[] = Array.from({ length: 200_000 }, (_, i) => ({
+			traceId: "t",
+			spanId: String(i),
+			parent: null,
+			name: i % 2 ? "git log" : "GET /api/home",
+			service: "crb",
+			startMs: T0 + i,
+			endMs: T0 + i + (i % 100),
+			attrs: {},
+			error: false,
+		}));
+		const s = summarizeServer(many);
+		expect(s.spans).toBe(200_000);
+		expect(s.fromMs).toBe(T0);
+		expect(s.toMs).toBe(T0 + 199_999 + 99);
+		expect(s.routes[0]).toMatchObject({ n: 100_000, max: 98 });
+		expect(extent([])).toBeNull();
+		expect(extent([3, 1, 2])).toEqual([1, 3]);
+	});
+
+	it("skips a line that is valid JSON but no request (null, a number)", () => {
+		const dir = tempDir();
+		write(dir, "crb-1-aaaaaa.20261124.000000.jsonl", [sp("GET /a", T0, 1)]);
+		writeFileSync(
+			join(dir, "crb-1-aaaaaa.20261124.000000.jsonl"),
+			"null\n7\n",
+			{ flag: "a" },
+		);
+		expect(readServerSpans(dir).map((x) => x.name)).toEqual(["GET /a"]);
+		expect(spansOf([null, 7] as never)).toEqual([]);
+	});
+
+	it("the CLI refuses --since on a test run rather than ignore it", () => {
+		const run = tempDir();
+		writeFileSync(join(run, "run.json"), "{}\n");
+		write(run, "crb-1-aaaaaa.jsonl", [sp("x", T0, 1)]);
+		const main = join(import.meta.dirname, "main.ts");
+		const out = spawnSync(
+			process.execPath,
+			["--import", "tsx", main, run, "--since", "1d"],
+			{ encoding: "utf8", cwd: join(import.meta.dirname, "../..") },
+		);
+		expect(out.status).toBe(1);
+		expect(out.stderr).toMatch(/--since applies to a server's trace directory/);
+	});
+
+	it("splits by the build that wrote each file, and compares two", () => {
+		const dir = tempDir();
+		const line = (version: string, commit: string, spans: RecordedSpan[]) =>
+			`${otlpLine("crb", { "service.version": version, "service.commit": commit }, spans)}\n`;
+		const a = "a".repeat(40);
+		const b = `${"b".repeat(40)}-dirty`;
+		writeFileSync(
+			join(dir, "crb-1-aaaaaa.20261123.000.jsonl"),
+			line("0.5.0-rc.2", a, [
+				sp("GET /api/home", T0, 1000, { status: 200 }),
+				sp("GET /api/home", T0, 1200, { status: 200 }),
+				sp("git fetch", T0, 1900),
+			]),
+		);
+		writeFileSync(
+			join(dir, "crb-2-bbbbbb.20261124.000.jsonl"),
+			line("0.5.0-rc.3", b, [
+				sp("GET /api/home", T0 + 86_400_000, 3000, { status: 200 }),
+				sp("git fetch", T0 + 86_400_000, 500),
+				sp("gh pr list", T0 + 86_400_000, 700),
+			]),
+		);
+		// Written before builds were recorded.
+		write(dir, "crb-3-cccccc.jsonl", [sp("GET /api/old", T0 - 1000, 5)]);
+		const spans = readServerSpans(dir);
+		expect(new Set(spans.map(buildOf))).toEqual(
+			new Set([
+				"0.5.0-rc.2 (aaaaaaa)",
+				"0.5.0-rc.3 (bbbbbbb-dirty)",
+				"unknown",
+			]),
+		);
+		const all = summarizeServer(spans);
+		expect(all.builds.map((x) => [x.name, x.spans])).toEqual([
+			["unknown", 1],
+			["0.5.0-rc.2 (aaaaaaa)", 3],
+			["0.5.0-rc.3 (bbbbbbb-dirty)", 3],
+		]);
+		expect(formatServer("traces", all)).toMatch(
+			/builds[\s\S]*0\.5\.0-rc\.3 \(bbbbbbb-dirty\) +3 spans/,
+		);
+		// --only: by version or commit.
+		expect(
+			ofBuild(spans, "0.5.0-rc.3")
+				.map((x) => x.name)
+				.sort(),
+		).toEqual(["GET /api/home", "gh pr list", "git fetch"]);
+		expect(ofBuild(spans, "aaaaaaa")).toHaveLength(3);
+		expect(() => ofBuild(spans, "rc.9")).toThrow(/rc\.2 \(aaaaaaa\)/);
+		const text = formatServerCompare(
+			"rc.2",
+			summarizeServer(ofBuild(spans, "0.5.0-rc.2")),
+			"rc.3",
+			summarizeServer(ofBuild(spans, "0.5.0-rc.3 (bbbbbbb-dirty)")),
+		);
+		expect(text).toContain("▶ rc.2 → rc.3");
+		expect(text).toMatch(
+			/GET \/api\/home\n +n 2 → 1 · p50 1\.0s → 3\.0s {2}\+2\.0s \(\+200%\) · p95 1\.2s → 3\.0s {2}\+1\.8s \(\+150%\)/,
+		);
+		expect(text).toMatch(
+			/ git\n +n 1 → 1 · p50 1\.9s → 500ms {2}-1\.4s \(-74%\)/,
+		);
+		// Only in one build: the other side is "–", never a 0.
+		expect(text).toMatch(/gh pr list\n +n 0 → 1 · p50 – → 700ms/);
+	});
+
+	it("names one build exactly: 0.5.0 is not its RCs, rc.1 is not rc.10", () => {
+		const at = (version: string, commit: string) =>
+			({
+				traceId: "t",
+				spanId: version,
+				parent: null,
+				name: "GET /a",
+				service: "crb",
+				startMs: T0,
+				endMs: T0 + 1,
+				attrs: {},
+				error: false,
+				version,
+				commit,
+			}) as Span;
+		const spans = [
+			at("0.5.0-rc.1", "1".repeat(40)),
+			at("0.5.0-rc.10", "1a".repeat(20)),
+			at("0.5.0-rc.3", "3".repeat(40)),
+			at("0.5.0", "5".repeat(40)),
+		];
+		const versions = (q: string) => ofBuild(spans, q).map((x) => x.version);
+		expect(versions("0.5.0")).toEqual(["0.5.0"]);
+		expect(versions("0.5.0-rc.3")).toEqual(["0.5.0-rc.3"]);
+		expect(versions("0.5.0-rc.1")).toEqual(["0.5.0-rc.1"]);
+		expect(versions("0.5.0-rc.10 (1a1a1a1)")).toEqual(["0.5.0-rc.10"]);
+		expect(versions("5555")).toEqual(["0.5.0"]);
+		// A commit prefix two builds share: refused, naming both.
+		expect(() => ofBuild(spans, "1111")).not.toThrow();
+		expect(() => ofBuild(spans, "1a1a")).not.toThrow();
+		const twice = [...spans, at("0.5.0-rc.3", `3${"0".repeat(39)}`)];
+		expect(() => ofBuild(twice, "0.5.0-rc.3")).toThrow(
+			/names more than one build: 0\.5\.0-rc\.3 \(3333333\), 0\.5\.0-rc\.3 \(3000000\)/,
+		);
+		expect(() => ofBuild(twice, "3")).toThrow(/no build "3"/);
+		expect(() => ofBuild(spans, "rc.1")).toThrow(/no build "rc\.1"/);
+	});
+
+	it("ranks compared rows by p95 change weighed by calls", () => {
+		const route = (name: string, n: number, ms: number): Span[] =>
+			Array.from({ length: n }, (_, i) => ({
+				traceId: "t",
+				spanId: `${name}${i}`,
+				parent: null,
+				name,
+				service: "crb",
+				startMs: T0,
+				endMs: T0 + ms,
+				attrs: {},
+				error: false,
+			}));
+		const a = summarizeServer([
+			...route("GET /once", 1, 100),
+			...route("GET /busy", 50, 100),
+		]);
+		const b = summarizeServer([
+			...route("GET /once", 1, 5000),
+			...route("GET /busy", 50, 400),
+		]);
+		const text = formatServerCompare("a", a, "b", b);
+		expect(text.indexOf("GET /busy")).toBeLessThan(text.indexOf("GET /once"));
+	});
+
+	it("the CLI refuses --only with --compare-version", () => {
+		const dir = tempDir();
+		write(dir, "crb-1-aaaaaa.20261124.000000.jsonl", [
+			sp("GET /a", Date.now(), 1),
+		]);
+		const main = join(import.meta.dirname, "main.ts");
+		const out = spawnSync(
+			process.execPath,
+			[
+				"--import",
+				"tsx",
+				main,
+				dir,
+				"--only",
+				"x",
+				"--compare-version",
+				"a",
+				"b",
+			],
+			{ encoding: "utf8", cwd: join(import.meta.dirname, "../..") },
+		);
+		expect(out.status).toBe(1);
+		expect(out.stderr).toMatch(
+			/--only and --compare-version don't go together/,
+		);
+	});
+
+	it("says so when the window holds nothing", () => {
+		const s = summarizeServer([]);
+		expect(formatServer("traces", s)).toContain("no requests or calls");
 	});
 });

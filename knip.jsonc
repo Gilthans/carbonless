@@ -1,0 +1,60 @@
+// knip: unused files, exports and dependencies (`pnpm lint`; docs/ci-flakes.md, "Lint rules").
+{
+	"$schema": "https://unpkg.com/knip@6/schema.json",
+	// Loading vitest.config.ts outside the test queue throws (scripts/queue-guard.mjs),
+	// and loading playwright.config.ts starts a test-trace run: both are read as
+	// plain entries instead, with what their plugins would have found listed below.
+	"vitest": false,
+	"playwright": false,
+	"entry": [
+		"src/cli.ts",
+		// vitest.config.ts: tests, setupFiles, globalSetup.
+		"src/**/*.test.{ts,tsx}",
+		"scripts/**/*.test.ts",
+		"vitest.config.ts",
+		"test/setup.ts",
+		"test/real-gh-trap.ts",
+		"test/trace-setup.ts",
+		// Its CI reporter (named as a string when CRB_TEST_JSON is set).
+		"scripts/vitest-unhandled-reporter.mjs",
+		// playwright.config.ts: specs, globalSetup, reporter.
+		"playwright.config.ts",
+		"e2e/**/*.spec.ts",
+		"e2e/global-setup.ts",
+		"e2e/trace-reporter.ts",
+		// Inside package.json's `build` (`sh -c '…'`, which knip doesn't parse).
+		"scripts/build-info.mjs",
+		// Run by a systemd timer (CLAUDE.local.md), not package.json.
+		"scripts/dependabot-sweep.mjs",
+		// Run by hand, as their headers say.
+		"scripts/crb-private-env.mjs",
+		"scripts/demo-threads.ts",
+		"scripts/gen-joining-types.mjs",
+		"scripts/inline-diff-fixtures.mjs",
+		"scripts/measure-agent-ref.ts",
+		"scripts/pairing-compare.mjs",
+		"scripts/pairing-corpus.mjs",
+		"scripts/pairing-fixtures.mjs",
+		// Loaded by pairing-compare.mjs through tsx at run time (`import(url)`).
+		"scripts/pairing-compare-lib.ts",
+		// Spawned by path: the fake agent, the fake gh's server and CLI, test helpers.
+		"test/fake-acp/agent.mjs",
+		"test/fake-acp/mcp-recorder.mjs",
+		"test/fake-gh/cli.mjs",
+		"test/fake-gh/serve.mjs",
+		"test/fake-gh/trace.mjs",
+		"test/keep-alive.mjs",
+		"test/module-log.mjs"
+	],
+	"project": [
+		"src/**/*.{ts,tsx,mjs,css}",
+		"scripts/**/*.{ts,mjs}",
+		"e2e/**/*.ts",
+		"test/**/*.{ts,tsx,mjs}",
+		"*.config.ts"
+	],
+	// The gallery's case files: data the fixture tests read, not code.
+	"ignore": ["test/fixtures/**"],
+	// System tools the scripts run (flock: the test queue and dist lock; bwrap: the sweep's sandbox).
+	"ignoreBinaries": ["bwrap", "flock"]
+}

@@ -2,6 +2,7 @@ import { execFileSync } from "node:child_process";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Locator, Page, Route } from "@playwright/test";
+import { LOADING_STEP_AFTER_MS } from "../src/web/loadingStep";
 import { bumpHomePr, homePr, release } from "../test/fake-gh/scenario";
 import {
 	expectNoPageOverflow,
@@ -10,6 +11,7 @@ import {
 	openFiles,
 } from "./files-ui";
 import {
+	advanceUntilVisible,
 	expect,
 	expectLoadingThen,
 	installClock,
@@ -448,6 +450,164 @@ test("a PR chosen in the open box shows at once, loading, then becomes its revie
 	// The address opened again, after: the same review.
 	await page.goto(prUrl);
 	await expect(page).toHaveURL(review);
+});
+
+test("opening a PR of a repo crb never cloned says so beside the spinner while it clones; the next open of the repo says what it waits on once slow (CAR-296)", async ({
+	page,
+	workdir,
+	pr,
+	startCrb,
+}) => {
+	const made = await setup(workdir, pr);
+	// Opens acme/widget#7: that repo is cloned.
+	const crb = await startCrb();
+	// Two PRs of acme/fresh, a repo this crb never cloned (GitHub's URL
+	// names it; the fake clones the fixture repo for any name).
+	for (const n of [8, 9]) {
+		execFileSync("git", [
+			"-C",
+			made.repo.path,
+			"update-ref",
+			`refs/pull/${n}/head`,
+			made.repo.shas.at(-1) ?? "",
+		]);
+	}
+	made.editScenario((s) => {
+		const first = s.prs[String(PR_NUMBER)];
+		if (!first) throw new Error("no fixture PR");
+		for (const n of [8, 9]) {
+			s.prs[String(n)] = {
+				...first,
+				view: {
+					...first.view,
+					number: n,
+					url: `https://github.com/acme/fresh/pull/${n}`,
+				},
+			};
+		}
+		s.hold = ["clone"];
+	});
+	await installClock(page);
+	await page.goto(crb.url);
+	await expect(page.getByRole("heading", { level: 1 })).toBeVisible();
+	const notice = page.getByTestId("first-clone");
+	const opening = page.getByRole("main").getByRole("status", {
+		name: "Opening the PR",
+	});
+	const fresh =
+		"Cloning acme/fresh for the first time, this might take a while";
+	// The open's answer reaches the page only on the test's cue (a held
+	// fetch): the clone can end while the page still waits.
+	let answerOpen = () => {};
+	const openHeld = new Promise<void>((done) => {
+		answerOpen = done;
+	});
+	let openDone = false;
+	await page.route("**/api/reviews", async (route) => {
+		const response = await route.fetch();
+		openDone = true;
+		await openHeld;
+		await route.fulfill({ response });
+	});
+	// The clone held: the spinner, and the notice beside it, outside the
+	// spinner's busy region.
+	await page.goto(new URL("/pr/acme/fresh/8", crb.url).href);
+	await expect(opening).toBeVisible();
+	await expect(notice).toHaveText(fresh);
+	await expect(page.getByTestId("opening-busy")).toHaveAttribute(
+		"aria-busy",
+		"true",
+	);
+	await expect(
+		page.locator('[aria-busy="true"] [data-testid="first-clone"]'),
+	).toHaveCount(0);
+	await expectNoPageOverflow(page);
+	// The clone ends (the server's open with it), the page still waiting:
+	// the notice goes, the spinner stays.
+	release(made.scenarioPath, "clone");
+	await expect.poll(() => openDone).toBe(true);
+	await expect(notice).toBeEmpty();
+	await expect(opening).toBeVisible();
+	answerOpen();
+	await expect(page).toHaveURL(/\/r\/[0-9a-z]{26}$/);
+	await expect(notice).toHaveCount(0);
+	await page.unroute("**/api/reviews");
+
+	// The next open of the repo only fetches: held in GitHub's answer, past
+	// a poll of the clone state, the spinner shows alone (the page's clock
+	// held: no time passes but what the test moves).
+	made.editScenario((s) => {
+		s.hold = ["prView"];
+	});
+	const asks: string[] = [];
+	page.on("request", (r) => {
+		if (r.url().includes("/api/activity")) asks.push(r.url());
+	});
+	const polled = page.waitForResponse(
+		(r) => r.url().includes("/api/clones/acme/fresh") && r.ok(),
+	);
+	await page.clock.pauseAt(Date.now() + 1_000);
+	await page.goto(new URL("/pr/acme/fresh/9", crb.url).href);
+	await expect(opening).toBeVisible();
+	expect(await (await polled).json()).toEqual({ cloning: false });
+	// The live region is there, empty, from the start (read out when filled).
+	await expect(notice).toBeEmpty();
+	await expect(notice).toHaveCSS("display", "block");
+	// Short of the threshold: nothing asked, nothing said (CAR-296).
+	await page.clock.fastForward(LOADING_STEP_AFTER_MS - 200);
+	await expect(notice).toBeEmpty();
+	expect(asks).toEqual([]);
+	// Past it: the step the open waits on, beside the spinner.
+	await page.clock.fastForward(400);
+	await expect(notice).toHaveText(/^GitHub: pr view/);
+	await expect(opening).toBeVisible();
+	await expect(
+		page.locator('[aria-busy="true"] [data-testid="first-clone"]'),
+	).toHaveCount(0);
+	await expectNoPageOverflow(page);
+	await page.clock.resume();
+	release(made.scenarioPath, "prView");
+	await expect(page).toHaveURL(/\/r\/[0-9a-z]{26}$/);
+	await expect(notice).toHaveCount(0);
+});
+
+test("a repo still reading says, once slow, which step it waits on in its spinner's name; never before (CAR-296)", async ({
+	page,
+	workdir,
+	pr,
+	startCrb,
+}) => {
+	const made = await setup(workdir, pr);
+	made.editScenario((s) => {
+		s.hold = ["home:acme/api"];
+	});
+	const crb = await startCrb();
+	const asks: string[] = [];
+	page.on("request", (r) => {
+		if (r.url().includes("/api/activity")) asks.push(r.url());
+	});
+	// The page's clock held from the start: only the test moves it.
+	await installClock(page);
+	await page.clock.pauseAt(Date.now() + 1_000);
+	await page.goto(home(crb.url));
+	const chip = page.locator('[data-testid="view-repo"][data-repo="acme/api"]');
+	const sign = chip.getByTestId("repo-loading");
+	await advanceUntilVisible(page, sign);
+	await expect(chip).toHaveAttribute("data-state", "loading");
+	await expect(sign).toHaveAccessibleName("Loading acme/api");
+	expect(asks).toEqual([]);
+	// Past the threshold: the read's step, in its name and tooltip.
+	await page.clock.fastForward(LOADING_STEP_AFTER_MS);
+	await expect(sign).toHaveAccessibleName(
+		/^Loading acme\/api: GitHub: PR list, page 1/,
+	);
+	expect(asks.length).toBeGreaterThan(0);
+	await page.clock.resume();
+	release(made.scenarioPath, "home:acme/api");
+	await expect(chip).toHaveAttribute("data-state", "ready", {
+		timeout: 15_000,
+	});
+	await expect(sign).toHaveCount(0);
 });
 
 test("Repos spins while the viewer's repos load, then lists only theirs", async ({
@@ -924,6 +1084,62 @@ test("one repo's read held: the other's rows show, the held one and the sections
 	await expect(section(page, "Other open").getByRole("heading")).toHaveText(
 		/Other open\s*1/,
 	);
+});
+
+test("a repo's first read shows its rows as batches land, newest first: the chip spins and nothing counts until the last (CAR-290)", async ({
+	page,
+	workdir,
+	pr,
+	startCrb,
+	isMobile,
+}) => {
+	if (isMobile) await page.setViewportSize({ width: 360, height: 780 });
+	const made = await setup(workdir, pr);
+	// 6 PRs + 15 older ones: a first batch of the 10 newest, then the rest.
+	const older = Array.from({ length: 15 }, (_, i) => 101 + i);
+	const held = "homePr:115" as const;
+	made.editScenario((s) => {
+		s.repos?.["acme/api"]?.prs.push(
+			...older.map((n) =>
+				homePr({
+					repo: "acme/api",
+					number: n,
+					title: `Older change ${n}`,
+					author: VIEWER,
+					updatedAt: iso(60 * 24 + n),
+				}),
+			),
+		);
+		s.hold = [held];
+	});
+	const crb = await startCrb();
+	await page.goto(home(crb.url));
+	const chip = page.getByTestId("view-repo").filter({ hasText: "acme/api" });
+	const first = rowOf(page, "Snooze PRs from the inbox");
+	// The first batch is in: the newest rows show, while more are coming.
+	await expect(first).toBeVisible();
+	await expect(rowOf(page, "Older change 101")).toBeVisible();
+	const top = (await first.boundingBox())?.y;
+	await expectLoadingThen({
+		loading: chip.getByRole("img", { name: "Loading acme/api" }),
+		empty: [
+			page.getByTestId("section-none"),
+			...["Mine", "Reviewing", "Up for grabs", "Other open"].map((name) =>
+				section(page, name).getByRole("heading").filter({ hasText: /\d/ }),
+			),
+		],
+		release: () => release(made.scenarioPath, held),
+		result: rowOf(page, "Older change 115"),
+	});
+	await expect(chip).toHaveAttribute("data-state", "ready");
+	await expect(page.getByRole("status", { name: "Loading" })).toBeHidden();
+	await expect(page.getByTestId("row-skeleton")).toHaveCount(0);
+	await expect(section(page, "Mine").getByRole("heading")).toHaveText(
+		/Mine\s*16/,
+	);
+	// The rows shown first stayed put: the rest came in below them.
+	expect((await first.boundingBox())?.y).toBe(top);
+	await expectNoPageOverflow(page);
 });
 
 test("a snooze moves the row behind its footer, Wake up brings it back, and activity wakes it", async ({
@@ -1984,4 +2200,62 @@ test("screenshots of view settings and the loading page (CRB_HOME_SHOTS only)", 
 		path: join(shots as string, `opening-${at}.png`),
 	});
 	release(made.scenarioPath, "prView");
+});
+
+test("a view repo's chip shows only its PRs, kept on reload, back and forth; again shows all", async ({
+	page,
+	workdir,
+	pr,
+	startCrb,
+	isMobile,
+}) => {
+	await setup(workdir, pr, { widgetInView: true });
+	const crb = await startCrb();
+	await goHome(page, crb.url);
+	const widget = page.getByRole("button", { name: OWNER_REPO, exact: true });
+	const api = page.getByRole("button", { name: "acme/api", exact: true });
+	const widgetRow = rowOf(page, "Add widget cache");
+	const apiRow = rowOf(page, "Snooze PRs from the inbox");
+	await expect(widgetRow).toBeVisible();
+	await expect(widget).toHaveAttribute("aria-pressed", "false");
+	// The whole chip, 40px tall, is the target: a tap just above the
+	// visible chip (28px) still presses it.
+	const box = await page
+		.getByTestId("view-repo")
+		.filter({ hasText: OWNER_REPO })
+		.boundingBox();
+	if (!box) throw new Error("no chip");
+	expect(box.height).toBeLessThan(40);
+	await page.mouse.click(box.x + box.width / 2, box.y - 4);
+	await expect(widget).toHaveAttribute("aria-pressed", "true");
+	await expect(apiRow).toHaveCount(0);
+	await expect(widgetRow).toBeVisible();
+	await expect(page).toHaveURL(
+		new RegExp(`\\?repo=${encodeURIComponent(OWNER_REPO.toLowerCase())}$`),
+	);
+
+	await page.reload();
+	await expect(widgetRow).toBeVisible();
+	await expect(widget).toHaveAttribute("aria-pressed", "true");
+	await expect(apiRow).toHaveCount(0);
+
+	await widget.click();
+	await expect(widget).toHaveAttribute("aria-pressed", "false");
+	await expect(apiRow).toBeVisible();
+	await expect(widgetRow).toBeVisible();
+	await expect(page).toHaveURL(home(crb.url));
+
+	await api.click();
+	await expect(api).toHaveAttribute("aria-pressed", "true");
+	await expect(widgetRow).toHaveCount(0);
+	await expect(apiRow).toBeVisible();
+
+	await page.goBack();
+	await expect(api).toHaveAttribute("aria-pressed", "false");
+	await expect(widgetRow).toBeVisible();
+	await expect(apiRow).toBeVisible();
+	await page.goBack();
+	await expect(widget).toHaveAttribute("aria-pressed", "true");
+	await expect(apiRow).toHaveCount(0);
+	if (isMobile) await expectNoPageOverflow(page);
 });

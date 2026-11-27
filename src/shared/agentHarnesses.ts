@@ -33,7 +33,7 @@ export const AGENT_HARNESSES: readonly AgentHarness[] = Object.freeze([
  * A word quoted for a POSIX shell (and zsh, where an unquoted `?` globs):
  * in double quotes when nothing there expands, else in single quotes.
  */
-export function shellWord(word: string): string {
+function shellWord(word: string): string {
 	if (!/[$`"\\!\n]/.test(word)) return `"${word}"`;
 	return `'${word.replaceAll("'", `'\\''`)}'`;
 }

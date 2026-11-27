@@ -46,7 +46,15 @@ export interface RunnerFacts {
 	prFacts(): Promise<{ title: string; body: string; files: string[] }>;
 	/** The file at the anchor's commit: pass the anchor as the agent is told it (anchorFor). */
 	anchored(anchor: AgentAnchor): Promise<{ text: string } | null>;
-	hunk(anchor: AgentAnchor): Promise<string | null>;
+	/**
+	 * The diff hunk around a stored (head) anchor, from the comparison it
+	 * was opened on: `mergeBase`..`anchor.commit` (its patch set's merge
+	 * base: patchsetOpened), `mergeBase` null for a head no patch set has
+	 * (that head's own merge base with the base branch); null when that
+	 * diff has no hunk there. Throws when that comparison's code can't be
+	 * read: never another comparison's code in its place (CAR-53).
+	 */
+	hunk(anchor: AgentAnchor, mergeBase: string | null): Promise<string | null>;
 	authorOf(login: string): Promise<CommentRole>;
 	/**
 	 * The folds joined with GitHub's threads (githubJoin.ts): a live
@@ -134,7 +142,7 @@ const MAX_LIVE_ACTIVITY = 200;
  * waits: then the handed-out question fails, and an agent that ignores
  * the wake-up isn't prompted again until a human asks.
  */
-export const MAX_DRY_TURNS = 2;
+const MAX_DRY_TURNS = 2;
 /** How long a broken connection's process gets to exit before it counts as lingering. */
 const LINGER_MS = 2_000;
 const ACTIVITY_KINDS: readonly string[] = [
@@ -208,7 +216,7 @@ export const WAKE_LINE =
 	"A question waits for you in the review: call crb's next tool, answer it with reply, and call next again until none waits.";
 
 /** The checkout, relative to the agent's working directory (the checkout's dir). */
-export const CHECKOUT_PATH = "tree";
+const CHECKOUT_PATH = "tree";
 
 /** The re-prompt when a turn ends with a question still handed out. */
 export const holdLine = (thread: string): string =>
@@ -993,6 +1001,7 @@ export class AgentRunner {
 				command: config.command,
 				args: config.args,
 				env: agentEnv(config.env),
+				secrets: Object.values(config.env),
 				// The tree's parent, as before: a PR's own harness config (hooks,
 				// MCP servers, allow rules) in the tree is never the agent's.
 				cwd: this.#checkout.dir,

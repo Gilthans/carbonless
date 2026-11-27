@@ -540,6 +540,118 @@ describe("carryClusters", () => {
 		expect(third.gone).toEqual([]);
 		// Both are shown as reworked: the reviewer looks again.
 		expect(third.reworked).toEqual(new Set([h, `${h}:2`]));
+		// One occurrence changed (its image keeps the identity, as a forged
+		// key could): none of them carries, the equal one neither.
+		const changedOne = carryClusters(
+			input(sources, [
+				target("a.txt", [
+					dup(h, 5),
+					cluster(
+						`${h}:2`,
+						{ oldStart: 20, oldCount: 1, newStart: 20, newCount: 1 },
+						{ removed: ["x"], added: ["y!"] },
+					),
+				]),
+			]),
+		);
+		expect(changedOne.carried).toEqual([]);
+		// Each lands on an equal image, but under another identity than the
+		// target's two occurrences of it: none of them carries.
+		const g = "b".repeat(64);
+		const otherIdentity = carryClusters(
+			input(sources, [
+				target("a.txt", [dup(h, 5), dup(g, 20), dup(`${h}:2`, 35)]),
+			]),
+		);
+		expect(otherIdentity.carried).toEqual([]);
+	});
+
+	it("the lines decide, not the maps: a map that calls a changed cluster unchanged carries nothing (principle 2)", () => {
+		// IDENTITY maps every line onto itself, as if nothing moved or
+		// changed; the target's lines say otherwise.
+		const changed = (key: string, extra: Partial<Cluster> = {}) =>
+			carryClusters(
+				input(
+					[ps(1, [source("a.txt", [two], { k2: "reviewed" })])],
+					[target("a.txt", [{ ...mod(key, 2, "line 2", "two"), ...extra }])],
+				),
+			);
+		// Same line count, other text, on either side.
+		const text = carryClusters(
+			input(
+				[ps(1, [source("a.txt", [two], { k2: "reviewed" })])],
+				[target("a.txt", [mod("k2t", 2, "line 2", "TWO")])],
+			),
+		);
+		expect(text.carried).toEqual([]);
+		expect(text.reworked).toEqual(new Set(["k2t"]));
+		const removed = carryClusters(
+			input(
+				[ps(1, [source("a.txt", [two], { k2: "reviewed" })])],
+				[target("a.txt", [mod("k2r", 2, "LINE 2", "two")])],
+			),
+		);
+		expect(removed.carried).toEqual([]);
+		// The newline at the end of either side.
+		expect(changed("k2o", { noNewlineOld: true }).carried).toEqual([]);
+		expect(changed("k2n", { noNewlineNew: true }).carried).toEqual([]);
+		expect(changed("k2same").carried).toHaveLength(1);
+	});
+
+	it("a map that places only part of a cluster on its image carries nothing", () => {
+		// Two added lines; the map loses the second (it maps to nothing).
+		const pair = cluster(
+			"kp",
+			{ oldStart: 9, oldCount: 0, newStart: 10, newCount: 2 },
+			{ added: ["a", "b"] },
+		);
+		const r = carryClusters(
+			input(
+				[ps(1, [source("a.txt", [pair], { kp: "reviewed" })])],
+				[
+					target("a.txt", [pair], {
+						bd: mapper({
+							oldStart: 11,
+							oldCount: 1,
+							newStart: 10,
+							newCount: 0,
+						}),
+					}),
+				],
+			),
+		);
+		expect(r.carried).toEqual([]);
+		expect(r.reworked).toEqual(new Set(["kp"]));
+	});
+
+	it("a later patch set's carry onto a cluster stands: an older one's onto it neither replaces it nor makes it reworked", () => {
+		const latest = mod("a2", 30, "line 30", "thirty");
+		const older = mod("a1", 30, "line 30", "thirty");
+		const olderChanged = mod("a0", 30, "line 30", "thirty?");
+		const run = (olderCluster: Cluster) =>
+			carryClusters(
+				input(
+					[
+						ps(2, [source("a.txt", [latest], { a2: "reviewed" })]),
+						ps(1, [
+							source("a.txt", [olderCluster], {
+								[olderCluster.key]: "crossed-off",
+							}),
+						]),
+					],
+					[
+						target("a.txt", [mod("t", 30, "line 30", "thirty")], {
+							earlier: new Map([[1, { bd: IDENTITY, ac: IDENTITY }]]),
+						}),
+					],
+				),
+			);
+		for (const r of [run(older), run(olderChanged)]) {
+			expect(r.carried).toEqual([
+				{ key: "t", fromKey: "a2", from: 2, rule: "exact", state: "reviewed" },
+			]);
+			expect(r.reworked).toEqual(new Set());
+		}
 	});
 
 	it("Review focus 2: the added lines trace but the base changed the removed ones: reworked", () => {

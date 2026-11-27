@@ -14,7 +14,11 @@ import {
 	createRereviewHistory,
 	type RereviewHistory,
 } from "../../../test/rereview-fixture";
-import type { ClusterState, Snapshot } from "../../shared/types";
+import type {
+	ClusterState,
+	RereviewAnswer,
+	Snapshot,
+} from "../../shared/types";
 import { buildSnapshot } from "../diff/snapshot";
 import type { PatchsetRecord, StateEntry } from "../review/fold";
 import { RereviewCache } from "./cache";
@@ -27,6 +31,7 @@ import {
 	rereviewKey,
 	type SincePatchset,
 	type TargetSnapshot,
+	type Traced,
 	traceRereview,
 } from "./engine";
 
@@ -359,6 +364,15 @@ describe("the engine", () => {
 		expect(answer.shape).toMatchObject({ code: "S4b", conflicts: ["a.txt"] });
 		expect(answer.toRead).toEqual({ files: 2, clusters: 3 });
 		expect(start.carried).toEqual([]);
+		// Nothing of a conflicted file carries, line by line either (new.txt's
+		// unchanged line does).
+		const conflictKeys = new Set(
+			r.files.find((f) => f.path === "a.txt")?.clusters.map((c) => c.key),
+		);
+		expect(conflictKeys.size).toBe(2);
+		const carriedKeys = (start.linesCarried?.states ?? []).map((e) => e.key);
+		expect(carriedKeys.length).toBeGreaterThan(0);
+		expect(carriedKeys.filter((k) => conflictKeys.has(k))).toEqual([]);
 		const hunks = interdiffFileHunks(traced, r, answer, 0);
 		const keyed = hunks.hunks.flatMap((hk) =>
 			hk.lines
@@ -574,18 +588,98 @@ describe("the engine", () => {
 			);
 			// B2's numbers (three lines down), never B1's: "line 20" is B2's 23.
 			// "thirty on master" is B2's 33, though PS1 never had that text.
-			// The engine can't place that shown row in the base through the
-			// old one (baseLine), so the cluster's line no piece owns is an
-			// orphan too, a row of its own (CAR-216: shown twice, never hidden).
+			// The old base can't place that shown row (baseLine), GitHub's
+			// LEFT line can: the shown row owns its line, no orphan twin
+			// (CAR-277).
 			expect(removed).toEqual([
 				["line 20", 23, false],
 				["thirty on master", 33, false],
-				["thirty on master", 33, true],
 			]);
 		} finally {
 			fx.cleanup();
 		}
 	});
+
+	for (const update of ["rebase", "merge-base-in"] as const) {
+		it(`a since-view line put back as the base had it is off GitHub's diff, as are context lines around it outside that diff; the change beside it isn't, whatever the methodology: ${update} (CAR-293)`, async () => {
+			const lines = Array.from({ length: 60 }, (_, i) => `line ${i + 1}`);
+			const text = (ls: string[]) => `${ls.join("\n")}\n`;
+			const changed = (ls: string[], at: number[]) =>
+				ls.map((l, i) => (at.includes(i + 1) ? `${l} changed` : l));
+			const fx = createGitFixture([
+				{ message: "base", files: { "a.txt": text(lines) } },
+			]);
+			try {
+				const git = (...args: string[]) =>
+					execFileSync("git", args, {
+						cwd: fx.path,
+						encoding: "utf8",
+						stdio: "pipe",
+						env: testGitEnv(),
+					}).trim();
+				const commit = (message: string, content: string[]) => {
+					writeFileSync(join(fx.path, "a.txt"), text(content));
+					git("commit", "--quiet", "-am", message);
+					return git("rev-parse", "HEAD");
+				};
+				const b1 = fx.shas[0] as string;
+				// PS1 on B1: lines 10 and 30 changed.
+				const h1 = commit("PR: 10 and 30", changed(lines, [10, 30]));
+				// B2: the base changes line 50.
+				git("checkout", "--quiet", "--detach", b1);
+				const b2Lines = changed(lines, [50]);
+				const b2 = commit("base: line 50", b2Lines);
+				// PS2 on B2: line 10 kept, line 30 put back, line 34 changed.
+				let h2: string;
+				if (update === "rebase") {
+					h2 = commit("PR, rebased", changed(b2Lines, [10, 34]));
+				} else {
+					git("checkout", "--quiet", "--detach", h1);
+					git("merge", "--quiet", "--no-edit", b2);
+					h2 = commit("PR: 30 back, 34", changed(b2Lines, [10, 34]));
+				}
+				const ps1 = await buildSnapshot(fx.path, b1, h1);
+				const r = await buildSnapshot(fx.path, git("merge-base", b2, h2), h2);
+				const traced = await traceRereview(
+					fx.path,
+					since(1, ps1, marked(ps1)),
+					[],
+					targetOf(r),
+				);
+				const { answer } = answerRereview(
+					traced,
+					since(1, ps1, marked(ps1)),
+					[],
+					targetOf(r),
+				);
+				const rows = interdiffFileHunks(traced, r, answer, 0).hunks.flatMap(
+					(hk) =>
+						hk.lines.flatMap((l) =>
+							l.newNo === undefined
+								? []
+								: [[l.newNo, l.kind, l.offGithub === true] as const],
+						),
+				);
+				// GitHub's diff (B2 → head): hunks 7–13 and 31–37. Line 30
+				// and the context above it are the base's text there.
+				expect(rows).toEqual([
+					[27, "context", true],
+					[28, "context", true],
+					[29, "context", true],
+					[30, "add", true],
+					[31, "context", false],
+					[32, "context", false],
+					[33, "context", false],
+					[34, "add", false],
+					[35, "context", false],
+					[36, "context", false],
+					[37, "context", false],
+				]);
+			} finally {
+				fx.cleanup();
+			}
+		});
+	}
 
 	it("a renamed file the head's diff pairs with another base file than the since view's map does: no base numbers, so no comment lands in the wrong file (CAR-217)", async () => {
 		const block = (name: string) =>
@@ -903,7 +997,14 @@ describe("the engine", () => {
 			hk.lines.filter((l) => l.kind !== "context"),
 		);
 		expect(lines).toEqual([
-			{ kind: "add", newNo: 20, text: "line 20", clusterKey: del.key },
+			{
+				kind: "add",
+				newNo: 20,
+				text: "line 20",
+				clusterKey: del.key,
+				// Restored as the base had it: not in GitHub's diff (CAR-293).
+				offGithub: true,
+			},
 		]);
 	});
 
@@ -970,6 +1071,48 @@ describe("the engine", () => {
 			expect(result.answer.shape.code).toBe("S1");
 			expect(kinds(result.answer)).toEqual({ "bin.dat": ["gone:1"] });
 			expect(result.absorbed).toEqual([]);
+		} finally {
+			fx.cleanup();
+		}
+	});
+
+	it("R1: a reviewed mode change the author undoes is gone, not absorbed: in a deleted file, and beside an edit", async () => {
+		// PS1 only changes modes. PS2 deletes a.txt (its lines, no
+		// file-level change) and turns b.txt back while editing a line:
+		// the interdiff shows both, so neither mode change went into a base.
+		const fx = createGitFixture([
+			{ message: "base", files: { "a.txt": "a1\na2\n", "b.txt": "b1\nb2\n" } },
+			{
+				message: "PR: modes",
+				files: {},
+				chmod: { "a.txt": "755", "b.txt": "755" },
+			},
+			{
+				message: "PR: drop a, edit b",
+				files: { "b.txt": "b1\nB2\n" },
+				delete: ["a.txt"],
+				chmod: { "b.txt": "644" },
+			},
+		]);
+		try {
+			const [b0, p1, h2] = fx.shas as [string, string, string];
+			const ps1 = await buildSnapshot(fx.path, b0, p1);
+			expect(ps1.files.map((f) => f.clusters.map((c) => c.kind))).toEqual([
+				["file"],
+				["file"],
+			]);
+			const result = await computeRereview(
+				fx.path,
+				since(1, ps1, marked(ps1)),
+				[],
+				targetOf(await buildSnapshot(fx.path, b0, h2)),
+			);
+			expect(result.absorbed).toEqual([]);
+			expect(
+				Object.values(kinds(result.answer))
+					.flat()
+					.filter((k) => k === "gone:1"),
+			).toHaveLength(2);
 		} finally {
 			fx.cleanup();
 		}
@@ -1165,6 +1308,241 @@ describe("the engine", () => {
 	});
 });
 
+/**
+ * PS1 (two commits: lines 5 and 8) on B1; master changes lines 30 and 35
+ * (B2); PS2 updates onto B2 per `method`, then drops master's line 30
+ * and edits its line 35. PS1 was reviewed, so lines 5 and 8 carry and
+ * show nothing; the since view shows the drop and the edit, whose
+ * removed lines the old base can't place (baseLine), GitHub's LEFT line
+ * can (CAR-277). Every method ends on the same tree (principle 7).
+ */
+async function baseChangedLine(method: "rebase" | "merge-base-in" | "squash") {
+	const lines = Array.from({ length: 40 }, (_, i) => `line ${i + 1}`);
+	const text = (ls: string[]) => `${ls.join("\n")}\n`;
+	const fx = createGitFixture([
+		{ message: "base", files: { "a.txt": text(lines) } },
+	]);
+	const git = (...args: string[]) =>
+		execFileSync("git", args, {
+			cwd: fx.path,
+			encoding: "utf8",
+			stdio: "pipe",
+			env: testGitEnv(),
+		}).trim();
+	const commit = (message: string, content: string[]) => {
+		writeFileSync(join(fx.path, "a.txt"), text(content));
+		git("commit", "--quiet", "-am", message);
+		return git("rev-parse", "HEAD");
+	};
+	const pr = (ls: string[], upTo: 5 | 8) =>
+		ls.map((l) =>
+			l === "line 5" ? "five" : upTo === 8 && l === "line 8" ? "eight" : l,
+		);
+	const b1 = fx.shas[0] as string;
+	commit("PR: five", pr(lines, 5));
+	const h1 = commit("PR: eight", pr(lines, 8));
+	git("checkout", "--quiet", "--detach", b1);
+	const masterLines = lines.map((l) =>
+		l === "line 30"
+			? "thirty on master"
+			: l === "line 35"
+				? "thirty-five on master"
+				: l,
+	);
+	const b2 = commit("base: lines 30 and 35", masterLines);
+	const final = pr(masterLines, 8)
+		.map((l) => (l === "thirty-five on master" ? "thirty-five, PR" : l))
+		.filter((l) => l !== "thirty on master");
+	if (method === "rebase") {
+		commit("PR: five, rebased", pr(masterLines, 5));
+		commit("PR: eight, rebased", pr(masterLines, 8));
+	} else if (method === "merge-base-in") {
+		git("checkout", "--quiet", "--detach", h1);
+		git("merge", "--quiet", "--no-edit", b2);
+	}
+	const h2 = commit("PR: line 30 dropped, line 35 edited", final);
+	const ps1 = await buildSnapshot(fx.path, b1, h1);
+	const r = await buildSnapshot(fx.path, b2, h2);
+	const traced = await traceRereview(
+		fx.path,
+		since(1, ps1, marked(ps1)),
+		[],
+		targetOf(r),
+	);
+	const { answer } = answerRereview(
+		traced,
+		since(1, ps1, marked(ps1)),
+		[],
+		targetOf(r),
+	);
+	return { traced, answer, r, cleanup: fx.cleanup };
+}
+
+describe.each(["merge-base-in", "squash"] as const)(
+	"a line the base move changed, PS2 by %s (CAR-277)",
+	(method) => {
+		it("shows once: no orphan twin, one unit each", async () => {
+			const { traced, answer, r, cleanup } = await baseChangedLine(method);
+			try {
+				const rows = interdiffFileHunks(traced, r, answer, 0).hunks.flatMap(
+					(h) => h.lines,
+				);
+				expect(rows.filter((l) => l.orphan)).toEqual([]);
+				expect(
+					rows.filter((l) => l.kind !== "context").map((l) => l.text),
+				).toEqual([
+					"thirty on master",
+					"thirty-five on master",
+					"thirty-five, PR",
+				]);
+				expect(answer.toRead).toEqual({ files: 1, clusters: 2 });
+			} finally {
+				cleanup();
+			}
+		});
+	},
+);
+
+describe("a line the base move changed, shown removed in the since view (CAR-277)", () => {
+	let cleanup = () => {};
+	let traced: Traced;
+	let answer: RereviewAnswer;
+	let r: Snapshot;
+	beforeAll(async () => {
+		({ traced, answer, r, cleanup } = await baseChangedLine("rebase"));
+	});
+	afterAll(() => cleanup());
+
+	/** The dropped line's cluster in the head. */
+	const thirty = () => {
+		const c = r.files[0]?.clusters.find((c) =>
+			c.removed.includes("thirty on master"),
+		);
+		if (!c) throw new Error("no cluster");
+		return c;
+	};
+	/** The since view's rows of the dropped line, and its cluster's pieces. */
+	const view = (t: Traced = traced, target: Snapshot = r) => {
+		const shown = interdiffFileHunks(t, target, answer, 0);
+		const key = thirty().key;
+		return {
+			rows: shown.hunks.flatMap((h) =>
+				h.lines
+					.filter((l) => l.kind === "del" && l.clusterKey === key)
+					.map((l) => (l.orphan ? "orphan" : "shown")),
+			),
+			pieces: (shown.pieces ?? [])
+				.filter((p) => p.key === key)
+				.map((p) => [p.orphan === true, p.owns]),
+		};
+	};
+	/** The shown row's old-side number (the interdiff's). */
+	const shownOldNo = () => {
+		const row = interdiffFileHunks(traced, r, answer, 0)
+			.hunks.flatMap((h) => h.lines)
+			.find((l) => l.kind === "del" && !l.orphan);
+		return row?.oldNo as number;
+	};
+	/** `traced` with one line's map entries replaced. */
+	const tampered = (
+		edit: (keys: Traced["lineKeys"], oldNo: number) => void,
+	): Traced => {
+		const keys = structuredClone(traced.lineKeys);
+		edit(keys, shownOldNo());
+		return { ...traced, lineKeys: keys };
+	};
+
+	it("shows once: the shown row owns the line, no orphan twin", () => {
+		// The premise: the old base can't place it, GitHub's LEFT line can.
+		const oldNo = shownOldNo();
+		expect(traced.lineKeys.baseLine?.["a.txt"]?.[oldNo]).toBeUndefined();
+		expect(traced.lineKeys.githubLeft?.["a.txt"]?.[oldNo]).toBe(30);
+		// The tracer names it (and the edited line 35's) as the base move's.
+		expect(traced.lineKeys.baseMoved?.["a.txt"]).toEqual([oldNo, oldNo + 5]);
+		expect(view()).toEqual({ rows: ["shown"], pieces: [[false, [[0, 1]]]] });
+		// The edited line 35 too: no orphan row anywhere in the file.
+		const rows = interdiffFileHunks(traced, r, answer, 0).hunks.flatMap(
+			(h) => h.lines,
+		);
+		expect(rows.filter((l) => l.orphan)).toEqual([]);
+		expect(rows.filter((l) => l.kind !== "context").map((l) => l.text)).toEqual(
+			["thirty on master", "thirty-five on master", "thirty-five, PR"],
+		);
+		// One unit to read for each of lines 30 and 35, not two (lines 5 and 8 carry).
+		expect(answer.toRead).toEqual({ files: 1, clusters: 2 });
+	});
+
+	it("the text differs at that place: both rows stay", () => {
+		const head = structuredClone(r);
+		const c = head.files[0]?.clusters.find((c) => c.key === thirty().key);
+		if (!c) throw new Error("no cluster");
+		c.removed = ["thirty elsewhere"];
+		expect(view(traced, head).rows).toEqual(["shown", "orphan"]);
+	});
+
+	it("the fallback places it elsewhere: both rows stay", () => {
+		// Outside the cluster here. A same-text line elsewhere in the same
+		// cluster would be accepted, by design: the text guard is the check,
+		// and the cluster's true line then shows as an orphan (over-count).
+		const t = tampered((keys, oldNo) => {
+			(keys.githubLeft?.["a.txt"] as Record<number, number>)[oldNo] = 29;
+		});
+		expect(view(t)).toEqual({
+			rows: ["shown", "orphan"],
+			pieces: [
+				[false, null],
+				[true, [[0, 1]]],
+			],
+		});
+	});
+
+	it("no fallback (no LEFT line for it): both rows stay", () => {
+		const t = tampered((keys, oldNo) => {
+			delete keys.githubLeft?.["a.txt"]?.[oldNo];
+		});
+		expect(view(t).rows).toEqual(["shown", "orphan"]);
+	});
+
+	it("a line the compared patch set added never takes the fallback: both rows stay", () => {
+		const t = tampered((keys, oldNo) => {
+			keys.old["a.txt"] = { ...keys.old["a.txt"], [oldNo]: "ps1-cluster" };
+		});
+		expect(view(t).rows).toEqual(["shown", "orphan"]);
+	});
+
+	it("a base line the old base already places for another row: the fallback never takes it, both rows stay", () => {
+		// Repeated lines, two diffs: the old base places another row at base
+		// line 30 while GitHub's LEFT line puts this one there too. The
+		// positive placement wins; this row owns nothing.
+		const t = tampered((keys) => {
+			(keys.baseLine?.["a.txt"] as Record<number, number>)[1] = 30;
+		});
+		expect(view(t).rows).toEqual(["shown", "orphan"]);
+	});
+
+	it("an empty placement map (no head file pairs with the patch set's) turns no fallback on: both rows stay", () => {
+		const t = tampered((keys) => {
+			(keys.baseLine as Record<string, Record<number, number>>)["a.txt"] = {};
+			delete keys.baseMoved?.["a.txt"];
+		});
+		expect(view(t).rows).toEqual(["shown", "orphan"]);
+	});
+
+	it("a line the tracer doesn't name as the base move's (an older cache entry) takes no fallback: both rows stay", () => {
+		const t = tampered((keys) => {
+			delete keys.baseMoved;
+		});
+		expect(view(t).rows).toEqual(["shown", "orphan"]);
+	});
+
+	it("a file with no placement map at all fails closed: both rows stay", () => {
+		const t = tampered((keys) => {
+			delete keys.baseLine?.["a.txt"];
+		});
+		expect(view(t).rows).toEqual(["shown", "orphan"]);
+	});
+});
+
 describe("RereviewCache", () => {
 	it("serves from memory, then from disk in a new instance; a corrupt or foreign file is a miss", async () => {
 		const dir = mkdtempSync(join(tmpdir(), "crb-rereview-cache-"));
@@ -1319,6 +1697,63 @@ describe("toRead.withoutWhitespaceOnly (CAR-247)", () => {
 		return answer;
 	};
 
+	it("without an interdiff: every cluster is to read, and the switch on leaves out the whitespace-only ones", async () => {
+		const fx = createGitFixture([
+			{
+				message: "base",
+				files: { "a.ts": text(body("a")), "b.ts": text(body("b")) },
+			},
+			{
+				message: "head",
+				files: {
+					// a.ts: a re-indent at line 2, a real change at line 9.
+					"a.ts": text(
+						body("a").map((l, i) =>
+							i === 1 ? `  ${l}` : i === 8 ? "a nine!" : l,
+						),
+					),
+					// b.ts: only a re-indent.
+					"b.ts": text(body("b").map((l, i) => (i === 4 ? `  ${l}` : l))),
+				},
+			},
+		]);
+		try {
+			const [b0, h1] = fx.shas as [string, string];
+			const r = await buildSnapshot(fx.path, b0, h1);
+			const traced: Traced = {
+				shape: {
+					code: "S4c",
+					commits: 1,
+					identical: false,
+					conflicts: [],
+					virtualRebase: "unrelated",
+					virtualHead: null,
+				},
+				interdiff: { status: "unavailable", reason: "unrelated" },
+				traced: [],
+				lineKeys: { old: {}, new: {}, base: {}, baseLine: {} },
+			};
+			const { answer } = answerRereview(
+				traced,
+				since(1, r, new Map()),
+				[],
+				targetOf(r),
+			);
+			expect(answer.toRead).toEqual({
+				files: 2,
+				clusters: 3,
+				withoutWhitespaceOnly: { files: 1, clusters: 1 },
+			});
+			expect(
+				answer.files.map((f) =>
+					f.clusters.map((c) => c.whitespaceOnly === true),
+				),
+			).toEqual([[true, false], [true]]);
+		} finally {
+			fx.cleanup();
+		}
+	});
+
 	it("is absent when the count is the same: nothing whitespace-only to leave out", async () => {
 		const h = createRereviewHistory();
 		try {
@@ -1332,6 +1767,9 @@ describe("toRead.withoutWhitespaceOnly (CAR-247)", () => {
 			);
 			expect(answer.toRead).toEqual({ files: 1, clusters: 1 });
 			expect("withoutWhitespaceOnly" in answer.toRead).toBe(false);
+			expect(
+				answer.files.flatMap((f) => f.clusters).some((c) => c.whitespaceOnly),
+			).toBe(false);
 		} finally {
 			h.cleanup();
 		}
@@ -1377,6 +1815,14 @@ describe("toRead.withoutWhitespaceOnly (CAR-247)", () => {
 				clusters: 4,
 				withoutWhitespaceOnly: { files: 1, clusters: 3 },
 			});
+			// The same judgement per cluster, for the verdict's since line
+			// (CAR-266): a.ts's re-indent is whitespace-only, c.ts's is not.
+			const flags = answer.files.map((f) =>
+				f.clusters
+					.filter((c) => c.kind === "reworked" || c.kind === "new")
+					.map((c) => c.whitespaceOnly === true),
+			);
+			expect(flags).toEqual([[true], [false]]);
 		} finally {
 			fx.cleanup();
 		}
@@ -1444,5 +1890,59 @@ describe("toRead.withoutWhitespaceOnly (CAR-247)", () => {
 		} finally {
 			fx.cleanup();
 		}
+	});
+});
+
+describe("an added file cut at blank lines, in the since view (CAR-235)", () => {
+	const added = "one\n\ntwo\n\nthree\n";
+	let fx: ReturnType<typeof createGitFixture>;
+	beforeAll(() => {
+		fx = createGitFixture([
+			{ message: "base", files: { "a.txt": "a\n" } },
+			{ message: "ps1", files: { "a.txt": "A\n" } },
+			{ message: "ps2", files: { "new.txt": added } },
+		]);
+	});
+	afterAll(() => fx.cleanup());
+	const sha = (i: number) => () => fx.shas[i] as string;
+	const [b0, p1, p2] = [sha(0), sha(1), sha(2)];
+
+	it("a file added since the compared patch set reads as one new unit per block", async () => {
+		const ps1 = await buildSnapshot(fx.path, b0(), p1());
+		const r = await buildSnapshot(fx.path, b0(), p2());
+		const file = r.files.find((f) => f.path === "new.txt");
+		expect(file?.clusters.map((c) => c.added)).toEqual([
+			["one", ""],
+			["two", ""],
+			["three"],
+		]);
+		const { answer } = await computeRereview(
+			fx.path,
+			since(1, ps1, marked(ps1)),
+			[],
+			targetOf(r),
+		);
+		expect(kinds(answer)).toEqual({
+			"a.txt": ["carried:1"],
+			"new.txt": ["new", "new", "new"],
+		});
+		expect(answer.toRead).toEqual({ files: 1, clusters: 3 });
+	});
+
+	it("an added file reviewed whole at the compared patch set carries onto every piece", async () => {
+		const ps1 = await buildSnapshot(fx.path, b0(), p2());
+		const r = await buildSnapshot(fx.path, b0(), p2());
+		const { answer } = await computeRereview(
+			fx.path,
+			since(1, ps1, marked(ps1)),
+			[],
+			targetOf(r),
+		);
+		expect(kinds(answer)["new.txt"]).toEqual([
+			"carried:1",
+			"carried:1",
+			"carried:1",
+		]);
+		expect(answer.toRead).toEqual({ files: 0, clusters: 0 });
 	});
 });

@@ -14,7 +14,10 @@
  * editorconfig globs (2.25) read 1.76-1.88 there over 78 runs, before the
  * sides were sized warm, and take a wider limit, each between CI's noise
  * and a probe's quadratic (CAR-188; the readings are in each test's
- * comment). The others keep 2.
+ * comment). The others keep 2. Where linear itself reads well above 1x
+ * (more rows cost more each, in memory), the check grows to 8x, so the
+ * limit can sit between them with room on both sides (placeOrphans:
+ * limit 3.5, CAR-300).
  */
 
 /** CPU µs (user + system) this thread spends in `run`. */
@@ -26,7 +29,7 @@ export function cpuOf(run: () => void): number {
 }
 
 /** As `cpuOf`, for work that awaits (only this thread's CPU counts). */
-export async function cpuOfAsync(run: () => Promise<unknown>): Promise<number> {
+async function cpuOfAsync(run: () => Promise<unknown>): Promise<number> {
 	const before = process.threadCpuUsage();
 	await run();
 	const spent = process.threadCpuUsage(before);

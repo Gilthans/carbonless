@@ -13,7 +13,7 @@ import { createGitFixture, testGitEnv } from "./git-fixture";
  * a conflict, with an amend), squashed, reverted, moved back, a stacked
  * parent landed by squash.
  */
-export const LINES = Array.from({ length: 40 }, (_, i) => `line ${i + 1}`);
+const LINES = Array.from({ length: 40 }, (_, i) => `line ${i + 1}`);
 /** a.txt with these 1-based lines replaced. */
 export const aTxt = (changes: Record<number, string>) =>
 	`${LINES.map((l, i) => changes[i + 1] ?? l).join("\n")}\n`;

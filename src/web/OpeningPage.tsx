@@ -6,8 +6,14 @@ import {
 	useSearch,
 } from "@tanstack/react-router";
 import { useEffect } from "react";
+import {
+	type CloneState,
+	clonePathOf,
+	firstCloneMessage,
+} from "../shared/firstClone";
 import { ApiError, fetchJson } from "./api";
 import { Logo } from "./brand/Brand";
+import { StepText, useLoadingStep } from "./loadingStep";
 import { NotFound, notFoundReason } from "./router";
 import { Spinner } from "./Spinner";
 import { Tooltip } from "./Tooltip";
@@ -17,7 +23,7 @@ import { ErrorMessage } from "./ui";
  * The PR's title as Home last read it: the server's `crb-pr-title` meta on
  * a `/pr/...` page; null when it doesn't know the PR.
  */
-export function prTitleMeta(doc: Document = document): string | null {
+function prTitleMeta(doc: Document = document): string | null {
 	return (
 		doc.querySelector('meta[name="crb-pr-title"]')?.getAttribute("content") ??
 		null
@@ -30,6 +36,9 @@ export function parseOpeningSearch(search: Record<string, unknown>): {
 } {
 	return typeof search.head === "string" ? { head: search.head } : {};
 }
+
+/** How often a waiting open asks whether its repo is cloning (ms). */
+const CLONE_POLL_MS = 1_000;
 
 /** The statuses whose message says why the PR can't be opened. */
 const REFUSED = [400, 404, 409, 410];
@@ -63,6 +72,25 @@ export function OpeningPage() {
 		staleTime: Number.POSITIVE_INFINITY,
 		gcTime: Number.POSITIVE_INFINITY,
 	});
+	// While it waits: whether crb is cloning the repo for the first time
+	// (the server's answer, by repo: CAR-291), which can take long.
+	const waiting = refused === null && open.isPending;
+	const clone = useQuery({
+		queryKey: ["cloning", owner.toLowerCase(), repo.toLowerCase()],
+		queryFn: ({ signal }) =>
+			fetchJson<CloneState>(clonePathOf(owner, repo), { signal }),
+		enabled: waiting,
+		refetchInterval: CLONE_POLL_MS,
+		retry: false,
+		gcTime: 0,
+	});
+	const cloning = waiting && clone.data?.cloning === true;
+	// Once it is slow: what the open waits on (CAR-296).
+	const { step } = useLoadingStep(
+		"open",
+		(r) => r.method === "POST" && r.path === "/api/reviews",
+		waiting,
+	);
 	const id = open.data?.id;
 	useEffect(() => {
 		if (id) void navigate({ to: "/r/$id", params: { id }, replace: true });
@@ -118,9 +146,31 @@ export function OpeningPage() {
 				) : error ? (
 					<ErrorMessage error={error} />
 				) : (
-					<Spinner label="Opening the PR" className="text-sm">
-						Opening…
-					</Spinner>
+					<>
+						<div data-testid="opening-busy" aria-busy={waiting}>
+							<Spinner label="Opening the PR" className="text-sm">
+								Opening…
+							</Spinner>
+						</div>
+						{/* The first-clone notice's live region: in the page (and
+						    the accessibility tree) from the start, empty, so a
+						    screen reader announces the text when it comes; outside
+						    the busy region, whose updates it would hold back. Under
+						    the spinner with nothing after it: nothing moves as the
+						    text comes and goes. The repo name is React text
+						    (escaped). */}
+						<p
+							aria-live="polite"
+							data-testid="first-clone"
+							className="mt-2 text-sm break-words text-muted"
+						>
+							{cloning ? (
+								firstCloneMessage(`${owner}/${repo}`)
+							) : step ? (
+								<StepText step={step} />
+							) : null}
+						</p>
+					</>
 				)}
 			</main>
 		</div>

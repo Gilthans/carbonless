@@ -82,9 +82,14 @@ async function load(
 ): Promise<Loaded> {
 	const view = await home.view();
 	const repos = await Promise.all(
-		view.view.repos.map((name) => {
+		view.view.repos.map(async (name) => {
 			const [owner = "", repo = ""] = name.split("/");
-			return home.repo(owner, repo, opts);
+			// As the page does: a first read still landing is asked again.
+			let answer = await home.repo(owner, repo, opts);
+			while (answer.complete === false) {
+				answer = await home.repo(owner, repo, { seen: answer.progress });
+			}
+			return answer;
 		}),
 	);
 	return {

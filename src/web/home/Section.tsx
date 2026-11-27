@@ -10,7 +10,7 @@ import { SkeletonBar } from "../overview/parts";
 import { PrRow, Sign } from "./PrRow";
 import { RowActions } from "./RowActions";
 
-export const SECTION_LABELS: Record<SectionId, string> = {
+const SECTION_LABELS: Record<SectionId, string> = {
 	mine: "Mine",
 	reviewing: "Reviewing",
 	grabs: "Up for grabs",
@@ -25,7 +25,7 @@ const HINTS: Partial<Record<SectionId, string>> = {
 };
 
 /** "snoozed · waiting": the kinds hidden, no counts (while still loading). */
-export function hiddenKinds(rows: HomeRow[]): string {
+function hiddenKinds(rows: HomeRow[]): string {
 	const kinds = new Set<string>(
 		rows.map((r) =>
 			r.hidden === "snoozed" || r.hidden === "waiting" ? r.hidden : "hidden",
@@ -37,14 +37,14 @@ export function hiddenKinds(rows: HomeRow[]): string {
 }
 
 /** A section shows this many visible rows, then "show N more". */
-export const FOLD = 20;
+const FOLD = 20;
 
 /**
  * "2 snoozed · 1 waiting", only the parts that aren't zero; any other
  * reason the server sends counts as "N hidden", so no hidden row goes
  * uncounted.
  */
-export function hiddenSummary(rows: HomeRow[]): string {
+function hiddenSummary(rows: HomeRow[]): string {
 	const snoozed = rows.filter((r) => r.hidden === "snoozed").length;
 	const waiting = rows.filter((r) => r.hidden === "waiting").length;
 	const other = rows.filter(

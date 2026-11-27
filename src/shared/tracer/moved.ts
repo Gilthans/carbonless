@@ -65,7 +65,7 @@ export const TUNING = {
  * Added lines equal to the one looked up past this: too common to say
  * where it went; no move (the partner nearby, if any, decides).
  */
-export const MOVE_MAX_CANDIDATES = 32;
+const MOVE_MAX_CANDIDATES = 32;
 
 /** How far a run extends from its seed, each way. */
 const MOVE_MAX_RUN = 200;
@@ -77,7 +77,7 @@ const CONTEST_MAX_RIVALS = 64;
 const EPS = 1e-9;
 
 /** A line that opens a block, as trace.ts's OPENS_BLOCK. */
-export const OPENS_BLOCK = /[{([:]\s*$/u;
+const OPENS_BLOCK = /[{([:]\s*$/u;
 
 const ALNUM = /[\p{L}\p{N}_]/gu;
 

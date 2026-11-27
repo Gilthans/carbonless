@@ -6,12 +6,14 @@ import {
 	rmSync,
 	writeFileSync,
 } from "node:fs";
+import { request } from "node:http";
 import { connect } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { FastifyInstance } from "fastify";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useFakeAcp, writeAcpScenario } from "../../test/fake-acp/scenario";
+import { writeFileAtomic } from "../../test/fake-gh/atomic.mjs";
 import {
 	prView,
 	release,
@@ -21,7 +23,11 @@ import {
 } from "../../test/fake-gh/scenario";
 import { GIT_TEST_TIMEOUTS, testGitEnv } from "../../test/git-fixture";
 import { createPrFixture, type PrFixture } from "../../test/pr-fixture";
-import type { AgentStatus, AgentThread } from "../shared/agent";
+import {
+	AGENT_ENV_MASK,
+	type AgentStatus,
+	type AgentThread,
+} from "../shared/agent";
 import { IMAGE_MAX_BYTES } from "../shared/imageTypes";
 import type {
 	CommentsView,
@@ -31,6 +37,7 @@ import type {
 	ReviewView,
 	SessionInfo,
 } from "../shared/types";
+import { trackedRequests } from "./activity";
 import { agentConfigSaveCount, setServerMcp } from "./agent/host";
 import { buildApp, prTitle, withPrTitle } from "./app";
 import { clonePath } from "./clone";
@@ -1048,7 +1055,14 @@ describe("API", () => {
 			const stale = await start({ ...ok(), commit: "f".repeat(40) });
 			expect(stale.statusCode).toBe(409);
 			expect(stale.json().code).toBe("stale");
-			const gone = await start({ ...ok(), clientId: "n2", line: 15 });
+			// A LEFT line between hunks: GitHub's 422 (a RIGHT one is refused
+			// before gh, 400: CAR-293).
+			const gone = await start({
+				...ok(),
+				clientId: "n2",
+				side: "LEFT",
+				line: 15,
+			});
 			expect(gone.statusCode, gone.body).toBe(404);
 			expect(gone.json().code).toBe("gone");
 			expect(pr.ghLog()).toMatch(
@@ -1556,6 +1570,185 @@ describe("API", () => {
 			]);
 		});
 
+		/**
+		 * PS1 (a check-off on the head), a conversation asked on PS1's line
+		 * RIGHT 2, then the PR moves on and PS2 starts on the new head: PS1
+		 * is an earlier patch set, read-only (CAR-264).
+		 */
+		const earlierConversation = async () => {
+			pr.scenario({
+				prs: {
+					12: {
+						view: prView({ headRefOid: pr.head(), baseRefName: "main" }),
+						graphql: { reviewThreads: [], reviews: [] },
+					},
+				},
+			});
+			await get("/api/overview?maxAge=0");
+			const ps1: ReviewView = await get("/api/review");
+			const [key = ""] = keys(ps1);
+			await post("/api/review/states", {
+				revision: ps1.revision,
+				changes: [{ key, state: "reviewed" }],
+			});
+			const h1 = pr.head();
+			const opened: AgentThread = (await ask()).json();
+			await firstHeadCheck();
+			const h2 = pr.moveHead({ "later.txt": "later\n" });
+			expect((await get("/api/head")).head).toMatchObject({ oid: h2 });
+			const head: ReviewView = await get(`/api/review?head=${h2}`);
+			const later =
+				head.files.find((f) => f.path === "later.txt")?.clusters[0]?.key ?? "";
+			const marked = await post("/api/review/states", {
+				revision: head.revision,
+				changes: [{ key: later, state: "reviewed" }],
+			});
+			expect(marked.statusCode, marked.body).toBe(200);
+			const info: SessionInfo = await get("/api/session");
+			expect(info.patchsets.map((p) => p.head)).toEqual([h1, h2]);
+			// As the page sends it (targetOf of the card's earlier span): the
+			// conversation's span on PS1's commit, marked earlier.
+			const comment = {
+				clientId: "e1",
+				body: "Why add it, then drop it?",
+				attemptedAt: new Date().toISOString(),
+				retry: false,
+				path: "a.txt",
+				commit: h1,
+				subject: "line",
+				side: "RIGHT",
+				line: 2,
+				earlier: true,
+				agentThread: opened.id,
+			};
+			return { h1, h2, opened, comment };
+		};
+		/** The threads the fake gh stores for PR 12 (with what it removed). */
+		const storedThreads = () =>
+			(
+				JSON.parse(readFileSync(process.env.CRB_FAKE_GH ?? "", "utf8")) as {
+					prs: Record<
+						string,
+						{
+							graphql?: {
+								reviewThreads: {
+									line: number | null;
+									diffSide: string;
+									removed?: boolean;
+									first: {
+										nodes: { originalCommit: { oid: string } }[];
+									};
+								}[];
+							};
+						}
+					>;
+				}
+			).prs[12]?.graphql?.reviewThreads ?? [];
+		const commentPosts = () =>
+			pr
+				.ghLog()
+				.split("\n")
+				.filter((l) =>
+					/^api -X POST repos\/acme\/widget\/pulls\/12\/comments /.test(l),
+				);
+
+		/**
+		 * A force-push: the PR's head becomes a new commit on the merge base,
+		 * so the earlier heads are no longer among its commits. The fake gh's
+		 * scenario keeps what it stored.
+		 */
+		const forcePush = () => {
+			const repoGit = (...args: string[]) =>
+				execFileSync("git", args, {
+					cwd: pr.repo.path,
+					encoding: "utf8",
+					env: testGitEnv(),
+				}).trim();
+			const rewritten = repoGit(
+				"commit-tree",
+				`${pr.head()}^{tree}`,
+				"-p",
+				pr.mergeBase,
+				"-m",
+				"rewritten",
+			);
+			repoGit("update-ref", "refs/pull/12/head", rewritten);
+			editScenario((s) => {
+				const pr12 = s.prs[12];
+				if (!pr12?.view) throw new Error("no PR 12");
+				pr12.view = { ...pr12.view, headRefOid: rewritten };
+			});
+		};
+		const editScenario = (edit: (s: Scenario) => void) => {
+			const path = process.env.CRB_FAKE_GH ?? "";
+			const s = JSON.parse(readFileSync(path, "utf8")) as Scenario;
+			edit(s);
+			writeFileAtomic(path, JSON.stringify(s, null, "\t"));
+		};
+
+		it("POST threads from a conversation on an earlier patch set's line: posted on that patch set's commit as a direct comment there is (its checks), the conversation joins it (CAR-264)", async () => {
+			const { h1, opened, comment } = await earlierConversation();
+			const res = await post("/api/threads", comment);
+			expect(res.statusCode, res.body).toBe(200);
+			expect(res.json().agentThread).toBe(opened.id);
+			// On PS1's commit, its RIGHT line, as an earlier comment: the
+			// PR's commits were checked first, no patch set started.
+			expect(storedThreads().at(-1)).toMatchObject({
+				line: 2,
+				diffSide: "RIGHT",
+				first: {
+					nodes: [expect.objectContaining({ originalCommit: { oid: h1 } })],
+				},
+			});
+			expect(pr.ghLog()).toMatch(/pulls\/12\/commits/);
+			expect(
+				((await get("/api/session")) as SessionInfo).patchsets,
+			).toHaveLength(2);
+			const [t] = (await get("/api/agent/threads")).threads as AgentThread[];
+			expect(t?.anchor).toMatchObject({ subject: "thread", commit: h1 });
+		});
+
+		it("POST threads from a conversation on an earlier patch set's line whose commit a force-push dropped: refused before GitHub, nothing posted, the conversation stays (CAR-264)", async () => {
+			const { comment } = await earlierConversation();
+			forcePush();
+			const before = storedThreads().length;
+			const sent = commentPosts().length;
+			const res = await post("/api/threads", comment);
+			expect(res.statusCode, res.body).toBe(400);
+			expect(res.json().error).toMatch(/no longer in the PR/);
+			expect(commentPosts()).toHaveLength(sent);
+			expect(storedThreads()).toHaveLength(before);
+			const [t] = (await get("/api/agent/threads")).threads as AgentThread[];
+			expect(t?.anchor).toMatchObject({ subject: "line", line: 2 });
+		});
+
+		it("POST threads from a conversation on an earlier patch set's line, a force-push while the post is out: GitHub moves it onto the new head, so it is removed again, refused with why, the conversation stays (CAR-264)", async () => {
+			const { comment } = await earlierConversation();
+			const before = storedThreads().length;
+			editScenario((s) => {
+				s.hold = ["comment"];
+			});
+			const out = post("/api/threads", comment);
+			// The post is out (held at GitHub): the PR is force-pushed meanwhile.
+			await vi.waitFor(() => expect(commentPosts()).toHaveLength(1), {
+				timeout: 10_000,
+			});
+			forcePush();
+			release(process.env.CRB_FAKE_GH ?? "", "comment");
+			const res = await out;
+			expect(res.statusCode, res.body).toBe(409);
+			expect(res.json()).toMatchObject({ code: "stale" });
+			expect(res.json().error).toMatch(/force-push/);
+			// Removed again: nothing of it left on GitHub.
+			expect(pr.ghLog()).toMatch(
+				/-X DELETE repos\/acme\/widget\/pulls\/comments\//,
+			);
+			expect(storedThreads()).toHaveLength(before + 1);
+			expect(storedThreads().at(-1)).toMatchObject({ removed: true });
+			const [t] = (await get("/api/agent/threads")).threads as AgentThread[];
+			expect(t?.anchor).toMatchObject({ subject: "line", line: 2 });
+		});
+
 		it("join: Approve and Deny race, the second is 409; Detach; start", async () => {
 			const { session } = await registry.open({ pr: pr.arg });
 			const host = session.agent;
@@ -1966,6 +2159,8 @@ describe("API", () => {
 					from: { patchset: 1 },
 					left: ps.head,
 					right: head,
+					// The merge base its old lines name (CAR-276).
+					base: ps.mergeBase,
 				});
 				const bad = await post(`/api/agent/threads/${t.id}/messages`, {
 					clientId: "m2",
@@ -2266,7 +2461,9 @@ describe("API", () => {
 				};
 				const res = await put(agent);
 				expect(res.statusCode, res.body).toBe(200);
-				expect(res.json()).toEqual({ agent });
+				expect(res.json()).toEqual({
+					agent: { ...agent, env: { A: AGENT_ENV_MASK } },
+				});
 				expect(JSON.parse(readFileSync(file(), "utf8"))).toMatchObject({
 					mine: 1,
 					agent: { ...agent, note: "keep" },
@@ -2274,6 +2471,156 @@ describe("API", () => {
 				const off = await put(null);
 				expect(off.json()).toEqual({ agent: null });
 				expect(JSON.parse(readFileSync(file(), "utf8")).agent).toBeNull();
+			});
+
+			// CAR-59: an agent's env holds tokens; the page never gets them.
+			const SECRET = "sk-ant-api03-very-secret-value";
+			const stored = {
+				command: "claude-agent-acp",
+				args: [],
+				env: { ANTHROPIC_API_KEY: SECRET, PLAIN: "x" },
+				leash: "open",
+			};
+			const masked = {
+				...stored,
+				env: { ANTHROPIC_API_KEY: AGENT_ENV_MASK, PLAIN: AGENT_ENV_MASK },
+			};
+			const storedEnv = () =>
+				JSON.parse(readFileSync(file(), "utf8")).agent.env;
+
+			it("GET gives the env's names, never its values", async () => {
+				writeFileSync(file(), JSON.stringify({ agent: stored }));
+				const res = await raw("/api/config/agent");
+				expect(res.statusCode, res.body).toBe(200);
+				expect(res.body).not.toContain(SECRET);
+				expect(res.json()).toEqual({ agent: masked, problems: [] });
+			});
+
+			it("a Save of what GET gave keeps the stored env; the PUT's answer is masked too", async () => {
+				writeFileSync(file(), JSON.stringify({ agent: stored }));
+				const read = (await raw("/api/config/agent")).json();
+				const res = await put(read.agent);
+				expect(res.statusCode, res.body).toBe(200);
+				expect(res.body).not.toContain(SECRET);
+				expect(res.json()).toEqual({ agent: masked });
+				expect(storedEnv()).toEqual(stored.env);
+				expect(readFileSync(file(), "utf8")).not.toContain(AGENT_ENV_MASK);
+				// No env at all: the stored one stays.
+				const { env: _, ...bare } = stored;
+				expect((await put(bare)).statusCode).toBe(200);
+				expect(storedEnv()).toEqual(stored.env);
+				// A typed value replaces its own; a name left out goes.
+				expect(
+					(
+						await put({
+							...stored,
+							env: { ANTHROPIC_API_KEY: AGENT_ENV_MASK, NEW: "y" },
+						})
+					).statusCode,
+				).toBe(200);
+				expect(storedEnv()).toEqual({ ANTHROPIC_API_KEY: SECRET, NEW: "y" });
+			});
+
+			it("a mask with nothing stored under its name is refused, config.json untouched", async () => {
+				writeFileSync(file(), JSON.stringify({ agent: stored }));
+				const res = await put({ ...stored, env: { OTHER: AGENT_ENV_MASK } });
+				expect(res.statusCode).toBe(400);
+				expect(res.json()).toEqual({
+					error: "agent.env.OTHER has no stored value to keep; enter it again",
+				});
+				expect(storedEnv()).toEqual(stored.env);
+			});
+
+			it("check runs with the stored value behind a mask", async () => {
+				// The stored CRB_FAKE_ACP names a scenario of its own: the
+				// agent says its name only if it got the stored path, not the mask.
+				const dir = join(pr.repo.path, "stored-acp");
+				mkdirSync(dir, { recursive: true });
+				const path = writeAcpScenario(dir, {
+					agent: { name: "stored-acp", version: "2.0.0" },
+				});
+				writeFileSync(
+					file(),
+					JSON.stringify({ agent: { ...stored, env: { CRB_FAKE_ACP: path } } }),
+				);
+				const check = (env: Record<string, string>) =>
+					raw("/api/config/agent/check", {
+						method: "POST",
+						payload: { ...stored, env },
+					});
+				expect((await check({ CRB_FAKE_ACP: AGENT_ENV_MASK })).json()).toEqual({
+					ok: true,
+					agent: { name: "stored-acp", version: "2.0.0" },
+				});
+				const refused = await check({ OTHER: AGENT_ENV_MASK });
+				expect(refused.statusCode).toBe(400);
+				expect(refused.json()).toEqual({
+					error: "agent.env.OTHER has no stored value to keep; enter it again",
+				});
+			});
+
+			it("check's stderr has the env's values masked", async () => {
+				const dir = join(pr.repo.path, "leaky-acp");
+				mkdirSync(dir, { recursive: true });
+				const path = writeAcpScenario(dir, {
+					agent: { name: "leaky", version: "1.0.0" },
+					initializeError: "Invalid API key",
+					stderrEnv: "ANTHROPIC_API_KEY",
+				});
+				const env = { ANTHROPIC_API_KEY: SECRET, CRB_FAKE_ACP: path };
+				writeFileSync(file(), JSON.stringify({ agent: { ...stored, env } }));
+				const res = await raw("/api/config/agent/check", {
+					method: "POST",
+					payload: {
+						...stored,
+						env: {
+							ANTHROPIC_API_KEY: AGENT_ENV_MASK,
+							CRB_FAKE_ACP: AGENT_ENV_MASK,
+						},
+					},
+				});
+				expect(res.statusCode, res.body).toBe(200);
+				expect(res.body).not.toContain(SECRET);
+				expect(res.json().stderr).toContain(
+					`ANTHROPIC_API_KEY=${AGENT_ENV_MASK}`,
+				);
+			});
+
+			it("another command starts with no env: none kept, a mask refused", async () => {
+				writeFileSync(file(), JSON.stringify({ agent: stored }));
+				const other = { command: "other-acp", args: [], leash: "open" };
+				const masked = await put({
+					...other,
+					env: { ANTHROPIC_API_KEY: AGENT_ENV_MASK },
+				});
+				expect(masked.statusCode).toBe(400);
+				expect(masked.json()).toEqual({
+					error:
+						"agent.env.ANTHROPIC_API_KEY has no stored value to keep; enter it again",
+				});
+				expect(storedEnv()).toEqual(stored.env);
+				const checked = await raw("/api/config/agent/check", {
+					method: "POST",
+					payload: { ...other, env: { ANTHROPIC_API_KEY: AGENT_ENV_MASK } },
+				});
+				expect(checked.statusCode).toBe(400);
+				expect((await put(other)).statusCode).toBe(200);
+				expect(storedEnv()).toEqual({});
+			});
+
+			it("a hand edit between GET and Save: the Save keeps the edited value", async () => {
+				writeFileSync(file(), JSON.stringify({ agent: stored }));
+				const read = (await raw("/api/config/agent")).json();
+				const edited = {
+					...stored.env,
+					ANTHROPIC_API_KEY: "sk-ant-edited-by-hand",
+				};
+				writeFileSync(
+					file(),
+					JSON.stringify({ agent: { ...stored, env: edited } }),
+				);
+				expect((await put(read.agent)).statusCode).toBe(200);
+				expect(storedEnv()).toEqual(edited);
 			});
 
 			it("each Save counts, the same config too (a crashed agent may start again); a bad one doesn't", async () => {
@@ -2585,6 +2932,162 @@ describe("API", () => {
 			}
 			const open = await inject("/manifest.webmanifest");
 			expect(open.json().start_url).toBe("/");
+		});
+
+		it("GET /api/clones/<owner>/<repo>: whether its first clone runs, behind the key; a bad name is a 400 (CAR-291)", async () => {
+			// Not a review's route (inject() would put it under /api/r/<id>).
+			const clones = (url: string) =>
+				app.inject({ method: "GET", url, headers: { host } });
+			const ok = await clones("/api/clones/acme/widget");
+			expect(ok.statusCode).toBe(200);
+			expect(ok.headers["cache-control"]).toBe("no-store");
+			expect(ok.json()).toEqual({ cloning: false });
+			// `..` as a segment never reaches the route (the router's 404).
+			for (const dots of ["/api/clones/acme/%2E%2E", "/api/clones/%2E%2E/w"]) {
+				expect((await clones(dots)).statusCode, dots).not.toBe(200);
+			}
+			for (const bad of [
+				"/api/clones/a.b%2F..%2Fc/widget",
+				"/api/clones/acme/..%2Fwidget",
+				"/api/clones/acme/wid%2Fget",
+				"/api/clones/ac%20me/widget",
+				"/api/clones/acme/wid%3Cget",
+				`/api/clones/${"a".repeat(60)}/widget`,
+			]) {
+				const res = await clones(bad);
+				expect(res.statusCode, bad).toBe(400);
+				expect(res.json().error, bad).toMatch(/^Not a repository/);
+			}
+			const keyed = await buildApp(registry, { accessKey: "k3y" });
+			try {
+				expect((await keyed.inject("/api/clones/acme/widget")).statusCode).toBe(
+					401,
+				);
+				const res = await keyed.inject({
+					url: "/api/clones/acme/widget",
+					cookies: { crb_key: "k3y" },
+				});
+				expect(res.json()).toEqual({ cloning: false });
+			} finally {
+				await keyed.close();
+			}
+		});
+
+		it("GET /api/activity: validated ids, at most 16, an unknown one null; behind the key (CAR-296)", async () => {
+			const ask = (url: string) =>
+				app.inject({ method: "GET", url, headers: { host } });
+			const ok = await ask("/api/activity?req=abcdefgh,unknown-id-1");
+			expect(ok.statusCode).toBe(200);
+			expect(ok.headers["cache-control"]).toBe("no-store");
+			expect(ok.json()).toEqual({
+				steps: { abcdefgh: null, "unknown-id-1": null },
+			});
+			for (const bad of [
+				"/api/activity",
+				"/api/activity?req=",
+				"/api/activity?req=short",
+				"/api/activity?req=abcdefgh,has%20space1",
+				`/api/activity?req=${"a".repeat(33)}`,
+				`/api/activity?req=${Array.from({ length: 17 }, (_, i) => `request-${i}x`).join(",")}`,
+			]) {
+				expect((await ask(bad)).statusCode, bad).toBe(400);
+			}
+			const keyed = await buildApp(registry, { accessKey: "k3y" });
+			try {
+				expect(
+					(await keyed.inject("/api/activity?req=abcdefgh")).statusCode,
+				).toBe(401);
+			} finally {
+				await keyed.close();
+			}
+		});
+
+		it("says what a tagged request waits on while GitHub holds it, through the read it joined; nothing once it answered (CAR-296)", async () => {
+			const scenarioFile = process.env.CRB_FAKE_GH ?? "";
+			pr.scenario({ hold: ["threads"] });
+			const tagged = (url: string, req: string) =>
+				app.inject({
+					method: "GET",
+					url: r(url),
+					headers: { host, "x-crb-req": req },
+				});
+			const { readId } = await get("/api/overview?maxAge=0");
+			// The threads' summary is held: the request waits on the read,
+			// which another request started.
+			const threads = tagged(
+				`/api/threads?read=${readId}&stage=summary`,
+				"threads-req-1",
+			);
+			const step = async () =>
+				(
+					await app.inject({
+						method: "GET",
+						url: "/api/activity?req=threads-req-1",
+						headers: { host },
+					})
+				).json().steps["threads-req-1"];
+			await vi.waitFor(async () =>
+				expect(await step()).toMatchObject({
+					name: "gh api graphql",
+					label: "GitHub: api graphql",
+				}),
+			);
+			const seen = await step();
+			expect(typeof seen.ms).toBe("number");
+			expect(Number.isNaN(Date.parse(seen.since))).toBe(false);
+			release(scenarioFile, "threads");
+			expect((await threads).statusCode).toBe(200);
+			expect(await step()).toBeNull();
+		});
+
+		it("a tagged request's entry goes when it ends: answered, failed, refused by the key, or aborted by the client (CAR-296)", async () => {
+			const scenarioFile = process.env.CRB_FAKE_GH ?? "";
+			const before = trackedRequests();
+			// Failed: a 400 and a 404.
+			for (const [url, status] of [
+				["/api/threads?read=nope&stage=bogus", 400],
+				["/api/nothing-here", 404],
+			] as const) {
+				const res = await app.inject({
+					method: "GET",
+					url: r(url),
+					headers: { host, "x-crb-req": `failed-${status}-req` },
+				});
+				expect(res.statusCode, url).toBe(status);
+			}
+			expect(trackedRequests()).toBe(before);
+			// Refused by the access key.
+			const keyed = await buildApp(registry, { accessKey: "k3y" });
+			try {
+				const res = await keyed.inject({
+					url: "/api/session",
+					headers: { "x-crb-req": "refused-req-1" },
+				});
+				expect(res.statusCode).toBe(401);
+			} finally {
+				await keyed.close();
+			}
+			expect(trackedRequests()).toBe(before);
+			// Aborted: held in GitHub's answer, the client goes away.
+			pr.scenario({ hold: ["threads"] });
+			const { readId } = await get("/api/overview?maxAge=0");
+			const port = Number(host.split(":")[1]);
+			const aborted = request({
+				host: "127.0.0.1",
+				port,
+				path: r(`/api/threads?read=${readId}&stage=summary`),
+				headers: { host, "x-crb-req": "aborted-req-1" },
+			});
+			aborted.on("error", () => {});
+			aborted.end();
+			try {
+				await vi.waitFor(() => expect(trackedRequests()).toBe(before + 1));
+				aborted.destroy();
+				await vi.waitFor(() => expect(trackedRequests()).toBe(before));
+			} finally {
+				aborted.destroy();
+				release(scenarioFile, "threads");
+			}
 		});
 
 		it("GET /api/mcp/setup gives the key behind the key, null without one", async () => {

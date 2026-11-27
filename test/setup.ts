@@ -19,6 +19,10 @@ afterAll(() => rmSync(xdg, { recursive: true, force: true }));
 // What a test starts stops on its own if this worker dies (scripts/owner.mjs).
 process.env[OWNER_ENV] = ownerToken(process.pid);
 
+// A traced run ($CRB_TRACE_DIR) has no page spans: their meta would change
+// every served page (browserTrace.test.ts turns them on for itself).
+process.env.CRB_TRACE_BROWSER = "0";
+
 // Names the running test for the real gh trap (test/real-gh-trap.ts): a call
 // that reaches it was started by this test or one before it in this file.
 process.env.CRB_TEST_FILE = expect.getState().testPath ?? "?";

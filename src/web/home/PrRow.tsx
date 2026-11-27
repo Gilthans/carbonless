@@ -209,7 +209,7 @@ function HeadMoved() {
 }
 
 /** A started review's coverage: a short bar and "37 / 120". */
-export function CoverageCell({ coverage }: { coverage: Coverage }) {
+function CoverageCell({ coverage }: { coverage: Coverage }) {
 	const { done, total, unit } = coverage;
 	const word = UNIT_WORDS[unit][total === 1 ? 0 : 1];
 	const complete = total > 0 && done >= total;
@@ -228,7 +228,7 @@ export function CoverageCell({ coverage }: { coverage: Coverage }) {
 }
 
 /** "Thu" within the week, "Mon 3 Nov" further out: the snooze's date. */
-export function shortDate(iso: string, nowMs = Date.now()): string {
+function shortDate(iso: string, nowMs = Date.now()): string {
 	const date = new Date(iso);
 	const days = (date.getTime() - nowMs) / 86_400_000;
 	return new Intl.DateTimeFormat(
@@ -279,7 +279,7 @@ function mainReview(reviews: RowReview[]): RowReview | undefined {
 	return reviews.find((r) => r.pinnedHead === null);
 }
 
-export const byLastActed = (reviews: RowReview[]) =>
+const byLastActed = (reviews: RowReview[]) =>
 	[...reviews].sort(
 		(a, b) => Date.parse(b.lastActedAt) - Date.parse(a.lastActedAt),
 	);
@@ -342,7 +342,7 @@ function TitleLink({ row }: { row: HomeRow }) {
  * by the rows and the header that names them (ColumnHeader): the last
  * one ends at the row's right edge, the actions float over it.
  */
-export const COLUMNS = {
+const COLUMNS = {
 	repo: "lg:w-32 lg:shrink-0",
 	title: "lg:flex-1",
 	status: "lg:w-32 lg:shrink-0",
@@ -350,7 +350,7 @@ export const COLUMNS = {
 	coverage: "lg:w-36 lg:shrink-0",
 	updated: "lg:w-28 lg:shrink-0 lg:justify-end",
 } as const;
-export type Column = keyof typeof COLUMNS;
+type Column = keyof typeof COLUMNS;
 
 const COLUMN_TITLES: Record<Column, string> = {
 	repo: "Repo",
@@ -428,6 +428,8 @@ export function PrRow(props: {
 		<>
 			<li
 				data-testid={hidden ? "home-row-hidden" : "home-row"}
+				// Its repo, for the page's spans (src/web/trace/milestones.ts).
+				data-repo={`${row.owner}/${row.repo}`}
 				className={`group relative flex min-h-11 flex-wrap any-pointer-coarse:min-h-12 items-center gap-x-3 gap-y-1 border-t border-line px-3 py-2 text-sm first:border-t-0 hover:bg-raised focus-within:bg-raised lg:flex-nowrap ${touch ? "lg:pr-12" : ""}`}
 			>
 				<span

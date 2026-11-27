@@ -16,7 +16,7 @@ import { ApiError, bindReview, sessionQuery } from "./api";
 import { parseFilesSearch } from "./files/landing";
 import { threadFocus } from "./files/threadFocus";
 import { useUnsavedGuard } from "./files/useSetStates";
-import { HomePage } from "./home/HomePage";
+import { HomeRoute, parseHomeSearch } from "./home/HomePage";
 import { OpeningPage, parseOpeningSearch } from "./OpeningPage";
 import { parseOverviewSearch } from "./overview/threadLink";
 import { FilesPage, OverviewPage, VerdictPage } from "./pages";
@@ -115,7 +115,9 @@ const rootRoute = createRootRoute({
 const homeRoute = createRoute({
 	getParentRoute: () => rootRoute,
 	path: "/",
-	component: HomePage,
+	// `?repo=`: the repo filter (a view repo's chip).
+	validateSearch: parseHomeSearch,
+	component: HomeRoute,
 });
 
 /** crb's own settings (the gear's "Global settings"). */

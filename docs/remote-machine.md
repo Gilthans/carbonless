@@ -36,6 +36,7 @@ Tailscale):
 
    [Service]
    Environment="PATH=<Node 24 bin dir>:%h/.local/share/pnpm/bin:/usr/local/bin:/usr/bin:/bin"
+   Environment="CRB_TRACE_DIR=%h/.local/state/carbonless/traces"
    ExecStart=%h/.local/share/pnpm/bin/crb serve
    Restart=on-failure
    RestartSec=5
@@ -43,6 +44,12 @@ Tailscale):
    [Install]
    WantedBy=default.target
    ```
+
+   `CRB_TRACE_DIR` keeps tracing on: the server writes its spans there,
+   rolls its files and deletes old ones by itself (14 days, 1 GiB by
+   default), and `pnpm test-profile <that dir> --since 1d` shows its
+   slowest routes and gh/git calls ([test-profiling.md](test-profiling.md#crb-outside-tests)).
+   Leave it out to run without tracing.
 
    Then `systemctl --user daemon-reload && systemctl --user enable --now crb`,
    and `sudo loginctl enable-linger $USER` so it runs without a login and

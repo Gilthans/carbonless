@@ -1,5 +1,5 @@
 import { readFileSync } from "node:fs";
-import type { Locator, Page } from "@playwright/test";
+import type { Locator, Page, Request, Response } from "@playwright/test";
 import {
 	release,
 	reviewThread,
@@ -138,6 +138,41 @@ const tabCard = (page: Page) => page.getByTestId("verdict-card-tab");
 const filesCard = (page: Page) => page.getByTestId("verdict-card-files");
 const verdictButton = (card: Locator, name: string) =>
 	card.getByRole("button", { name, exact: true });
+const isGet = (r: Request, endpoint: string) =>
+	r.method() === "GET" &&
+	new URL(r.url()).pathname.endsWith(`/${endpoint}`) &&
+	new URL(r.url()).pathname.startsWith("/api/r/");
+
+/**
+ * A first verdict that lands starts patch set 1: the page reads its session
+ * again, and once that is back it asks the verdict facts again under the
+ * new head key. Between the two the buttons wait ("Comparing with your
+ * verdict", aria-disabled) and drop a press (CAR-303). Call it before
+ * pressing the first verdict; await what it returns before the next press.
+ */
+function comparedAgain(page: Page, card: Locator): () => Promise<void> {
+	let sessionBack = false;
+	const onResponse = (r: Response) => {
+		if (isGet(r.request(), "session")) sessionBack = true;
+	};
+	page.on("response", onResponse);
+	// Asked after the session came back: the re-ask, never the read the
+	// verdict itself started.
+	const reasked = page.waitForRequest(
+		(r) => sessionBack && isGet(r, "verdict"),
+	);
+	// A test failing before it awaits this: the page closes on the wait.
+	reasked.catch(() => {});
+	return async () => {
+		await (await reasked).response();
+		page.off("response", onResponse);
+		await expect(verdictButton(card, "Comment")).not.toHaveAttribute(
+			"aria-disabled",
+			"true",
+		);
+	};
+}
+
 const chip = (page: Page) => page.getByTestId("refused-bar");
 const item = (page: Page) => page.getByTestId("refused-write");
 
@@ -265,11 +300,13 @@ test("comment with a message; request changes with the box off opens and focuses
 	const card = tabCard(page);
 	await card.getByRole("checkbox", { name: "Include a message" }).check();
 	await card.getByRole("textbox", { name: "Message" }).fill("Reads well");
+	const compared = comparedAgain(page, card);
 	await verdictButton(card, "Comment").click();
 	await expect(card.getByTestId("your-verdict")).toContainText("You commented");
 	await expect
 		.poll(() => submitted(p).at(-1)?.body ?? "")
 		.toContain("Reads well");
+	await compared();
 	// The box is closed again: Request changes ticks and focuses it, sends nothing.
 	await expect(card.getByRole("textbox", { name: "Message" })).toHaveCount(0);
 	await verdictButton(card, "Request changes").click();
@@ -581,6 +618,7 @@ test("switching to Comment withdraws a request for changes: You commented, the R
 	const card = tabCard(page);
 	await card.getByRole("checkbox", { name: "Include a message" }).check();
 	await card.getByRole("textbox", { name: "Message" }).fill("Please add tests");
+	const compared = comparedAgain(page, card);
 	await verdictButton(card, "Request changes").click();
 	await expect(card.getByTestId("your-verdict")).toContainText(
 		"You requested changes",
@@ -598,6 +636,7 @@ test("switching to Comment withdraws a request for changes: You commented, the R
 	await expect(verdictButton(card, "Comment")).toHaveAccessibleDescription(
 		/Replaces your request for changes/,
 	);
+	await compared();
 	await card.getByRole("checkbox", { name: "Include a message" }).check();
 	await card.getByRole("textbox", { name: "Message" }).fill("Fine after all");
 	await verdictButton(card, "Comment").click();
@@ -632,6 +671,7 @@ test("a refused dismissal: the comment posts, a yellow notice says the request f
 	const card = tabCard(page);
 	await card.getByRole("checkbox", { name: "Include a message" }).check();
 	await card.getByRole("textbox", { name: "Message" }).fill("Please add tests");
+	const compared = comparedAgain(page, card);
 	await verdictButton(card, "Request changes").click();
 	await expect
 		.poll(() => submitted(p).map((r) => r.state))
@@ -646,6 +686,7 @@ test("a refused dismissal: the comment posts, a yellow notice says the request f
 			message: "Resource not accessible by integration",
 		};
 	});
+	await compared();
 	await card.getByRole("checkbox", { name: "Include a message" }).check();
 	await card.getByRole("textbox", { name: "Message" }).fill("Fine after all");
 	await verdictButton(card, "Comment").click();

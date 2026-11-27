@@ -46,9 +46,9 @@ const BOILERPLATE = [
 	"\trequire.NoError(t, err)",
 ];
 
-export const DECOY_DISTANCE = 8;
+const DECOY_DISTANCE = 8;
 
-export type Decoy =
+type Decoy =
 	| "copy-edited"
 	| "copy-function"
 	| "boilerplate-function"

@@ -111,7 +111,7 @@ const subscribe = (l: () => void) => {
 export const getMoving = (): Moving | null => moving;
 
 /** Starts move mode for a thread (any lines picked before are dropped). */
-export function startMoveMode(next: Moving): void {
+function startMoveMode(next: Moving): void {
 	setPicks(null);
 	moving = next;
 	notify();
@@ -132,7 +132,7 @@ export function useMoveMode(): Moving | null {
 // Writes.
 
 /** A refused or failed write, shown under its card. */
-export interface MoveFailure {
+interface MoveFailure {
 	message: string;
 	/** Present when trying again can help (not a refusal: 400, 404, 409). */
 	retry?: () => void;
@@ -383,7 +383,7 @@ function land(id: string): void {
 // What a card shows.
 
 /** The thread's move, from the placements that hold it. */
-export function useMoved(thread: ThreadRef): MovedInfo | undefined {
+function useMoved(thread: ThreadRef): MovedInfo | undefined {
 	const info = usePlacementInfo();
 	const agent = useAgentPlacing();
 	return thread.source === "github"
@@ -676,7 +676,7 @@ export function MoveHandle(props: {
 }
 
 /** The sparkle an agent thread's ghost carries. */
-export const AgentAvatar = () => (
+const AgentAvatar = () => (
 	<SparkleFillIcon size={14} aria-hidden className="shrink-0 text-agent-ink" />
 );
 

@@ -102,6 +102,10 @@ describe("a worktree's private crb state and config", () => {
 			void waited.then(() => {
 				settled = true;
 			});
+			// Real time, not a fake clock: each of its 200 ms polls is a real
+			// connect to the port, which a fake clock can't move past (CAR-295).
+			// A wait that wrongly settles does so on its first, refused,
+			// connect, well inside these two polls.
 			await quietFor(400, "a wait that settled before crb answers");
 			expect(settled).toBe(false);
 			server = createServer((_req, res) => {

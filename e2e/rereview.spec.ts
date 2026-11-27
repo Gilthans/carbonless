@@ -1,7 +1,7 @@
 import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import type { Locator, Page } from "@playwright/test";
-import { reviewThread, threadComment } from "../test/fake-gh/scenario";
+import { release, reviewThread, threadComment } from "../test/fake-gh/scenario";
 import { type FixtureCommit, testGitEnv } from "../test/git-fixture";
 import {
 	chooseUnit,
@@ -10,6 +10,7 @@ import {
 	fileActionButton,
 	fileProgress,
 	fileSection,
+	ignoreWhitespace,
 	marksReady,
 	openFiles,
 	progress,
@@ -2242,6 +2243,37 @@ test("an identical diff force-pushed (a squash on the same base): same diff · n
 	await expect(progress(page)).toHaveText("Nothing to read");
 });
 
+test("a push that only re-indents: the verdict's since line counts it with Ignore whitespace off, and leaves it out of every number with it on (CAR-266)", async ({
+	page,
+	pr,
+	startCrb,
+}) => {
+	const kept: unknown[] = [];
+	const p = await pr({ ...fixture, reviews: kept });
+	const s = await startCrb();
+	await approvedThenPushed(page, s, p, kept, () =>
+		p.moveHead({
+			message: "re-indent",
+			files: {
+				// util.ts line 8, which PS1 left alone, only re-indented.
+				"src/util.ts": edit(util, { 3: "util 3 changed", 8: "    util 8" }),
+			},
+		}),
+	);
+	const card = verdictCard(page);
+	const since = card.getByTestId("verdict-since");
+	await expect(since).toHaveText(
+		"Since then: 1 commit · 1 file · 1 new cluster",
+		GIT_WAIT,
+	);
+	await ignoreWhitespace(page, true);
+	await expect(since).toHaveText("Since then: 1 commit");
+	await ignoreWhitespace(page, false);
+	await expect(since).toHaveText(
+		"Since then: 1 commit · 1 file · 1 new cluster",
+	);
+});
+
 test("a new thread on the viewed head starts PS2 and the page follows: the PS2 dot, up to date, PS1 read-only", async ({
 	page,
 	pr,
@@ -3697,6 +3729,202 @@ test("a comment on a line the since view shows removed goes on its base line: Gi
 	await expect(row61).toHaveAttribute("data-commented", "", GIT_WAIT);
 });
 
+/**
+ * CAR-276: CAR-216's example the other way round (the base is gallery
+ * #58's PS2, PS2 its base): PS2's diff removes base lines 4–10, and the
+ * last, a blank, is PS1's line 6, context there and unchanged since. The
+ * since view shows it removed, an orphan with no old number of PS1's.
+ */
+test("a removed line never reviewed in PS1 takes a comment in the since view: GitHub gets it on its base line, LEFT, and it shows on that row (CAR-276)", async ({
+	page,
+	pr,
+	startCrb,
+	isMobile,
+}) => {
+	const p = await pr({
+		base: { [RESULT]: resultPs2 },
+		files: [{ message: "PS1", files: { [RESULT]: resultPs1 } }],
+	});
+	const s = await startCrb();
+	await openFiles(page, s.url);
+	const first = await expand(page, RESULT);
+	const ps1 = boxes(first);
+	const n = await ps1.count();
+	for (let i = 0; i < n; i++) await ps1.nth(i).click();
+	await expect(
+		first.getByRole("button", { name: "Expand file" }),
+	).toBeVisible();
+	await expect(page.getByTestId("sync-notices")).toHaveCount(0, GIT_WAIT);
+	p.moveHead({ message: "PS2", files: { [RESULT]: resultBase } });
+	const head = p.head();
+	await page.reload();
+	await expect(tail(page)).toHaveAttribute("data-state", "head", GIT_WAIT);
+	await toast(page).getByRole("button", { name: "View" }).click();
+	await expect(
+		node(page, "ps1").getByRole("button", { name: "comparison base" }),
+	).toBeVisible();
+	const since = await expand(page, RESULT);
+	const orphanRow = (section: Locator) =>
+		section.locator(
+			'tr[data-testid="diff-line"][data-kind="del"][data-base-no="10"]:not([data-old-no])',
+		);
+	await expect(orphanRow(since)).toBeVisible(GIT_WAIT);
+	const run = since.locator("tbody", {
+		has: page.locator('tr[data-base-no="10"]:not([data-old-no])'),
+	});
+	await expect(run.getByTestId("kind-chip")).toHaveText("not reviewed in PS1");
+	// Picked by its base line (no number of PS1's to show).
+	const number = orphanRow(since).getByRole("button", { name: "Base line 10" });
+	if (isMobile) await orphanRow(since).getByTestId("old").tap();
+	else await number.click();
+	await expect(orphanRow(since)).toHaveAttribute("data-picked", "true");
+	const bar = page.getByTestId("selection-bar");
+	await bar.getByRole("button", { name: "Comment" }).click();
+	const composer = since.getByTestId("new-thread");
+	await expect(composer).toContainText("line 10, base");
+	await composer
+		.getByRole("textbox", { name: "Comment" })
+		.fill("Why drop this blank?");
+	if (isMobile) await expectNoPageOverflow(page);
+	await composer.getByRole("button", { name: "Comment" }).click();
+	await expect(since.getByTestId("new-thread")).toHaveCount(0);
+	// GitHub has it on the head, LEFT 10: the base line, as the full diff
+	// shows it.
+	expect(postedThreads(p)).toEqual([
+		expect.objectContaining({
+			line: 10,
+			diffSide: "LEFT",
+			commit: head,
+			body: expect.stringContaining("Why drop this blank?"),
+		}),
+	]);
+	// It shows on the row it was written on.
+	await expect(
+		since
+			.getByTestId("files-thread")
+			.filter({ hasText: "Why drop this blank?" }),
+	).toBeVisible();
+	await expect(orphanRow(since)).toHaveAttribute("data-commented", "");
+	// After a reload too, from GitHub's thread.
+	await page.reload();
+	await expect(
+		node(page, "ps1").getByRole("button", { name: "comparison base" }),
+	).toBeVisible(GIT_WAIT);
+	const again = fileSection(page, RESULT);
+	await again.getByRole("button", { name: "Expand file" }).click();
+	await expect(orphanRow(again)).toHaveAttribute(
+		"data-commented",
+		"",
+		GIT_WAIT,
+	);
+	// The full diff shows it on its removed row, base line 10.
+	await toFullDiff(page);
+	const full = fileSection(page, RESULT);
+	const expandFull = full.getByRole("button", { name: "Expand file" });
+	await expect(
+		full.getByTestId("diff-line").first().or(expandFull),
+	).toBeVisible(GIT_WAIT);
+	if (await expandFull.isVisible()) await expandFull.click();
+	await expect(
+		full.locator(
+			'tr[data-testid="diff-line"][data-kind="del"][data-old-no="10"]',
+		),
+	).toHaveAttribute("data-commented", "", GIT_WAIT);
+});
+
+/**
+ * CAR-293: a line the push put back to the base's text. PS1 changes lines
+ * 10 and 30; PS2 keeps line 10, puts line 30 back as the base had it and
+ * changes line 34. The since view shows line 30 as a change (PS1's text
+ * removed, the base's added), but GitHub's diff (base → head) hasn't it:
+ * its hunks are around lines 10 and 34 (31–37). Line 34 is in both.
+ */
+const REVERTED = "src/reverted.txt";
+const revertPs1 = numbered.map((l) =>
+	l === "line 10" || l === "line 30" ? `${l} changed` : l,
+);
+const revertPs2 = numbered.map((l) =>
+	l === "line 10" || l === "line 34" ? `${l} changed` : l,
+);
+
+test("since view: a line put back to the base's text takes no comment, with why (GitHub's diff hasn't it); the changed line beside it does (CAR-293)", async ({
+	page,
+	pr,
+	startCrb,
+	isMobile,
+}) => {
+	const p = await pr({
+		base: { [REVERTED]: text(numbered) },
+		files: [{ message: "PS1", files: { [REVERTED]: text(revertPs1) } }],
+	});
+	const s = await startCrb();
+	await openFiles(page, s.url);
+	const first = await expand(page, REVERTED);
+	await boxes(first).first().click();
+	await expect(page.getByTestId("sync-notices")).toHaveCount(0, GIT_WAIT);
+	p.moveHead({ message: "PS2", files: { [REVERTED]: text(revertPs2) } });
+	const head = p.head();
+	await page.reload();
+	await expect(tail(page)).toHaveAttribute("data-state", "head", GIT_WAIT);
+	await toast(page).getByRole("button", { name: "View" }).click();
+	await expect(
+		node(page, "ps1").getByRole("button", { name: "comparison base" }),
+	).toBeVisible();
+	const since = await expand(page, REVERTED);
+	const addedRow = (n: number) =>
+		since.locator(
+			`tr[data-testid="diff-line"][data-kind="add"][data-new-no="${n}"]`,
+		);
+	await expect(addedRow(30)).toBeVisible(GIT_WAIT);
+	const bar = page.getByTestId("selection-bar");
+	const pick = async (n: number) => {
+		const number = addedRow(n).getByTestId("new");
+		await addedRow(n).evaluate((el) => el.scrollIntoView({ block: "center" }));
+		if (isMobile) await number.tap();
+		else await number.click();
+		await expect(bar).toBeVisible();
+	};
+	const commentButton = bar.getByRole("button", { name: "Comment" });
+
+	// Line 34, a change GitHub's diff has: Comment posts RIGHT 34 on the head.
+	// (First: on a phone a second tap extends the pick.)
+	await pick(34);
+	await expect(commentButton).not.toHaveAttribute("aria-disabled", "true");
+	await commentButton.click();
+	const composer = since.getByTestId("new-thread");
+	await composer
+		.getByRole("textbox", { name: "Comment" })
+		.fill("Why change line 34?");
+	await composer.getByRole("button", { name: "Comment" }).click();
+	await expect(since.getByTestId("new-thread")).toHaveCount(0);
+	await expect(addedRow(34)).toHaveAttribute("data-commented", "", GIT_WAIT);
+	expect(postedThreads(p)).toEqual([
+		expect.objectContaining({
+			line: 34,
+			diffSide: "RIGHT",
+			commit: head,
+			body: expect.stringContaining("Why change line 34?"),
+		}),
+	]);
+	// Line 30 reads as the base: Comment is off, saying why (alone, or with
+	// line 34 when a phone's tap extends the pick); pressed, nothing opens.
+	await pick(30);
+	await expect(commentButton).toHaveAttribute("aria-disabled", "true");
+	await expect(commentButton).toHaveAccessibleDescription(
+		"Same as the base: GitHub can't take a comment here",
+	);
+	await commentButton.click({ force: true });
+	await expect(since.getByTestId("new-thread")).toHaveCount(0);
+
+	// No post was tried on line 30 (GitHub would have refused it).
+	expect(
+		p
+			.ghLog()
+			.split("\n")
+			.filter((l) => /pulls\/\d+\/comments /.test(l) && l.includes("-X POST")),
+	).toHaveLength(1);
+});
+
 test("a link to an old line (side=LEFT) lands on that base line's row in the since view, and one the view doesn't show says so with the way to the full diff (CAR-253)", async ({
 	page,
 	pr,
@@ -3936,4 +4164,352 @@ test("a draft on a line the since view shows removed stays on its base line: the
 			body: expect.stringContaining("Why drop line 20?"),
 		}),
 	]);
+});
+
+/**
+ * CAR-8: a LEFT thread whose number counts on another old side than ours.
+ * Its GitHub hunk numbers "line 20" as 17 (3 lines up): it goes on base
+ * line 20, which PS2 removes, in the full diff and the since view alike,
+ * never on base line 17.
+ */
+test("a LEFT thread is placed where GitHub's hunk shows its line, not by its number: the same base line in the full diff and the since view (CAR-8)", async ({
+	page,
+	pr,
+	startCrb,
+}) => {
+	test.setTimeout(180_000);
+	const FILE = "src/left.txt";
+	const lines = Array.from({ length: 40 }, (_, i) => `line ${i + 1}`);
+	const threads: ReturnType<typeof reviewThread>[] = [];
+	const p = await pr({
+		base: { [FILE]: text(lines) },
+		files: [
+			{
+				message: "PS1",
+				files: { [FILE]: text(lines.map((l, i) => (i === 4 ? "five" : l))) },
+			},
+		],
+		threads,
+	});
+	threads.push(
+		reviewThread({ path: FILE, line: 17, diffSide: "LEFT" }, [
+			threadComment({
+				login: "rev1",
+				text: "Why line 20?",
+				commit: p.head(),
+				diffHunk: "@@ -15,3 +15,3 @@\n line 18\n line 19\n line 20",
+			}),
+		]),
+		// A hunk whose lines are nowhere: base unknown, on no line.
+		reviewThread({ path: FILE, line: 25, diffSide: "LEFT" }, [
+			threadComment({
+				login: "rev1",
+				text: "Where is this?",
+				commit: p.head(),
+				diffHunk: "@@ -23,3 +23,3 @@\n gone 23\n gone 24\n gone 25",
+			}),
+		]),
+	);
+	p.editScenario((sc) => {
+		const graph = sc.prs[p.number]?.graphql;
+		if (graph) graph.reviewThreads = threads;
+	});
+	const s = await startCrb();
+	await openFiles(page, s.url);
+	const first = await expand(page, FILE);
+	await boxes(first).first().click();
+	await expect(page.getByTestId("sync-notices")).toHaveCount(0, GIT_WAIT);
+	p.moveHead({
+		message: "PS2",
+		files: {
+			[FILE]: text(
+				lines
+					.map((l, i) => (i === 4 ? "five" : l))
+					.filter((l) => l !== "line 20"),
+			),
+		},
+	});
+	await page.reload();
+	await expect(tail(page)).toHaveAttribute("data-state", "head", GIT_WAIT);
+	const onLine20 = async () => {
+		const section = fileSection(page, FILE);
+		const expandIt = section.getByRole("button", { name: "Expand file" });
+		await expect(
+			section.getByTestId("diff-line").first().or(expandIt),
+		).toBeVisible(GIT_WAIT);
+		if (await expandIt.isVisible()) await expandIt.click();
+		const row = section.locator(
+			'tr[data-testid="diff-line"][data-kind="del"][data-old-no="20"]',
+		);
+		await expect(row).toHaveAttribute("data-commented", "", GIT_WAIT);
+		await expect(
+			section
+				.getByTestId("unplaced-thread")
+				.filter({ hasText: "Why line 20?" }),
+		).toHaveCount(0);
+		await expect(
+			section.locator('tr[data-testid="diff-line"][data-commented]'),
+		).toHaveCount(1);
+		// The other: listed unplaced with its fate, on no row.
+		const lost = section.locator(
+			'[data-testid="unplaced-thread"][data-fate="base-unknown"]',
+		);
+		await expect(lost).toHaveCount(1);
+		await expect(lost.getByTestId("unplaced-fate")).toHaveText(
+			"Couldn't find the base the commented old line was on",
+		);
+	};
+	// The since view (PS1 → PS2): the removed base line 20.
+	await toast(page).getByRole("button", { name: "View" }).click();
+	await expect(
+		node(page, "ps1").getByRole("button", { name: "comparison base" }),
+	).toBeVisible();
+	await onLine20();
+	// The full diff (base → PS2): the same base line.
+	await toFullDiff(page);
+	await onLine20();
+});
+
+/**
+ * CAR-8: an old-side thread waits for GitHub's hunk (its comment's text):
+ * meanwhile a spinner under its file, on no line (never its raw number),
+ * then its place.
+ */
+test("an old-side thread waiting for GitHub's hunk shows a spinner under its file, on no line, then its place (CAR-8)", async ({
+	page,
+	pr,
+	startCrb,
+}) => {
+	const FILE = "src/left.txt";
+	const lines = Array.from({ length: 40 }, (_, i) => `line ${i + 1}`);
+	const p = await pr({
+		base: { [FILE]: text(lines) },
+		files: [
+			{
+				message: "PS1",
+				files: { [FILE]: text(lines.map((l, i) => (i === 4 ? "five" : l))) },
+			},
+		],
+	});
+	const h1 = p.head();
+	p.moveHead({
+		message: "PS2",
+		files: {
+			[FILE]: text(
+				lines
+					.map((l, i) => (i === 4 ? "five" : l))
+					.filter((l) => l !== "line 20"),
+			),
+		},
+	});
+	p.editScenario((sc) => {
+		const graph = sc.prs[p.number]?.graphql;
+		if (graph) {
+			graph.reviewThreads = [
+				reviewThread({ path: FILE, line: 17, diffSide: "LEFT" }, [
+					threadComment({
+						login: "rev1",
+						text: "Why line 20?",
+						commit: h1,
+						diffHunk: "@@ -15,3 +15,3 @@\n line 18\n line 19\n line 20",
+					}),
+				]),
+			];
+		}
+		sc.hold = ["threadContent"];
+	});
+	const s = await startCrb();
+	await openFiles(page, s.url);
+	const section = fileSection(page, FILE);
+	const expandIt = section.getByRole("button", { name: "Expand file" });
+	await expect(
+		section.getByTestId("diff-line").first().or(expandIt),
+	).toBeVisible(GIT_WAIT);
+	if (await expandIt.isVisible()) await expandIt.click();
+	await expect(section.getByTestId("diff-line").first()).toBeVisible(GIT_WAIT);
+	// The spinner is laid over the lines: its going moves nothing above the
+	// thread's own row.
+	const top = async () =>
+		(await section.getByTestId("diff-line").first().boundingBox())?.y;
+	await expect(section.getByTestId("placing-thread")).toBeVisible(GIT_WAIT);
+	const before = await top();
+	await expectLoadingThen({
+		loading: section
+			.getByTestId("placing-thread")
+			.getByRole("status", { name: "Placing thread" }),
+		// Never on a line (its raw LEFT 17 or any other) while it waits.
+		empty: [
+			section.locator('tr[data-testid="diff-line"][data-commented]'),
+			section.getByTestId("unplaced-thread"),
+		],
+		release: () => release(p.scenarioPath, "threadContent"),
+		result: section.locator(
+			'tr[data-testid="diff-line"][data-kind="del"][data-old-no="20"][data-commented]',
+		),
+	});
+	await expect(
+		section.locator('tr[data-testid="diff-line"][data-commented]'),
+	).toHaveCount(1);
+	expect(await top()).toBe(before);
+});
+
+/**
+ * PS1: core.ts's two lines and bin/run.sh made executable (a file-level
+ * change only: no line of it changes). CAR-297.
+ */
+const modeFixture: PrOptions = {
+	base: { "src/core.ts": text(core), "bin/run.sh": "echo run\n" },
+	files: [
+		{
+			message: "PR change",
+			files: {
+				"src/core.ts": edit(core, {
+					5: "core 5 changed",
+					30: "core 30 changed",
+				}),
+			},
+			chmod: { "bin/run.sh": "755" },
+		},
+	],
+};
+
+/** PS1 fully reviewed from the closed headers, then `push`, viewed since PS1. */
+async function sinceAfter(
+	page: Page,
+	s: Crb,
+	p: Pr,
+	paths: string[],
+	push: FixtureCommit,
+) {
+	await openFiles(page, s.url);
+	for (const path of paths) {
+		const button = fileActionButton(
+			fileSection(page, path),
+			"Mark remaining reviewed",
+		);
+		await clicksReady(page, button);
+		await button.click();
+		await expect(
+			fileActionButton(fileSection(page, path), "Unmark reviewed"),
+		).toBeVisible();
+	}
+	await expect(progress(page)).toHaveAttribute("aria-valuenow", "100");
+	await expect(page.getByTestId("sync-notices")).toHaveCount(0);
+	p.moveHead(push);
+	await page.reload();
+	await expect(tail(page)).toHaveAttribute("data-state", "head", GIT_WAIT);
+	await toast(page).getByRole("button", { name: "View" }).click();
+	await expect(
+		node(page, "ps1").getByRole("button", { name: "comparison base" }),
+	).toBeVisible();
+}
+
+test("a mode change reverted since the last review is gone with its label, to read until its box is ticked; never Nothing to read (CAR-297)", async ({
+	page,
+	pr,
+	startCrb,
+}) => {
+	const p = await pr(modeFixture);
+	const s = await startCrb();
+	await sinceAfter(page, s, p, ["bin/run.sh", "src/core.ts"], {
+		message: "mode back",
+		files: {},
+		chmod: { "bin/run.sh": "644" },
+	});
+	const run = fileSection(page, "bin/run.sh");
+	await expect(run).toHaveAttribute("data-gone-file", "bin/run.sh", GIT_WAIT);
+	await expect(toRead(page)).toHaveText(/1 to read/);
+	await expect(progress(page)).toContainText("0 / 1 cluster reviewed");
+	await expect(page.getByTestId("since-empty-all")).toHaveCount(0);
+	await run.getByRole("button", { name: "Expand file" }).click();
+	const level = run.getByTestId("since-file-level");
+	await expect(level).toContainText("Mode changed 100755 → 100644", GIT_WAIT);
+	await expect(level.getByTestId("kind-chip")).toHaveText("gone");
+	await expect(run.getByTestId("since-empty")).toHaveCount(0);
+	const box = level.getByRole("checkbox", { name: "Mark cluster reviewed" });
+	await marksReady(page, run);
+	await box.click();
+	await expect(page.getByTestId("sync-notices")).toHaveCount(0, GIT_WAIT);
+	await expect(progress(page)).toHaveAttribute("aria-valuenow", "100");
+	await expect(toRead(page)).toHaveText(/0 to read/);
+	// The mark is the file-level change's own: kept after a reload.
+	await page.reload();
+	await expect(progress(page)).toHaveAttribute(
+		"aria-valuenow",
+		"100",
+		GIT_WAIT,
+	);
+	await expect(
+		fileActionButton(fileSection(page, "bin/run.sh"), "Unmark reviewed"),
+	).toBeVisible();
+});
+
+test("a mode change new since the last review shows its label and box in the since view and is to read until ticked (CAR-297)", async ({
+	page,
+	pr,
+	startCrb,
+}) => {
+	const p = await pr({
+		...modeFixture,
+		files: [{ ...(modeFixture.files?.[0] as FixtureCommit), chmod: {} }],
+	});
+	const s = await startCrb();
+	await sinceAfter(page, s, p, ["src/core.ts"], {
+		message: "mode",
+		files: {},
+		chmod: { "bin/run.sh": "755" },
+	});
+	await expect(toRead(page)).toHaveText(/1 to read/, GIT_WAIT);
+	await expect(page.getByTestId("since-empty-all")).toHaveCount(0);
+	const run = fileSection(page, "bin/run.sh");
+	await run.getByRole("button", { name: "Expand file" }).click();
+	await expect(run).toContainText("Mode changed 100644 → 100755", GIT_WAIT);
+	await expect(run.getByTestId("since-empty")).toHaveCount(0);
+	await marksReady(page, run);
+	await run.getByRole("checkbox", { name: "Mark cluster reviewed" }).click();
+	await expect(page.getByTestId("sync-notices")).toHaveCount(0, GIT_WAIT);
+	await expect(progress(page)).toHaveAttribute("aria-valuenow", "100");
+	await expect(toRead(page)).toHaveText(/0 to read/);
+});
+
+test("a rename undone since the last review: the gone file's row says Renamed from …, its header offers ✓ not Unmark, and crossing the row off finishes it (CAR-297)", async ({
+	page,
+	pr,
+	startCrb,
+}) => {
+	const p = await pr({
+		base: { "src/core.ts": text(core), "docs/old.md": "# Notes\n\nKept.\n" },
+		files: [
+			{
+				message: "PR change",
+				files: { "src/core.ts": edit(core, { 5: "core 5 changed" }) },
+				rename: { "docs/old.md": "docs/new.md" },
+			},
+		],
+	});
+	const s = await startCrb();
+	await sinceAfter(page, s, p, ["docs/new.md", "src/core.ts"], {
+		message: "name back",
+		files: {},
+		rename: { "docs/new.md": "docs/old.md" },
+	});
+	const gone = fileSection(page, "docs/new.md");
+	await expect(gone).toHaveAttribute("data-gone-file", "docs/new.md", GIT_WAIT);
+	await expect(toRead(page)).toHaveText(/1 to read/);
+	// Nothing of it is marked: its header offers ✓, never the reset.
+	await expect(fileActionButton(gone, "Mark remaining reviewed")).toBeVisible();
+	await expect(fileActionButton(gone, "Unmark reviewed")).toHaveCount(0);
+	await gone.getByRole("button", { name: "Expand file" }).click();
+	const level = gone.getByTestId("since-file-level");
+	await expect(level).toContainText("Renamed from docs/new.md", GIT_WAIT);
+	await expect(level.getByTestId("kind-chip")).toHaveText("gone");
+	await marksReady(page, gone);
+	await level.getByRole("button", { name: "Cross off cluster" }).click();
+	await expect(page.getByTestId("sync-notices")).toHaveCount(0, GIT_WAIT);
+	await expect(progress(page)).toHaveAttribute("aria-valuenow", "100");
+	await expect(toRead(page)).toHaveText(/0 to read/);
+	await page.reload();
+	await expect(
+		fileActionButton(fileSection(page, "docs/new.md"), "Undo cross-off"),
+	).toBeVisible(GIT_WAIT);
 });

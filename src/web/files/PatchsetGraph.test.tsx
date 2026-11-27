@@ -12,7 +12,6 @@ import {
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { expectLoadingThen, heldJson } from "../../../test/loading";
-import { quietFor } from "../../../test/sleep";
 import type { RereviewAnswer, SessionInfo } from "../../shared/types";
 import { patchsetCommitsQuery, REREVIEW_POLL_MS } from "../api";
 import { ShortcutsProvider } from "../shortcuts";
@@ -156,6 +155,8 @@ const markerIn = (id: string, name: "comparison target" | "comparison base") =>
 const ps = (number: number): Viewing => ({ kind: "patchset", number });
 
 afterEach(() => {
+	// A test that timed out on a fake clock leaks it to none after.
+	vi.useRealTimers();
 	cleanup();
 	vi.unstubAllGlobals();
 });
@@ -356,6 +357,20 @@ describe("PatchsetGraph", () => {
 			"branch",
 			"snapshot",
 		]);
+	});
+
+	it("on a phone, the head as comparison target widens the slot so its connector keeps a line (CAR-266)", () => {
+		renderGraph(session([1], oid("f")), {
+			viewing: { kind: "head", oid: oid("f") },
+			base: { kind: "branch" },
+		});
+		expect(tail()).toHaveAttribute("data-state", "head");
+		expect(tail().className).toContain("w-[124px]");
+		expect(tail().className).not.toContain("w-[84px]");
+		expect(tail().className).toContain("sm:w-[150px]");
+		expect(screen.getByTestId("ps-conn-head").className).toContain(
+			"min-w-[26px]",
+		);
 	});
 
 	it("a newer head: the same slot holds the dashed connector with its count and the head dot", async () => {
@@ -640,26 +655,33 @@ describe("PatchsetGraph", () => {
 	});
 
 	it("only a disabled button has a tooltip: its reason", async () => {
-		const user = userEvent.setup();
-		renderGraph(session([1, 2], oid("f")), {
-			viewing: ps(2),
-			base: ps(1) as ComparisonBase,
-		});
-		await user.click(screen.getByRole("button", { name: "PS1" }));
-		const card = screen.getByRole("dialog");
-		const target = within(card).getByRole("button", {
-			name: "Comparison Target",
-		});
-		const base = within(card).getByRole("button", { name: "Comparison Base" });
-		await user.hover(target);
-		await act(() => quietFor(300, "a tooltip on an enabled button"));
-		expect(shownTips()).toEqual([]);
-		expect(target).not.toHaveAccessibleDescription();
-		await user.hover(base);
-		await waitFor(() =>
-			expect(shownTips()).toEqual(["Already the comparison base"]),
-		);
-		expect(base).toHaveAccessibleDescription("Already the comparison base");
+		vi.useFakeTimers({ shouldAdvanceTime: true });
+		try {
+			const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+			renderGraph(session([1, 2], oid("f")), {
+				viewing: ps(2),
+				base: ps(1) as ComparisonBase,
+			});
+			await user.click(screen.getByRole("button", { name: "PS1" }));
+			const card = screen.getByRole("dialog");
+			const target = within(card).getByRole("button", {
+				name: "Comparison Target",
+			});
+			const base = within(card).getByRole("button", {
+				name: "Comparison Base",
+			});
+			await user.hover(target);
+			// Well past the hover delay (HOVER_DELAY_MS).
+			await act(() => vi.advanceTimersByTimeAsync(2000));
+			expect(shownTips()).toEqual([]);
+			expect(target).not.toHaveAccessibleDescription();
+			await user.hover(base);
+			await act(() => vi.advanceTimersByTimeAsync(2000));
+			expect(shownTips()).toEqual(["Already the comparison base"]);
+			expect(base).toHaveAccessibleDescription("Already the comparison base");
+		} finally {
+			vi.useRealTimers();
+		}
 	});
 
 	it("the snapshot dot's card names the newest patch set's base branch", async () => {

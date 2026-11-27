@@ -13,9 +13,14 @@ import type {
 import { type HunkCut, hunkCut, hunkCuts } from "../../shared/whitespace.js";
 import { GitError, runGit, runGitBuffer } from "../git.js";
 import { BlobCache } from "./blobCache.js";
-import { buildAllClusters, splitCluster } from "./clusters.js";
+import {
+	buildAllClusters,
+	cutsAtBlankLines,
+	splitAtBlankLines,
+	splitCluster,
+} from "./clusters.js";
 import { readTabWidths } from "./editorconfig.js";
-import { type ChangedFile, listChangedFiles } from "./files.js";
+import { type ChangedFile, changedPathsOf, listChangedFiles } from "./files.js";
 import {
 	buildAllHeadings,
 	type GitHunkHeading,
@@ -40,7 +45,7 @@ import { chooseEncoding, decodeLines, type TextEncoding } from "./text.js";
  * two snapshots; the server keeps several reviews open), and bounds the
  * always-on server whatever the files' sizes.
  */
-export const BLOB_CACHE_BYTES = 32 * 1024 * 1024;
+const BLOB_CACHE_BYTES = 32 * 1024 * 1024;
 
 const blobCache = new BlobCache(BLOB_CACHE_BYTES);
 
@@ -52,7 +57,7 @@ const MAX_CACHED_HEADINGS = 8;
  * done long before; a slow or stuck one never holds the hunks up for more
  * (they come without headings).
  */
-export const HEADING_WAIT_MS = 500;
+const HEADING_WAIT_MS = 500;
 
 /**
  * Every file's `-U3` hunk headings, per snapshot (`repo`, base, head), least
@@ -256,6 +261,47 @@ export async function buildSnapshot(
 	const changed = await listChangedFiles(repo, base, head);
 	// Started now, beside the clusters' run: ready by the first file's hunks.
 	void snapshotHeadings(repo, base, head, changed);
+	const files = await summarize(repo, base, head, changed);
+	return { base, head, revision: snapshotId(base, head), files };
+}
+
+/**
+ * A snapshot of `base`..`head` holding only the changed file whose path
+ * or old path is `path` (none when the comparison doesn't change it),
+ * built as buildSnapshot builds each file: the page's renames, diff
+ * options, clusters and encoding, so loadFileHunks gives that file the
+ * page's hunks. For a one-off read of an earlier comparison (CAR-53: an
+ * agent conversation's code): never kept, never a review's snapshot.
+ */
+export async function fileSnapshot(
+	repo: string,
+	base: string,
+	head: string,
+	path: string,
+): Promise<Snapshot> {
+	const revision = snapshotId(base, head);
+	const pair = await changedPathsOf(repo, base, head, path);
+	if (!pair) return { base, head, revision, files: [] };
+	const paths = [
+		...(pair.oldPath !== undefined ? [pair.oldPath] : []),
+		pair.path,
+	].map((p) => `:(literal)${p}`);
+	const changed = await listChangedFiles(repo, base, head, paths);
+	if (changed.length !== 1 || changed[0]?.path !== pair.path) {
+		throw new GitError(`git diff didn't pair ${path} as its listing did`);
+	}
+	const files = await summarize(repo, base, head, changed, paths);
+	return { base, head, revision, files };
+}
+
+/** Each of `changed` (base..head's listing, limited to `paths` if given) as the page's FileSummary. */
+async function summarize(
+	repo: string,
+	base: string,
+	head: string,
+	changed: ChangedFile[],
+	paths: string[] = [],
+): Promise<FileSummary[]> {
 	const isText = (f: ChangedFile) => !f.binary && !f.submodule;
 	const oidsOf = (files: ChangedFile[]) =>
 		files.flatMap((f) => [f.oldOid, f.newOid]).filter((oid) => !isZeroOid(oid));
@@ -285,13 +331,14 @@ export async function buildSnapshot(
 		head,
 		changed,
 		texts.map((t) => t?.encoding),
+		paths,
 	);
 	const tabWidths = await readTabWidths(
 		repo,
 		head,
 		changed.map((f) => f.path),
 	);
-	const files = changed.map((file, index): FileSummary => {
+	return changed.map((file, index): FileSummary => {
 		const { oldOid, newOid, ...summary } = file;
 		const hunks = unkeyed[index] ?? [];
 		const text = texts[index];
@@ -306,11 +353,18 @@ export async function buildSnapshot(
 						? [oldOid, newOid]
 						: undefined,
 			});
-		const clusters = cutClusters(hunks, keysOf, {
-			oldLines: text?.oldLines ?? [],
-			newLines: text?.newLines ?? [],
-			noNewlineAtEnd: text?.noNewlineAtEnd ?? false,
-		});
+		const clusters = cutClusters(
+			hunks,
+			keysOf,
+			{
+				oldLines: text?.oldLines ?? [],
+				newLines: text?.newLines ?? [],
+				noNewlineAtEnd: text?.noNewlineAtEnd ?? false,
+			},
+			{
+				blankLines: file.status === "added" && cutsAtBlankLines(file.path),
+			},
+		);
 		const tabWidth = tabWidths[index];
 		const oldSize = sizeOf(oldOid);
 		const newSize = sizeOf(newOid);
@@ -327,7 +381,6 @@ export async function buildSnapshot(
 			clusters,
 		};
 	});
-	return { base, head, revision: snapshotId(base, head), files };
 }
 
 /**
@@ -344,6 +397,14 @@ export async function buildSnapshot(
  * hunks, as before the cut) and where its lines sit in it, so marks on the
  * hunk carry onto the pieces (splitCarry.ts).
  *
+ * With `blankLines` (an added file, CAR-235), each piece with no removed
+ * lines is cut further after its blank lines (splitAtBlankLines), the same
+ * way: the pieces remember the whole hunk's key. That key (`keysOf(hunks)`)
+ * is the key the whole file had before CAR-235 only because an added file
+ * is never cut for whitespace (no old side, so no twins): the uncut hunk
+ * was its one cluster. Should either cut change so that an added file's
+ * hunk is cut before this, old whole-file marks would stop carrying.
+ *
  * **Part of cluster identity** (splitHunk): marks on a cluster the cut
  * moves no longer match and read unreviewed (no carry, owner 2026-11-22).
  */
@@ -351,12 +412,13 @@ export function cutClusters(
 	hunks: Omit<Cluster, "key">[],
 	keysOf: (clusters: Omit<Cluster, "key">[]) => string[],
 	text: { oldLines: string[]; newLines: string[]; noNewlineAtEnd: boolean },
+	opts: { blankLines?: boolean } = {},
 ): Cluster[] {
 	const cuts = displayCuts(hunks, text);
 	const clusters: Omit<Cluster, "key">[] = [];
 	const parts: { hunk: number; removedAt: number; addedAt: number }[] = [];
 	hunks.forEach((hunk, h) => {
-		const pieces =
+		let pieces =
 			hunk.kind === "lines"
 				? splitCluster(
 						hunk,
@@ -369,6 +431,15 @@ export function cutClusters(
 							),
 					)
 				: [{ cluster: hunk, removedAt: 0, addedAt: 0 }];
+		if (opts.blankLines && hunk.kind === "lines") {
+			pieces = pieces.flatMap((piece) =>
+				splitAtBlankLines(piece.cluster).map((p) => ({
+					cluster: p.cluster,
+					removedAt: piece.removedAt + p.removedAt,
+					addedAt: piece.addedAt + p.addedAt,
+				})),
+			);
+		}
 		for (const piece of pieces) {
 			clusters.push(piece.cluster);
 			parts.push({

@@ -20,8 +20,6 @@ import { useThreadWrites } from "../threads/threadWrites";
 import { useVerdictDraft, verdictDraftFor } from "../verdict/verdictDraft";
 import { overlayReview, StateSync, type SyncState } from "./stateSync";
 
-export { isStale } from "./stateSync";
-
 export const STALE_MESSAGE = "The review moved to a new snapshot; reloaded.";
 
 /** Query clients whose review is being read again after a 409 (reloadStale). */

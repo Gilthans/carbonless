@@ -39,6 +39,7 @@ import {
 	useFocusCard,
 	useOutlinedMessage,
 } from "../files/threadFocus";
+import { useMessageCopy } from "../messageCopy";
 import { Badge, LabeledIcon } from "../overview/parts";
 import { RelativeTime } from "../RelativeTime";
 import { Spinner } from "../Spinner";
@@ -69,6 +70,7 @@ import {
 	postAgentResolved,
 	withThread,
 } from "./api";
+import { spanOfAnchor } from "./askAgentAction";
 import {
 	type CommentScope,
 	useAgentComment,
@@ -181,9 +183,14 @@ export function ActivityLine(props: { activity: readonly AgentActivity[] }) {
 	);
 }
 
-/** The agent's box: its tint, the text as GitHub-flavored Markdown. */
+/**
+ * The agent's box, the text as GitHub-flavored Markdown: a neutral raised
+ * box inside the agent's edge with a teal rail on its left (CAR-270). Told
+ * apart from a person's message by its shape, not only its hue: theirs is
+ * a filled wash of their tint, never railed.
+ */
 const AGENT_SURFACE =
-	"min-w-0 rounded-md border border-agent-edge bg-agent px-3 py-2";
+	"min-w-0 rounded-md border border-agent-edge border-l-3 border-l-agent-ink bg-raised px-3 py-2";
 
 /**
  * The card's messages in their own capped box with its own scroll bar,
@@ -204,7 +211,7 @@ const AGENT_SURFACE =
  * streamed one's place) fired scroll events that read as the reader
  * leaving the end, and the pin let go (seen on the phone).
  */
-export function AgentScroll(props: {
+function AgentScroll(props: {
 	children: ReactNode;
 	/** Who asked: the floating question's avatar. */
 	viewer: string;
@@ -425,7 +432,7 @@ function QuestionBar(props: {
 	);
 }
 
-export const AGENT_SCROLL =
+const AGENT_SCROLL =
 	"-mx-1 -mt-1 mb-1! max-h-[min(28rem,60vh)] overflow-y-auto scroll-pt-10 p-1 [overflow-anchor:none]";
 
 function Who(props: { children: React.ReactNode }) {
@@ -438,6 +445,8 @@ function Who(props: { children: React.ReactNode }) {
 
 function HumanMessage(props: { message: AgentMessage; viewer: string }) {
 	const me = usePerson(props.viewer);
+	// A long press on a phone: Copy message.
+	const copy = useMessageCopy(props.message.text);
 	return (
 		<div className="min-w-0 space-y-1">
 			<Who>
@@ -449,9 +458,11 @@ function HumanMessage(props: { message: AgentMessage; viewer: string }) {
 			<p
 				data-testid="agent-message-human"
 				className={`${commentSurface(me.tint)} text-sm whitespace-pre-wrap break-words`}
+				{...copy.press}
 			>
 				{props.message.text}
 			</p>
+			{copy.menu}
 			{props.message.truncated && <TruncatedChip />}
 		</div>
 	);
@@ -524,6 +535,8 @@ function AiMessage(props: {
 			? { ...known, tip: `${known.tip}: ${message.error}` }
 			: known;
 	const reason = message.stop === "error" ? message.error : undefined;
+	// A long press on a phone: Copy message (its Markdown, as written).
+	const copy = useMessageCopy(message.text || reason || "");
 	return (
 		<div className="min-w-0 space-y-1">
 			<Who>
@@ -555,6 +568,7 @@ function AiMessage(props: {
 			<div
 				data-testid="agent-message-ai"
 				className={`${AGENT_SURFACE} text-sm`}
+				{...copy.press}
 			>
 				{message.text || !reason ? (
 					<AgentMarkdown
@@ -583,6 +597,7 @@ function AiMessage(props: {
 				)}
 			</div>
 			{message.activity && <ActivityLine activity={message.activity} />}
+			{copy.menu}
 		</div>
 	);
 }
@@ -590,7 +605,7 @@ function AiMessage(props: {
 type Answering = NonNullable<AgentStatus["answering"]>;
 
 /** A thread's state, as its name says it; `answering` is what useAnswering shows. */
-export function agentThreadState(
+function agentThreadState(
 	thread: AgentThread,
 	answering: Answering | undefined,
 ): "waiting" | "answering" | "answered" | "resolved" {
@@ -745,13 +760,23 @@ function usePendingComment(props: AgentCardProps): ReactNode | null {
 	const { thread } = props;
 	const scope = useCommentScope();
 	const diff = usePendingComposers();
+	// On lines only the since view's compared patch set had: its comment
+	// is on that patch set's commit, shown here all the same (CAR-264).
+	const early =
+		scope?.earlier !== undefined &&
+		isSpanThread(thread) &&
+		thread.anchor.subject !== "thread"
+			? scope.earlier(spanOfAnchor(thread.anchor))
+			: null;
+	// Null is "not on such lines" (typeof null is "object").
+	const earlier = early !== null && typeof early === "object";
 	const here =
 		scope !== null &&
 		diff !== null &&
 		diff.head !== undefined &&
 		isSpanThread(thread) &&
 		thread.anchor.subject !== "thread" &&
-		thread.anchor.commit === diff.head &&
+		(thread.anchor.commit === diff.head || earlier) &&
 		!thread.orphaned &&
 		!props.unplaced &&
 		!props.outdated;
@@ -760,7 +785,9 @@ function usePendingComment(props: AgentCardProps): ReactNode | null {
 	const composers = useComposers();
 	if (!here || !diff) return null;
 	const item = newThreadItems(drafts, composers).find(
-		(i) => i.agentThread === thread.id && i.span.commit === diff.head,
+		(i) =>
+			i.agentThread === thread.id &&
+			(i.span.commit === diff.head || (earlier && i.span.earlier === true)),
 	);
 	if (!item) return null;
 	return (

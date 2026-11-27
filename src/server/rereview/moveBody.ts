@@ -17,7 +17,7 @@ const isLine = (v: unknown): v is number =>
 const OID = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
 
 /** A move's thread: `{source: "agent", id: <lowercase ULID>}` or `{source: "github", id: <node id>}`. */
-export function parseThreadRef(raw: unknown): ThreadRef {
+function parseThreadRef(raw: unknown): ThreadRef {
 	if (!isObj(raw)) throw fail("thread is { source, id }");
 	const { source, id } = raw;
 	if (source === "agent") {
@@ -37,7 +37,7 @@ export function parseThreadRef(raw: unknown): ThreadRef {
 }
 
 /** `{patchset}` or `{head}`, one of them (the target viewed). */
-export function parseMoveTarget(
+function parseMoveTarget(
 	raw: unknown,
 ): { patchset: number } | { head: string } {
 	if (!isObj(raw)) throw fail("to is { patchset } or { head }");
@@ -60,7 +60,7 @@ export function parseMoveTarget(
  * after end on one side) and a path of at most MAX_MOVE_PATH bytes (the
  * session checks it against the target's files). Only these fields.
  */
-export function parseMoveAnchor(raw: unknown): ThreadAnchorRef {
+function parseMoveAnchor(raw: unknown): ThreadAnchorRef {
 	if (!isObj(raw)) throw fail("anchor is required");
 	const { path, startSide, startLine, side, line } = raw;
 	if (

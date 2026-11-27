@@ -62,7 +62,7 @@ export function queuedWorkers(cores, freeBytes = freemem()) {
 /** Memory a test worker may take, with its browser or its share of crb. */
 export const WORKER_BYTES = 1.5 * 2 ** 30;
 /** Workers a short run takes at most: one spec or a few files. */
-export const SHORT_MAX = 3;
+const SHORT_MAX = 3;
 
 /**
  * Workers for a run, so that the runs holding a slot never take more than

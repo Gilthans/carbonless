@@ -14,7 +14,7 @@ import { fetchOrgMembers, searchUsers } from "./prFacts.js";
  */
 
 /** GitHub's user search starts at this many characters. */
-export const MIN_USER_SEARCH_CHARS = 2;
+const MIN_USER_SEARCH_CHARS = 2;
 /** The org members are read again at most this often. */
 export const ORG_MEMBERS_TTL_MS = 3_600_000;
 /** A finished user search (or a failed members read) is reused this long. */

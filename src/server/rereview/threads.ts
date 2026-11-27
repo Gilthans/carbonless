@@ -18,6 +18,7 @@ import {
 	placeWithMoves,
 	type ThreadMove,
 } from "../../shared/rereview/moves.js";
+import { hunkOldRows, oldSideShift } from "../../shared/rereview/oldSide.js";
 import {
 	placeThread,
 	type ThreadInput,
@@ -37,6 +38,7 @@ import type {
 	Snapshot,
 	ThreadAnchorRef,
 } from "../../shared/types.js";
+import { touchesOldSide } from "../codeWindow.js";
 import { fileText } from "../diff/snapshot.js";
 import { runGitBuffer } from "../git.js";
 import type { DiffBase, ThreadCodeSource } from "../threadCode.js";
@@ -117,6 +119,19 @@ export type TraceableThread = Pick<
 	 * pane finds (a move's, CAR-139): its base and head as given.
 	 */
 	ends?: { base: string; head: string };
+	/**
+	 * GitHub's diff hunk of its opening comment ("" when GitHub gave
+	 * none; null when it couldn't be read): which old side its LEFT lines
+	 * count on (CAR-8). Review threads only; without it, a thread is
+	 * traced from its merge base.
+	 */
+	hunk?: () => Promise<string | null>;
+	/**
+	 * Whether the PR's base was changed (GitHub's base-change events, a
+	 * retarget) after the comment: the base branch as it stood then is
+	 * then not what the commenter's old side counted on (CAR-8).
+	 */
+	retargetedSince?: () => Promise<boolean>;
 };
 
 /**
@@ -136,7 +151,7 @@ export interface AgentAsked {
 }
 
 /** An agent thread as the tracer reads it: asked on its anchor's commit. */
-export function agentTraceable(t: AgentAsked): TraceableThread {
+function agentTraceable(t: AgentAsked): TraceableThread {
 	const a = t.anchor;
 	return {
 		id: t.id,
@@ -194,7 +209,7 @@ export async function placeAgentThreads(
  * A moved thread as the tracer reads it: on the move's lines, traced from
  * the move's own snapshot (never from GitHub's line).
  */
-export function movedTraceable(id: string, m: ThreadMove): TraceableThread {
+function movedTraceable(id: string, m: ThreadMove): TraceableThread {
 	const at = new Date(m.ts).toISOString();
 	return {
 		id,
@@ -216,6 +231,46 @@ export function movedTraceable(id: string, m: ThreadMove): TraceableThread {
 
 const EMPTY = Buffer.alloc(0);
 
+/**
+ * A thread still waiting for what places it (an old-side thread for its
+ * GitHub hunk, CAR-8): placed as `pending` until its own input replaces
+ * it. The reviewer's moves still win over it (placeWithMoves).
+ */
+export function waitingInput(
+	target: Snapshot,
+	t: TraceableThread,
+): ThreadInput {
+	return { ...standIn(target, t), pending: true };
+}
+
+/**
+ * A thread whose trace failed (git couldn't give what it needs): a final
+ * answer, `untraced` under its file, never a spinner left for good.
+ */
+export function failedInput(target: Snapshot, t: TraceableThread): ThreadInput {
+	return { ...standIn(target, t), untraced: "untraced" };
+}
+
+/** A thread's input with nothing traced: under its file, by its path now (through a rename). */
+function standIn(target: Snapshot, t: TraceableThread): ThreadInput {
+	const renamed = target.files.find((f) => f.oldPath === t.path)?.path;
+	return {
+		id: t.id,
+		path: t.path,
+		anchor: t.anchor && {
+			side: t.anchor.side,
+			line: t.anchor.line,
+			startSide: t.anchor.startSide,
+			startLine: t.anchor.startLine,
+		},
+		diffs: null,
+		newPath: renamed ?? t.path,
+		inComparison: target.files.some(
+			(f) => f.path === t.path || f.oldPath === t.path,
+		),
+	};
+}
+
 /** A thread's range as the tracer reads it, or a stand-in for a file comment. */
 function anchorOf(t: TraceableThread): CodeAnchor {
 	return (
@@ -233,6 +288,13 @@ function anchorOf(t: TraceableThread): CodeAnchor {
 
 /** What a thread is traced from: its own snapshot, or GitHub's line now. */
 interface Source {
+	/**
+	 * Never traced (CAR-8): no old side matches GitHub's hunk
+	 * ("base-unknown"), or the hunk couldn't be read ("check-failed").
+	 */
+	lost?: "base-unknown" | "check-failed";
+	/** Traced from the base then, nothing to check it by (CAR-8). */
+	unchecked?: true;
 	/** The range traced; null for a file comment. */
 	anchor: CodeAnchor | null;
 	ends: { base: string; head: string };
@@ -250,10 +312,7 @@ const OID = /^[0-9a-f]{40}([0-9a-f]{24})?$/;
  * numbers that against its own merge base, which can differ from ours
  * (a base merged in since). `at`: when GitHub said so.
  */
-export function githubAnchor(
-	t: TraceableThread,
-	at: string,
-): CodeAnchor | null {
+function githubAnchor(t: TraceableThread, at: string): CodeAnchor | null {
 	const head = t.currentHead;
 	if (typeof head !== "string" || !OID.test(head)) return null;
 	if (!t.anchor) return { ...anchorOf(t), commit: head, at };
@@ -408,11 +467,14 @@ export class ThreadPlacer {
 		at: string = new Date().toISOString(),
 	): Promise<ThreadInput[]> {
 		const list = placeable(threads);
+		const threadPaths = new Set(list.map((t) => t.path));
 		const own = await Promise.all(
 			list.map(async (t): Promise<Source | null> => {
 				const anchor = anchorOf(t);
 				// A move's own snapshot: traced from it alone.
 				if (t.ends) return { anchor: t.anchor && anchor, ends: t.ends };
+				const left = await this.#oldSide(t, base, threadPaths);
+				if (left) return left;
 				const ends = await this.code.endpoints(anchor, base);
 				if (ends) return { anchor: t.anchor && anchor, ends };
 				const github = githubAnchor(t, at);
@@ -429,12 +491,13 @@ export class ThreadPlacer {
 			if (f.oldPath !== undefined) paths.add(f.oldPath);
 		}
 		for (const t of list) paths.add(t.path);
-		const threadPaths = new Set(list.map((t) => t.path));
 		const inTarget = (p: string) =>
 			target.files.some((f) => f.path === p || f.oldPath === p);
 		return Promise.all(
 			list.map(async (t, i): Promise<ThreadInput> => {
-				const src = own[i];
+				const found = own[i];
+				const lost = found?.lost;
+				const src = lost ? null : found;
 				const from = src ? src.anchor : t.anchor;
 				const anchor = from
 					? {
@@ -455,11 +518,14 @@ export class ThreadPlacer {
 						diffs: null,
 						newPath: t.path,
 						inComparison: inTarget(t.path),
-						untraced: t.outdated ? "outdated" : "untraced",
+						untraced: lost ? lost : t.outdated ? "outdated" : "untraced",
 					};
 				}
 				const { ends } = src;
-				const source = src.source ? { source: src.source } : {};
+				const source = {
+					...(src.source ? { source: src.source } : {}),
+					...(src.unchecked ? { unchecked: true as const } : {}),
+				};
 				const [ownDiff, bd] = await Promise.all([
 					this.#diff(ends.base, ends.head, threadPaths),
 					this.#diff(ends.head, target.head, paths),
@@ -525,6 +591,96 @@ export class ThreadPlacer {
 				};
 			}),
 		);
+	}
+
+	/**
+	 * A review thread's old side by GitHub's hunk (CAR-8), for a range
+	 * touching the old side: GitHub keeps no commit for it, so its LEFT
+	 * numbers may count on another merge base than ours. The candidates
+	 * are the merge base of its commit with the base branch then (`then`:
+	 * unknown when that can't be told, or the PR's base was retargeted
+	 * since) and with the snapshot's base now (`now`).
+	 *
+	 * - A hunk: the candidate whose text holds the hunk's old-side rows
+	 *   where the hunk numbers them; else the one holding that run of rows
+	 *   at one place (a run telling enough, oldSideShift), the range's LEFT
+	 *   ends shifted to it; else none (`lost` base-unknown). A hunk with
+	 *   text but no rows (no header) is base-unknown too.
+	 * - A hunk that couldn't be read: `lost` check-failed.
+	 * - No hunk (no evidence): `then`, `unchecked` when it isn't `now`;
+	 *   undefined when `then` is unknown: traced as before, from `now`.
+	 *
+	 * Never placed on a guessed line. Undefined too for every other thread,
+	 * and a commit git can't give.
+	 */
+	async #oldSide(
+		t: TraceableThread,
+		base: DiffBase,
+		threadPaths: Set<string>,
+	): Promise<Source | undefined> {
+		const anchor = t.anchor;
+		if (!anchor || !t.hunk || !touchesOldSide(anchor)) return undefined;
+		const [sides, hunk, retargeted] = await Promise.all([
+			this.code.oldSides(anchor, base),
+			t.hunk().catch(() => null),
+			t.retargetedSince?.().catch(() => true) ?? false,
+		]);
+		if (!sides) return undefined;
+		const lost = (why: "base-unknown" | "check-failed"): Source => ({
+			lost: why,
+			anchor,
+			ends: { base: "", head: anchor.commit },
+		});
+		if (hunk === null) return lost("check-failed");
+		const then = retargeted ? null : sides.then;
+		const at = (b: string, a: CodeAnchor = anchor): Source => ({
+			anchor: a,
+			ends: { base: b, head: anchor.commit },
+		});
+		if (!hunk.trim()) {
+			if (then) {
+				return then === sides.now ? at(then) : { ...at(then), unchecked: true };
+			}
+			// The base then not taken (a retarget since, or no timeline to
+			// tell): today's merge base, flagged when the two old sides are
+			// known to differ.
+			if (sides.then && sides.now && sides.then !== sides.now) {
+				return { ...at(sides.now), unchecked: true };
+			}
+			return undefined;
+		}
+		const rows = hunkOldRows(hunk);
+		if (rows.length === 0) return lost("base-unknown");
+		const candidates = [
+			...new Set([then, sides.now].filter((c) => c !== null)),
+		];
+		const texts = await Promise.all(
+			candidates.map(async (c) => {
+				// The same diff the trace reads of its own snapshot: shared.
+				const entry = (await this.#diff(c, anchor.commit, threadPaths)).get(
+					t.path,
+				);
+				return this.text(c, entry?.oldPath ?? t.path);
+			}),
+		);
+		const leftLine = anchor.side === "LEFT" ? anchor.line : anchor.startLine;
+		const shifts = texts.map((text) => oldSideShift(rows, text, leftLine));
+		const exact = shifts.indexOf(0);
+		const pick = exact !== -1 ? exact : shifts.findIndex((s) => s !== null);
+		const by = shifts[pick];
+		const chosen = candidates[pick];
+		if (by === undefined || by === null || chosen === undefined) {
+			return lost("base-unknown");
+		}
+		const shift = (side: DiffSide, line: number) =>
+			side === "LEFT" ? line + by : line;
+		const moved = {
+			...anchor,
+			line: shift(anchor.side, anchor.line),
+			startLine: shift(anchor.startSide, anchor.startLine),
+		};
+		if (moved.line < 1 || moved.startLine < 1) return lost("base-unknown");
+		return at(chosen, moved);
 	}
 
 	/**

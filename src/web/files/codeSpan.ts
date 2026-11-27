@@ -1,4 +1,5 @@
 import type { DiffSide } from "../../shared/types";
+import { ORPHAN_LEFT } from "./orphanLeft";
 import type { CodeSpan } from "./selectionActions";
 
 /**
@@ -16,7 +17,10 @@ import type { CodeSpan } from "./selectionActions";
  *   the base line GitHub knows a LEFT line by on the head (empty: a line
  *   only that patch set had, which GitHub has no line for; CAR-217); such
  *   a line also carries `data-ps-no`, its line on that patch set's commit,
- *   when that commit's diff adds it (a comment goes there, CAR-233). Side by side, a context line is shown in
+ *   when that commit's diff adds it (a comment goes there, CAR-233). A
+ *   since-view orphan line's cell (CAR-216) carries `data-orphan`; a
+ *   removed one has no old number: its line is its base number in
+ *   ORPHAN_LEFT's space (orphanLeft.ts, CAR-276). Side by side, a context line is shown in
  *   a cell on each side (`data-kind="context"`, `data-side` the cell's
  *   column): it is one line, RIGHT from either cell;
  * - inside it, `[data-code]` holds exactly the line's characters (CodeLine):
@@ -59,6 +63,17 @@ export interface CellLine {
 	 * comment can name it (CAR-233).
 	 */
 	psMoved?: boolean;
+	/**
+	 * A since-view orphan line's cell (`data-orphan`, CAR-216): a removed
+	 * one's `line` is in ORPHAN_LEFT's space, its GitHub line `base`.
+	 */
+	orphan?: boolean;
+	/**
+	 * A since-view RIGHT cell whose line GitHub's diff hasn't
+	 * (`data-off-github`, DiffLine.offGithub): no comment can go on it
+	 * (CAR-293).
+	 */
+	offGithub?: boolean;
 }
 
 /**
@@ -67,10 +82,17 @@ export interface CellLine {
  * ("unknown"), or lines of the earlier patch set's commit mixed with the
  * head's ("mixed").
  */
-export type NoLine = "earlier" | "unknown" | "mixed" | "renamed" | "split";
+export type NoLine =
+	| "earlier"
+	| "unknown"
+	| "mixed"
+	| "renamed"
+	| "split"
+	| "orphan"
+	| "orphan-split";
 
 /** A line only the compared patch set had, on its commit (CAR-233). */
-export const onEarlier = (c: Pick<CellLine, "base" | "ps">) =>
+const onEarlier = (c: Pick<CellLine, "base" | "ps">) =>
 	c.base === null && c.ps !== undefined;
 
 /** The line GitHub knows a cell's line by: its base number in the since view. */
@@ -95,15 +117,29 @@ export const noLineOf = (
  * Why the span over `cells` can't go to GitHub (the first line's reason),
  * or null. Lines on the earlier patch set's commit go there all together
  * or not at all: mixed with others, "mixed"; with no such commit known
- * (`earlier`), "unknown".
+ * (`earlier`), "unknown". An orphan line (CAR-276) goes with orphan
+ * lines only: with others, "orphan" (the view shows them apart, unlike
+ * GitHub's range between them); its removed lines' base lines one run, else
+ * "orphan-split" (the range would hold base lines the view never showed).
  */
 export function noLineIn(
-	cells: readonly Pick<CellLine, "base" | "ps" | "psMoved">[],
+	cells: readonly (Pick<CellLine, "base" | "ps" | "psMoved"> &
+		Partial<Pick<CellLine, "orphan" | "side">>)[],
 	earlier?: string,
 ): NoLine | null {
 	for (const c of cells) {
 		const why = noLineOf(c);
 		if (why) return why;
+	}
+	if (cells.some((c) => c.orphan) && cells.some((c) => !c.orphan)) {
+		return "orphan";
+	}
+	const bases = cells
+		.filter((c) => c.orphan && c.side === "LEFT" && typeof c.base === "number")
+		.map((c) => c.base as number)
+		.sort((a, b) => a - b);
+	if (bases.some((n, i) => i > 0 && n !== (bases[i - 1] as number) + 1)) {
+		return "orphan-split";
 	}
 	const on = cells.filter(onEarlier).length;
 	if (on === 0) return null;
@@ -124,10 +160,17 @@ export function cellLine(cell: Element): CellLine | null {
 			? "RIGHT"
 			: cell.getAttribute("data-side");
 	const row = cell.closest("tr");
-	const line = Number(
-		row?.getAttribute(side === "LEFT" ? "data-old-no" : "data-new-no"),
-	);
 	const baseAttr = side === "LEFT" ? row?.getAttribute("data-base-no") : null;
+	const orphan = cell.hasAttribute("data-orphan");
+	const numbered = row?.getAttribute(
+		side === "LEFT" ? "data-old-no" : "data-new-no",
+	);
+	// An orphan removed line has no old number: its base one, in its own
+	// space (CAR-276).
+	const line =
+		numbered == null && side === "LEFT" && orphan && baseAttr
+			? ORPHAN_LEFT + Number(baseAttr)
+			: Number(numbered);
 	const psAttr = baseAttr === "" ? row?.getAttribute("data-ps-no") : null;
 	// The since view's LEFT line without a base number: not known (CAR-217).
 	const unknown =
@@ -156,6 +199,10 @@ export function cellLine(cell: Element): CellLine | null {
 		...(psAttr ? { ps: Number(psAttr) } : {}),
 		...(baseAttr === "" && row?.hasAttribute("data-ps-moved")
 			? { psMoved: true }
+			: {}),
+		...(orphan ? { orphan: true } : {}),
+		...(side === "RIGHT" && row?.hasAttribute("data-off-github")
+			? { offGithub: true }
 			: {}),
 	};
 }
@@ -187,6 +234,13 @@ function pointIn(
 
 /** Whether the cell's line is in GitHub's diff (a hunk's, not expanded context). */
 export const inHunk = (c: Pick<CellLine, "hunk">) => c.hunk.startsWith("h");
+
+/**
+ * Whether GitHub takes a comment on the cell's line: a hunk's, and not a
+ * since-view line GitHub's diff hasn't (CAR-293).
+ */
+export const onGithub = (c: Pick<CellLine, "hunk" | "offGithub">) =>
+	inHunk(c) && !c.offGithub;
 
 /**
  * A span over cells `start`..`end` (in the order shown), whole lines unless
@@ -306,6 +360,8 @@ export function spanOfRange(
 ): {
 	span: CodeSpan;
 	inDiff: boolean;
+	/** An end of it is a since-view line GitHub's diff hasn't (CAR-293). */
+	sameAsBase: boolean;
 	/** Why one of its lines has no GitHub line (the since view), or null. */
 	noLine: NoLine | null;
 	/** The code cells of its first and last line, as shown (SelectionBar's geometry). */
@@ -354,7 +410,8 @@ export function spanOfRange(
 					{ startCol: start.col, endCol: end.col },
 					earlier,
 				),
-		inDiff: inHunk(head) && inHunk(last),
+		inDiff: onGithub(head) && onGithub(last),
+		sameAsBase: !!(head.offGithub || last.offGithub),
 		noLine: noLineIn(cells, earlier),
 		cells: { head: head.cell, last: last.cell },
 	};

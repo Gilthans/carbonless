@@ -1,3 +1,4 @@
+import type { DiffRow } from "../../shared/hunkPairs";
 import { lineRuns } from "../../shared/pieces";
 import type { DiffLine } from "../../shared/types";
 import { matchDisplayHunk, whitespaceKey } from "../../shared/whitespace";
@@ -18,7 +19,6 @@ import { hunkPairs, type LinePair } from "./wordBlocks";
 
 export {
 	matchSides,
-	type Side,
 	stripWhitespace,
 	whitespaceEqual,
 } from "../../shared/whitespace";
@@ -34,17 +34,7 @@ const keyOf = (line: DiffLine): string =>
 export const linesWhitespaceEqual = (del: DiffLine, add: DiffLine): boolean =>
 	keyOf(del) === keyOf(add);
 
-/**
- * A row of a cluster's run: a line as it is (a context line, or a change),
- * or a whitespace-only row. The whitespace-only row has both sides when a
- * removed line pairs with an added line of the same run; one side when the
- * line's twin is a context line or sits in another run (the twin stays
- * where it is).
- */
-export type DiffRow =
-	| { kind: "line"; line: DiffLine }
-	| { kind: "ws"; del: DiffLine; add?: DiffLine }
-	| { kind: "ws"; del?: DiffLine; add: DiffLine };
+export type { DiffRow } from "../../shared/hunkPairs";
 
 /**
  * Splits a hunk into runs of context lines and runs of one cluster's
@@ -158,7 +148,7 @@ export function pairRun(
 }
 
 /** A hunk's run and the rows the view shows for it. */
-export interface ViewRun {
+interface ViewRun {
 	key?: string;
 	/** A run of orphan lines (DiffLine.orphan, CAR-216). */
 	orphan?: true;

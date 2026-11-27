@@ -6,11 +6,14 @@ import {
 	CircleSlashIcon,
 	DiffRemovedIcon,
 	FileRemovedIcon,
+	GitBranchIcon,
 	GitCompareIcon,
 	HistoryIcon,
 	type Icon,
 	MoveToBottomIcon,
 	QuestionIcon,
+	StopIcon,
+	UnverifiedIcon,
 	VersionsIcon,
 } from "@primer/octicons-react";
 import { useQuery } from "@tanstack/react-query";
@@ -39,6 +42,7 @@ import { CentredWithHandle } from "../agent/ThreadAgentButton";
 import { AgentCover } from "../agent/ThreadAgentPanel";
 import { ThreadAgentContext, useThreadAgent } from "../agent/threadAgent";
 import { placementsQuery, type RereviewTo, sessionQuery } from "../api";
+import { useMessageCopy } from "../messageCopy";
 import { Badge, BotIcon, Chip, SkeletonBar } from "../overview/parts";
 import { RelativeTime } from "../RelativeTime";
 import { useReviewId } from "../reviewId";
@@ -79,6 +83,11 @@ export interface PlacementInfo {
 	pending: boolean;
 	/** They couldn't be computed (each card says so; the page offers a retry). */
 	error: Error | null;
+	/**
+	 * Asking again after a partial answer failed (CAR-8): the threads still
+	 * `pending` in it say so instead of spinning.
+	 */
+	stalled?: Error | null;
 	/** Asks for them again. */
 	retry: () => void;
 	/** A retry after an error is under way. */
@@ -117,7 +126,7 @@ export const PlacementProvider = PlacementContext.Provider;
 export const usePlacementInfo = () => useContext(PlacementContext);
 
 /** A fate's word, icon, tone and tooltip. */
-export const FATES: Record<
+const FATES: Record<
 	Fate,
 	{
 		label: string;
@@ -188,6 +197,20 @@ export const FATES: Record<
 		tip: "The base branch changed this line since",
 		sentence: "The base changed under the commented line since the review",
 	},
+	"base-unknown": {
+		label: "base unknown",
+		icon: GitBranchIcon,
+		tone: "yellow",
+		tip: "Its old line isn't where GitHub showed it",
+		sentence: "Couldn't find the base the commented old line was on",
+	},
+	"check-failed": {
+		label: "couldn't check",
+		icon: StopIcon,
+		tone: "red",
+		tip: "GitHub's copy of its line couldn't be read",
+		sentence: "Couldn't check the commented old line against GitHub",
+	},
 };
 
 /** No fate known: the placements couldn't be computed. */
@@ -225,11 +248,13 @@ export function PlacementChip({ thread }: { thread: ReviewThread }) {
 function FateChip({ thread }: { thread: ReviewThread }) {
 	const info = usePlacementInfo();
 	const placement = info.placements?.get(thread.id);
+	const failed =
+		placement?.kind === "pending" ? (info.error ?? info.stalled) : info.error;
 	// Made on the viewed head, it is shown where it was made: nothing to
 	// place, so never unknown (CAR-271).
 	if (
-		!placement &&
-		info.error &&
+		(!placement || placement.kind === "pending") &&
+		failed &&
 		!thread.resolved &&
 		!madeOnHead(thread, info.viewedHead)
 	) {
@@ -237,25 +262,39 @@ function FateChip({ thread }: { thread: ReviewThread }) {
 			<Chip
 				tone="red"
 				icon={AlertIcon}
-				tip={`Where this thread sits now couldn't be computed: ${info.error.message}`}
+				tip={`Where this thread sits now couldn't be computed: ${failed.message}`}
 				testId="placement-error"
 			>
 				place unknown
 			</Chip>
 		);
 	}
-	if (!placement) {
-		return info.pending && !thread.resolved ? (
+	// Placing: all of them on their way, or this one (an old-side thread
+	// waiting for GitHub's hunk, CAR-8).
+	if (
+		placement?.kind === "pending" ||
+		(!placement && info.pending && !thread.resolved)
+	) {
+		return (
 			<span className="flex h-4 w-4 items-center" data-testid="placement-slot">
 				<Spinner label="Placing threads" size={12} />
 			</span>
-		) : null;
+		);
 	}
+	if (!placement) return null;
 	// A resolved thread is placed so it never vanishes, never to ask for
 	// attention: its chip is muted.
 	const quiet = thread.resolved;
 	if (placement.kind === "changed") {
-		return <ChangedChip thread={thread} inFileMove={placement.inFileMove} />;
+		return (
+			<>
+				<ChangedChip thread={thread} inFileMove={placement.inFileMove} />
+				{placement.unchecked && <UncheckedChip quiet={quiet} />}
+			</>
+		);
+	}
+	if (placement.kind === "placed" && placement.unchecked) {
+		return <UncheckedChip quiet={quiet} />;
 	}
 	if (placement.kind === "unplaced" || placement.kind === "outside") {
 		// GitHub's outdated already has its badge on the card: no second sign.
@@ -273,6 +312,23 @@ function FateChip({ thread }: { thread: ReviewThread }) {
 		);
 	}
 	return null;
+}
+
+/**
+ * An old-side line placed with nothing from GitHub to check it by, from a
+ * base other than today's merge base (CAR-8): a flag of uncertainty.
+ */
+function UncheckedChip({ quiet }: { quiet: boolean }) {
+	return (
+		<Chip
+			tone={quiet ? "gray" : "yellow"}
+			icon={UnverifiedIcon}
+			tip="Its old line couldn't be checked against GitHub"
+			testId="placement-unchecked"
+		>
+			unchecked
+		</Chip>
+	);
 }
 
 /**
@@ -360,7 +416,7 @@ export function ChangedSince({
 }
 
 /** Where a moved thread's original lines are: the move's patch set (none for a head) and file. */
-export const movedOriginalOf = (m: MovedInfo) => ({
+const movedOriginalOf = (m: MovedInfo) => ({
 	ps: "patchset" in m.on ? m.on.patchset : null,
 	path: m.path,
 });
@@ -386,7 +442,7 @@ export type OldLines = Extract<ThreadPlacement, { kind: "changed" }>["old"];
  * commented lines from `fallback` (a changed placement's `old`: the same
  * patch set's lines, never where the thread sits now); else nothing.
  */
-export function OriginalCode({
+function OriginalCode({
 	thread,
 	fallback,
 	moved,
@@ -815,6 +871,8 @@ function UnplacedReplies({
  */
 function Opener({ thread }: { thread: ReviewThread }) {
 	const opener = usePerson(thread.author, thread.avatarUrl);
+	// A long press on a phone: Copy message (its Markdown, as written).
+	const copy = useMessageCopy(thread.body || thread.excerpt);
 	if (thread.unavailable !== undefined || (thread.id === "" && thread.loaded))
 		return <UnavailableText reason={thread.unavailable ?? "unreadable"} />;
 	return (
@@ -841,6 +899,7 @@ function Opener({ thread }: { thread: ReviewThread }) {
 				<div
 					data-testid="thread-body"
 					className={`${commentSurface(opener.tint)} break-words`}
+					{...copy.press}
 				>
 					<CommentBody
 						html={thread.html}
@@ -854,10 +913,12 @@ function Opener({ thread }: { thread: ReviewThread }) {
 				<p
 					data-testid="thread-body"
 					className={`${commentSurface(opener.tint)} text-sm break-words`}
+					{...copy.press}
 				>
 					{thread.excerpt}
 				</p>
 			)}
+			{copy.menu}
 		</div>
 	);
 }
@@ -911,6 +972,60 @@ export function UnplacedThreads(props: {
 						}
 						dropPath={props.path}
 					/>
+				))}
+			</ul>
+		</div>
+	);
+}
+
+/**
+ * Threads still being placed (CAR-8: an old-side thread waiting for
+ * GitHub's hunk): a spinner pill each, laid over the top of the file's
+ * lines, so showing or hiding it moves nothing; counted nowhere. When
+ * asking again failed, each says so instead of spinning.
+ */
+export function WaitingThreads(props: { waiting: readonly ReviewThread[] }) {
+	const info = usePlacementInfo();
+	if (props.waiting.length === 0) return null;
+	const failed = info.error ?? info.stalled ?? null;
+	return (
+		<div className="relative h-0">
+			<ul
+				data-testid="placing-threads"
+				aria-busy={failed ? undefined : true}
+				className="absolute top-1 right-2 z-10 flex max-w-[calc(100%-1rem)] flex-col items-end gap-1"
+			>
+				{props.waiting.map((t) => (
+					<li
+						key={t.id}
+						data-testid="placing-thread"
+						data-thread={t.id}
+						className="flex min-h-10 max-w-full min-w-0 items-center gap-2 rounded-full border border-line bg-surface px-3 text-xs text-muted shadow-sm"
+					>
+						{failed ? (
+							<Tooltip
+								content={`Where this thread sits now couldn't be computed: ${failed.message}`}
+							>
+								{(trigger) => (
+									<span
+										{...trigger}
+										role="img"
+										aria-label="Place unknown"
+										data-testid="placing-thread-error"
+										className="flex shrink-0 text-bad"
+									>
+										<AlertIcon size={14} aria-hidden />
+									</span>
+								)}
+							</Tooltip>
+						) : (
+							<Spinner label="Placing thread" size={14} />
+						)}
+						<span className="min-w-0 truncate">
+							{t.author}
+							{t.excerpt ? ` · ${t.excerpt}` : ""}
+						</span>
+					</li>
 				))}
 			</ul>
 		</div>

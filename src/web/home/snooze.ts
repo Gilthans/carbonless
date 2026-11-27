@@ -5,7 +5,7 @@ const at9 = (d: Date, addDays: number) =>
 	new Date(d.getFullYear(), d.getMonth(), d.getDate() + addDays, 9, 0, 0, 0);
 
 /** A date input's value: "2026-10-29". */
-export const ymd = (d: Date) =>
+const ymd = (d: Date) =>
 	`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
 
 /** The earliest date the picker offers: tomorrow. */

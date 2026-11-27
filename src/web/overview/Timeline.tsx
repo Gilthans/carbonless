@@ -53,7 +53,7 @@ import {
 import { eventKeys, runResolution } from "./timelineRuns";
 
 /** Events shown before "Show N earlier events": the latest ones. */
-export const TIMELINE_LATEST = 30;
+const TIMELINE_LATEST = 30;
 
 const short = (oid: string) => oid.slice(0, 7);
 

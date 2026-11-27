@@ -66,7 +66,7 @@ export interface AgentThreadFold extends Omit<AgentThread, "code"> {
  * GitHub's id of a review comment, from its link (`…#discussion_r<id>`):
  * increasing with the time GitHub took it. Unknown: last.
  */
-export function discussionId(url: string): number {
+function discussionId(url: string): number {
 	const m = /#discussion_r(\d+)$/.exec(url);
 	return m ? Number(m[1]) : Number.POSITIVE_INFINITY;
 }
@@ -167,9 +167,7 @@ function messageOf(
 		...(e.type === "agent-message" && e.head !== undefined
 			? { head: e.head }
 			: {}),
-		...(e.type === "agent-message" && e.suggests
-			? { suggests: e.suggests }
-			: {}),
+		...(e.suggests ? { suggests: e.suggests } : {}),
 		...(e.origin ? { origin: e.origin } : {}),
 	};
 }
@@ -418,6 +416,8 @@ type OpenInput =
 			origin?: AgentOrigin;
 			/** The agent's idempotency key: a key already stored returns that thread. */
 			key?: string;
+			/** Its text suggests resolving the GitHub thread it opens on. */
+			suggests?: "resolve";
 	  };
 type MessageInput =
 	| { by: "human"; text: string; clientId: string; view?: AgentView }
@@ -429,6 +429,8 @@ type MessageInput =
 			origin: AgentOrigin;
 			/** The agent's idempotency key on this thread. */
 			key?: string;
+			/** Its text suggests resolving the GitHub thread (`open` on one). */
+			suggests?: "resolve";
 	  }
 	| {
 			by: "ai";
@@ -559,6 +561,7 @@ export class AgentThreadStore {
 									...(input.key !== undefined
 										? { details: { key: input.key } }
 										: {}),
+									...(input.suggests ? { suggests: input.suggests } : {}),
 								}
 							: {
 									details: { clientId: input.clientId },
@@ -608,6 +611,7 @@ export class AgentThreadStore {
 									...(input.key !== undefined
 										? { details: { key: input.key } }
 										: {}),
+									...(input.suggests ? { suggests: input.suggests } : {}),
 								}
 							: input.by === "ai"
 								? {
@@ -976,7 +980,7 @@ const oneLinePath = (path: string) =>
 	path.replace(/[\r\n]+/g, " ").slice(0, 200);
 
 /** The moves and undos of a ref's events (AgentThreadStore.moves). */
-export function movesOf(events: readonly CrbEvent[]): {
+function movesOf(events: readonly CrbEvent[]): {
 	moves: ThreadMove[];
 	undos: MoveUndo[];
 } {

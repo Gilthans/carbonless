@@ -18,7 +18,7 @@ export function ghCallsOf(log: string): string[] {
  * `timeline`, `contents` (threads' comments), `head` (the PR's head and
  * base), `viewer` (the gh login), else its first 40 characters.
  */
-export function ghCallKind(call: string): string {
+function ghCallKind(call: string): string {
 	if (/^api graphql .*query PrOverview\(/s.test(call)) return "overview";
 	if (/reviewThreads\((first|last): /.test(call)) return "threads";
 	if (/timelineItems\(/.test(call)) return "timeline";

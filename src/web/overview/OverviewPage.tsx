@@ -79,6 +79,8 @@ import {
 import { useFocusCard } from "../files/threadFocus";
 import { useReviewView } from "../files/useSetStates";
 import { GithubHtml, ImageErrorContext } from "../GithubHtml";
+import { StepText, useLoadingStep } from "../loadingStep";
+import { useMessageCopy } from "../messageCopy";
 import { usePageActive } from "../pageActive";
 import { RelativeTime, relativeTime, useNow } from "../RelativeTime";
 import { useReviewId } from "../reviewId";
@@ -316,6 +318,29 @@ function OverviewContent({
 /** The sections' frames while GitHub is read: grey bars where text will be. */
 function OverviewSkeleton() {
 	const bar = (width: string) => <SkeletonBar className={width} />;
+	// Once slow: what the overview's read waits on (CAR-296), laid over
+	// the first frame's bars (nothing moves as it comes and goes).
+	const { step } = useLoadingStep(
+		"overview",
+		(r) => r.method === "GET" && /\/overview(?:\?|$)/.test(r.path),
+		true,
+	);
+	return (
+		<div className="relative">
+			<p
+				aria-live="polite"
+				data-testid="overview-step"
+				className="absolute inset-x-px top-12 z-10 bg-surface px-4 py-1.5 text-xs break-words text-muted empty:p-0"
+			>
+				{step && <StepText step={step} />}
+			</p>
+			<OverviewFrames bar={bar} />
+		</div>
+	);
+}
+
+/** The sections' frames (OverviewSkeleton's busy part). */
+function OverviewFrames({ bar }: { bar: (width: string) => ReactNode }) {
 	return (
 		<div data-testid="overview-loading" aria-busy="true" className="space-y-6">
 			<p className="sr-only">Loading the PR from GitHub…</p>
@@ -1355,7 +1380,12 @@ function ThreadGroup(props: {
 					</ul>
 				)}
 			</div>
-			<div id={listId}>
+			{/* data-trace: the threads milestone (src/web/trace/milestones.ts). */}
+			<div
+				id={listId}
+				data-trace="threads"
+				data-state={props.failed ? "failed" : undefined}
+			>
 				{loading && (
 					<ul
 						aria-label="Loading threads"
@@ -1550,6 +1580,8 @@ function ThreadItem({
 	const commentId = useId();
 	const codeId = useId();
 	const repliesId = useId();
+	// A long press on a phone: Copy message (its Markdown, as written).
+	const copy = useMessageCopy(thread.body || thread.excerpt);
 	// The span's exact characters painted on its lines, when they fit.
 	const rows = useMemo(
 		() => withSpanMarks(thread.code?.rows ?? [], thread.anchor),
@@ -1658,6 +1690,7 @@ function ThreadItem({
 			data-testid="thread-body"
 			data-tint={opener.tint}
 			className={`relative ${commentSurface(opener.tint)} ${open ? "" : "max-h-32 overflow-hidden"}`}
+			{...copy.press}
 		>
 			<CommentBody
 				html={thread.html}
@@ -1680,6 +1713,7 @@ function ThreadItem({
 			data-testid="thread-body"
 			data-tint={opener.tint}
 			className={`${commentSurface(opener.tint)} text-sm break-words`}
+			{...copy.press}
 		>
 			{thread.excerpt}
 		</p>
@@ -1707,10 +1741,14 @@ function ThreadItem({
 	const commentCell = openerBar ? (
 		<div className="min-w-0 space-y-1">
 			{comment}
+			{copy.menu}
 			{openerBar}
 		</div>
 	) : (
-		comment
+		<>
+			{comment}
+			{copy.menu}
+		</>
 	);
 	const repliesEl =
 		open && !thread.unavailable && replies.n > 0 ? (
@@ -1869,17 +1907,7 @@ function ThreadItem({
 					<ThreadFateLine thread={thread} />
 					{thread.code?.source === "pending" ? (
 						<div className="grid gap-3 md:grid-cols-2 md:items-start">
-							{/* The code is still being built: the pane's frame. */}
-							<div
-								data-testid="thread-code-loading"
-								aria-busy="true"
-								className="min-w-0 space-y-2 rounded-md border border-line bg-code px-3 py-3"
-							>
-								<span className="sr-only">Loading…</span>
-								{["w-3/5", "w-4/5", "w-full", "w-2/3", "w-3/4"].map((w) => (
-									<SkeletonBar key={w} className={w} />
-								))}
-							</div>
+							<ThreadCodeLoading />
 							{comments}
 						</div>
 					) : thread.code && rows.length > 0 ? (
@@ -1948,6 +1976,47 @@ function ThreadItem({
 				</div>
 			</li>
 		</ThreadAgentContext.Provider>
+	);
+}
+
+/** A threads request that brings the threads' code. */
+const CODE_STAGES = /\/threads\?(?:.*&)?stage=(?:firstCode|full)(?:&|$)/;
+
+/**
+ * A thread's code still being built: the pane's frame, and once that is
+ * slow, what it waits on (CAR-296) laid over the frame's foot: nothing
+ * moves as it comes and goes. Every pane shares one ask (its key), and
+ * only the first pane's line is read out: one announcement for one wait.
+ */
+function ThreadCodeLoading() {
+	const { step, live } = useLoadingStep(
+		"thread-code",
+		(r) => CODE_STAGES.test(r.path),
+		true,
+	);
+	return (
+		<div className="relative min-w-0">
+			<div
+				data-testid="thread-code-loading"
+				aria-busy="true"
+				className="min-w-0 space-y-2 rounded-md border border-line bg-code px-3 py-3"
+			>
+				<span className="sr-only">Loading…</span>
+				{["w-3/5", "w-4/5", "w-full", "w-2/3", "w-3/4"].map((w) => (
+					<SkeletonBar key={w} className={w} />
+				))}
+			</div>
+			{/* Outside the busy frame, so a screen reader reads it out (the
+			    first pane's; the others' are the same words, hidden). */}
+			<p
+				aria-live={live ? "polite" : undefined}
+				aria-hidden={live ? undefined : true}
+				data-testid="thread-code-step"
+				className="absolute inset-x-px bottom-px rounded-b-md bg-code px-3 py-1.5 text-xs break-words text-muted empty:p-0"
+			>
+				{step && <StepText step={step} />}
+			</p>
+		</div>
 	);
 }
 

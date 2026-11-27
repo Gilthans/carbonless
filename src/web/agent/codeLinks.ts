@@ -16,11 +16,11 @@ export interface CodeRef {
 const OID = /^[0-9a-f]{40}$/;
 
 /** `path:line` or `path:start-end`, not part of a longer word or path. */
-export const CODE_REF =
+const CODE_REF =
 	/(?<![\w./@+-])((?:[\w@+-]+[./])*[\w@+-]+(?:\.[\w@+-]+)*):(\d+)(?:-(\d+))?(?![\w-])/g;
 
 /** The refs of one piece of text, with where each sits. */
-export function findCodeRefs(
+function findCodeRefs(
 	text: string,
 ): { index: number; length: number; ref: CodeRef }[] {
 	const out: { index: number; length: number; ref: CodeRef }[] = [];

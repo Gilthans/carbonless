@@ -1,12 +1,17 @@
-import { readFileSync } from "node:fs";
-import type { Locator, Page } from "@playwright/test";
+import type { Locator, Page, Route } from "@playwright/test";
 import { releaseAcp } from "../test/fake-acp/scenario";
+import { reviewThread, threadComment } from "../test/fake-gh/scenario";
 import {
-	reviewThread,
-	type Scenario,
-	threadComment,
-} from "../test/fake-gh/scenario";
-import { CALC, expect, fixture, openFile, row, test } from "./agent-ui";
+	ask,
+	CALC,
+	expect,
+	fixture,
+	openFile,
+	resolveWrites,
+	row,
+	storedResolved,
+	test,
+} from "./agent-ui";
 import { expectNoPageOverflow } from "./files-ui";
 import type { Pr, PrOptions } from "./fixtures";
 
@@ -23,6 +28,14 @@ test.use({ crbServer: "own" });
 
 const QUESTION = "Is total right?";
 const AGENT = { name: "Fake Agent", version: "9.9.9" };
+
+const shots = process.env.DESIGN_SHOTS;
+async function shot(page: Page, name: string, isMobile: boolean) {
+	if (!shots) return;
+	await page.screenshot({
+		path: `${shots}/${name}-${isMobile ? "phone" : "desktop"}.png`,
+	});
+}
 
 async function setup(pr: (opts?: PrOptions) => Promise<Pr>): Promise<Pr> {
 	const p = await pr(fixture);
@@ -45,19 +58,6 @@ async function setup(pr: (opts?: PrOptions) => Promise<Pr>): Promise<Pr> {
 	});
 	return p;
 }
-
-/** Whether the fake gh has the thread resolved (its writes are kept in the scenario). */
-function storedResolved(p: Pr): boolean | undefined {
-	const s = JSON.parse(readFileSync(p.scenarioPath, "utf8")) as Scenario;
-	const threads = (s.prs[7]?.graphql?.reviewThreads ?? []) as {
-		isResolved: boolean;
-	}[];
-	return threads[0]?.isResolved;
-}
-
-/** The fake gh's resolve mutations so far. */
-const resolveWrites = (p: Pr) =>
-	(p.ghLog().match(/\bresolveReviewThread\(/g) ?? []).length;
 
 /** The Overview's card of the thread. */
 const overviewCard = (page: Page) =>
@@ -173,7 +173,148 @@ test("open a conversation from an Overview thread, get an answer, see the counte
 	);
 });
 
-test("the same from Files changed", async ({ page, pr, agentCrb }) => {
+test("on code, with the viewer on the second tint (after rev1), the agent's answers stand apart from their messages (CAR-270)", async ({
+	page,
+	pr,
+	agentCrb,
+	isMobile,
+}) => {
+	// rev1 spoke first: the viewer gets person-2 (before CAR-270 a teal
+	// next to the agent's).
+	await setup(pr);
+	const s = await agentCrb({
+		scenario: { agent: AGENT, answers: [{ text: "Only v1 and v2." }] },
+	});
+	const section = await openFile(page, s.url, CALC);
+	const card = await ask(page, section, 2, "What does total add?");
+	const reply = card.getByTestId("agent-message-ai");
+	await expect(reply).toHaveText("Only v1 and v2.");
+	await shot(page, "agent-card-person-2", isMobile);
+	const mine = card.getByTestId("agent-message-human");
+	await expect(mine).toHaveClass(/\bbg-person-2\b/);
+	const look = (l: typeof reply) =>
+		l.evaluate((el) => {
+			const st = getComputedStyle(el);
+			return {
+				bg: st.backgroundColor,
+				left: st.borderLeftWidth,
+				leftColor: st.borderLeftColor,
+				top: st.borderTopColor,
+			};
+		});
+	const [answer, human] = [await look(reply), await look(mine)];
+	// The answer: a railed box, its own ground and edge, never the viewer's.
+	expect(answer.left).toBe("3px");
+	expect(answer.leftColor).not.toBe(answer.top);
+	expect(human.left).toBe("1px");
+	expect(answer.bg).not.toBe(human.bg);
+	expect(answer.top).not.toBe(human.top);
+});
+
+test("a failed read: the panel keeps the error with a spinner in Retry's slot while it reads again, Send waits, never an empty conversation (CAR-124)", async ({
+	page,
+	pr,
+	agentCrb,
+	expectConsoleError,
+}) => {
+	// The failed reads (500s) Chromium logs.
+	expectConsoleError(/500/);
+	await setup(pr);
+	const s = await agentCrb({
+		scenario: { agent: AGENT, answers: [{ text: "Stored answer." }] },
+	});
+	await holdSeen(page);
+	await page.goto(s.url);
+	let card = overviewCard(page);
+	await openPanel(card);
+	await sendToAgent(card, "Anything?");
+	await expect(panel(card).getByTestId("agent-message-ai")).toContainText(
+		"Stored answer.",
+	);
+	// From here, the threads' GETs fail, are held, or pass, as the test says.
+	let mode: "fail" | "hold" | "pass" = "fail";
+	const held: Route[] = [];
+	const fail = (route: Route) =>
+		route.fulfill({ status: 500, body: '{"error":"boom"}' });
+	await page.route(/\/agent\/threads(\?.*)?$/, async (route) => {
+		if (route.request().method() !== "GET" || mode === "pass") {
+			await route.continue();
+			return;
+		}
+		if (mode === "fail") {
+			await fail(route);
+			return;
+		}
+		held.push(route);
+	});
+	// The status reads held too: a status that moves refetches the threads
+	// (useAgentSync), and only the presses below may ask for them.
+	const statusHeld: Route[] = [];
+	await page.route(/\/agent(\?.*)?$/, async (route) => {
+		if (route.request().method() !== "GET") {
+			await route.continue();
+			return;
+		}
+		statusHeld.push(route);
+	});
+	try {
+		await page.reload();
+		card = overviewCard(page);
+		const button = agentButton(card);
+		await expect(button).toHaveAttribute("data-failed", "true");
+		const failed = panel(card).getByRole("alert");
+		const retry = failed.getByRole("button", { name: "Retry" });
+		const messages = panel(card).getByTestId("agent-message-human");
+		const send = card.getByRole("button", { name: "Send to agent" });
+		// Pressed, it opens the panel and reads again (held): the error
+		// stays, with a spinner in Retry's slot; no empty conversation.
+		mode = "hold";
+		await button.click();
+		await expect(panel(card)).toHaveAttribute("data-open", "true");
+		await expect.poll(() => held.length).toBe(1);
+		await expect(failed).toContainText("Agent messages couldn't load");
+		await expect(failed).toHaveAttribute("aria-busy", "true");
+		await expect(
+			failed.getByRole("status", { name: "Loading agent messages" }),
+		).toBeVisible();
+		await expect(retry).toHaveAttribute("aria-disabled", "true");
+		await expect(messages).toHaveCount(0);
+		// Nothing known of the thread's conversation: a draft, no Send.
+		await card.getByRole("textbox", { name: "Ask agent" }).fill("Again?");
+		await expect(send).toBeDisabled();
+		// That read fails too: the same error, Retry live.
+		for (const route of held.splice(0)) await fail(route);
+		await expect(failed).toHaveAttribute("aria-busy", "false");
+		await expect(retry).toHaveAttribute("aria-disabled", "false");
+		await expect(messages).toHaveCount(0);
+		// One press of Retry asks once (held): the spinner in its slot, then
+		// the conversation.
+		await retry.click();
+		await expect.poll(() => held.length).toBe(1);
+		await expect(failed).toHaveAttribute("aria-busy", "true");
+		await expect(messages).toHaveCount(0);
+		mode = "pass";
+		for (const route of held.splice(0)) await route.continue();
+		await expect(panel(card).getByTestId("agent-message-ai")).toContainText(
+			"Stored answer.",
+		);
+		await expect(messages).toHaveCount(1);
+		await expect(failed).toHaveCount(0);
+		await expect(send).toBeEnabled();
+	} finally {
+		await page.unroute(/\/agent(\?.*)?$/);
+		for (const route of statusHeld.splice(0)) {
+			await route.continue().catch(() => {});
+		}
+	}
+});
+
+test("the same from Files changed", async ({
+	page,
+	pr,
+	agentCrb,
+	isMobile,
+}) => {
 	const p = await setup(pr);
 	const s = await agentCrb({
 		scenario: { agent: AGENT, answers: [{ text: "Only v1 and v2." }] },
@@ -193,6 +334,7 @@ test("the same from Files changed", async ({ page, pr, agentCrb }) => {
 	await expect(panel(thread).getByTestId("agent-view-chip")).toHaveText(
 		p.head().slice(0, 7),
 	);
+	await shot(page, "thread-agent-panel", isMobile);
 	await agentButton(thread).click();
 	await expectClosed(thread);
 	// Its seen mark held: the answer is still new.

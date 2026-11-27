@@ -48,6 +48,145 @@ A path names a run directory or a directory of runs (its newest).
 OpenTelemetry SDK: `src/server/trace.ts` writes the files). Unset, tracing
 is off and costs a property check per git or gh call.
 
+A server runs for weeks, so its tracing is meant to stay on (the service
+unit in [remote-machine.md](remote-machine.md) sets it):
+
+- Spans reach the file about 2 s after they end (an unref'd timer, besides
+  every 256 spans and at exit), so a crash loses seconds and the files can
+  be read while it runs (real timers: a test's fake clock never holds
+  them). A directory deleted while it runs is made again; any other write
+  that fails is reported once on stderr and tracing stops; crb goes on.
+- Its file rolls at a size limit and at the UTC day change:
+  `crb-<pid>-<random>.<yyyymmdd>.<seq, 6 digits>.jsonl`.
+- At start and on each roll it deletes its own files (`crb-<pid>-…`, old
+  unrotated names too) older than the days kept, then the oldest while
+  they pass the total cap, never one written in the last 5 minutes (another
+  live crb serve's, during an update's restart). Nothing else in the
+  directory is touched.
+- Defaults, overridable in the environment: `CRB_TRACE_FILE_MB` (32 per
+  file), `CRB_TRACE_KEEP_DAYS` (14), `CRB_TRACE_MAX_MB` (1024 in all),
+  raised to at least 1 MiB, 1 day and one file's size.
+
+`pnpm test-profile <the trace dir> [--since 1d] [--top N]` reads it as a
+server (a directory with crb serve's files and no `run.json`): the span
+count and time window, the slowest routes by p95 (n, total, p50, p95,
+max, failures: 5xx or aborted), gh and git calls, and gh/git by command
+(most time first). `--since` takes `30m`, `6h`, `1d`, `2w` or a date
+(default `7d`, said in the header); files last written before it aren't
+read. A test run refuses `--since`. `--jaeger` loads the same
+window into Jaeger (service `crb`). A server's directory is never packed.
+
+Every file says which build wrote it: each line's resource has
+`service.version` (package.json's version) and `service.commit` (the full
+SHA, `-dirty` kept), as `crb --version` and `server.json` have them
+(`src/server/version.ts`). Run from source (tests, `pnpm dev`) that is
+package.json's version and the checkout's HEAD. The server summary lists
+the builds in the window ("unknown": files from before builds were
+recorded); `--only <build>` keeps one, and `--compare-version <a> <b>`
+puts two side by side: n, p50 and p95 per route, per gh/git kind and per
+command, the biggest p95 change weighed by calls first. A build is named
+exactly: as listed (`0.5.0-rc.3 (93fe843)`), by its version (`0.5.0` is
+the release, never its RCs) or by its commit's start (4+ hex); a name
+that fits more than one build is refused, listing them. A row missing on
+one side shows `–`, not a 0. `--only` goes with neither
+`--compare-version` nor `--jaeger`, and test runs refuse all three.
+The tracer reads the build only when tracing is on.
+
+### Loading steps (CAR-296)
+
+What a slow load says beside its spinner (`docs/product-rules.md`, "A
+slow wait says what it waits on") is the span name of the step the
+request is on, through a fixed map (`stepLabel`, `src/shared/activity.ts`),
+so what the reviewer sees is what `pnpm test-profile` shows. Steps are
+kept whether tracing is on or not (`src/server/activity.ts`).
+
+| Span | Shown |
+| --- | --- |
+| `gh <cmd>` (`gh pr view`) | `GitHub: <cmd>` (`GitHub: pr view`) |
+| `gh api <path>` | `GitHub: api <path>`, any segment but crb's API words as `…` |
+| `git <cmd>` | `git <cmd>` |
+| `crb: clone` | `Cloning <owner/repo>…` (the first clone; the page and `crb <pr>` keep CAR-291's wording) |
+| `crb: fetch pr` | `Fetching the PR` |
+| `crb: snapshot` | `Reading the diff` |
+| `crb: split carries` | `Carrying review marks` |
+| `crb: fetch commits` | `Fetching dropped commits` |
+| `crb: home list` | `GitHub: PR list, page <n>` |
+| `crb: home details` | `GitHub: PR details <n> of <m>` |
+| `crb: since` | `Computing the since view` |
+| `crb: repo lock` (a wait, no span) | `Waiting for the repo lock` (held by another crb) |
+| `crb: working` (a wait, no span) | `Working…` (shared work showing no step) |
+
+A named phase (`crb: …`) hides the gh and git calls under it; the
+innermost step shown is the newest phase or wait, else the newest call.
+The `crb: …` phases are spans too while tracing, the calls under them
+nested. Since CAR-296, `crb: clone` spans only a first clone (it used to
+wrap every open's `ensureClone`, its lock and checks included: an open
+of a cloned repo now has no `crb: clone` span), and `crb: fetch pr` is
+fetchPr's own, under the repo lock, so a head check's fetch has one too.
+Compare runs from before that change by `git fetch` rather than by
+these spans.
+
+### Browser spans (CAR-288)
+
+While `crb serve` traces, the pages it serves record what the reviewer
+waits for and send it to the same trace files (`$CRB_TRACE_BROWSER=0`
+turns just the page's spans off; the unit and e2e harnesses do, so test
+traces have none but `e2e/browser-trace.spec.ts`'s). The server says so
+with a `<meta name="crb-trace">` in its page (a page is then never served
+as "not modified", and `no-cache`, so it stays in the back-forward
+cache); without it the page installs nothing (one `querySelector`): no
+observer, no wrapped `fetch`, no listener, no request. The install is
+synchronous: the first render never waits on it. `pnpm dev`'s Vite page
+has no meta, so no page spans. Tracing never breaks the page: its
+callbacks run guarded, and an error in them turns it off for the page's
+life. In the trace files the page's spans are their own service,
+`crb-browser` (the same build attributes as `crb`'s).
+
+One trace per page load (`src/web/trace/`), the size of its loads:
+
+| span | what it is |
+| --- | --- |
+| `browser.navigation` | the trace's root: the document's load, 0 to `loadEventEnd`; `type`, `ttfb_ms`, `dom_interactive_ms`, `dcl_ms`, `load_ms`, `transfer_bytes`, `viewport_w`, `route` |
+| `browser.page` | a page shown (the first from the document's start, each later route from its move) to its last milestone (`complete: true`); left first, `complete: false` at the move; failed (a threads or Home repo read), `complete: false` with an error; given up after 5 minutes, `abandoned: true`, ending at its last milestone reached. `route` (`home`, `overview`, `files`, `verdict`, `settings`, `opening`), `review` (its id), `spa` (a move in the app: its shell, the header, was already up), `restored` (back from the back-forward cache), `hidden`, `cls` |
+| `browser.ui.*` | a milestone, from the page's start to when it is on screen: `header`; overview `threads` (the list, skeleton gone; an error when the read failed) and `threads_code` (no thread's code pending); files `first_file` (the first file with nothing busy, where the page ends) and `diff_rows` (the first diff line on screen); Home `home_rows`, `home_done`, and per view repo `repo_rows`, `repo_done` (`repo.index`: its place in the view, never its name) |
+| `browser.fetch` | an API request, from `fetch` to its headers; `api` (a template: `/api/r/:id/threads`), `stage`, `status`, `body_ms` (to its body read), `painted_ms` (to the frame after) |
+| `browser.longtask`, `browser.layout_shift` | while a page loads: a long task (`duration_ms`); a layout shift of 0.05 or more (`value`; every shift counts in its page's `cls`) |
+| `browser.lcp` | 0 to the largest contentful paint, once the first page is complete or the page goes away |
+| `browser.dropped` | written by the server: `count` spans of the page it turned away (its budget), so the gap shows |
+
+Filter before aggregating: `hidden: true` (the page was in a background
+tab at some point: no frames, so its times include the wait to be shown),
+`user: true` (a milestone the reviewer's pace sets: `diff_rows`, as files
+open collapsed unless the address lands on one), `late: true` (it came
+after its page's span ended), `spa: true` (a move, not a document load).
+Only `complete: true` pages are load times.
+
+Milestones are read off the page (`src/web/trace/milestones.ts`: test ids,
+`aria-busy`, the thread list's `data-trace`/`data-state`, Home's
+`data-repo`), so they hold however a page loads; the DOM is watched only
+while one is pending. Each `browser.fetch` sends a `traceparent`: the
+server's `GET /api/r/:id/...` span, with its git and gh, is its child, so
+a slow milestone reads down to the request and the command behind it.
+Once a page's span has ended its reads (polls, refetches) aren't traced,
+and a write (the reviewer's action) is a small trace of its own
+(`after_page: true`): a tab left open adds nothing while it only polls.
+So a Files page's expand loads its diff with no span (and no server
+request span under one); only its `diff_rows` milestone says when.
+
+Spans go out when a page is complete and every 5 s (plain POSTs), and by
+`sendBeacon` (else a keepalive POST) in batches of 50 when the tab hides
+(it may be closed with no other event; the page stays open) and when the
+page goes away, a best effort: a beacon sent while the document is
+replaced may be lost. `POST /api/trace` (`src/server/browserTrace.ts`,
+itself not traced) keeps only known names, checked ids, times within a
+day of now, 16 short attributes a span, 200 spans a batch, 1,500 spans a
+minute per page load and 3,000 in all (then 429; the page counts what was
+turned away in its next batch, written as `browser.dropped`). The page's
+clock is moved onto the server's by its smallest offset seen (a batch's
+`sentAt`, and each traced request's arrival against its span's start:
+latency only adds), when that is over 30 ms; the smallest holds a minute,
+so a clock that steps (a device that slept) is placed again.
+
 ## Reading them
 
 - `pnpm test-profile [run|latest|e2e|unit]` (the newest match with traces,
@@ -195,3 +334,20 @@ the result. It refuses a run that looks filtered or partial (under 90% of
 the listed files, or many times below a third of the listed ones: a `-t`
 or flake-check run); `--force` writes it anyway. Keys use forward slashes
 on every OS.
+
+## Mutation testing (CAR-263)
+
+`pnpm mutation` runs Stryker (`stryker.config.mjs`) on the code that
+decides what is reviewed and unreviewed (CLAUDE.md principle 2): the
+coverage join and fold, the carry engine, clusters, pieces and the
+page's counts. It plants small bugs (a flipped condition, an off-by-one)
+and reports each one no unit test catches, in `reports/mutation/`
+(`mutation.html`, `mutation.json`; git-ignored). It takes the queue's
+full slot (`scripts/queue.mjs`), one Stryker runner per worker the slot
+gets, each running Vitest with one worker; `testFiles` keeps it to the
+unit tests of those files. Measured on the devbox, loaded, 5 runners: about
+5,300 mutants in 4 h 10 min. Too slow for CI or every PR: run it by hand
+after changing that logic, and read the survivors of the files you
+touched. A survivor that could make coverage look more complete is a
+missing test; one that can't (an equivalent mutant, a message, an order
+of display) needs none.

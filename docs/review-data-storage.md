@@ -240,7 +240,7 @@ Initial event types:
 | progress | `lines-carried` | `from` and `to` (patch set numbers, `from < to`), `states`: a list of `{ key, fromKey, state, lines, fromLines }`, `lines` of cluster `key` in `to` taking `state` (`reviewed` or `crossed-off`) from as many `fromLines` of cluster `fromKey` in `from`; see "Line carries" |
 | progress | `lines-state` | snapshot id (`patchset`), cluster identity hash, file path, `state` (`reviewed` or `crossed-off`), `lines`: line ranges of the cluster (see "Marks on part of a cluster") |
 | progress | `split-carried` | snapshot id (`patchset`), `states`: a list of `{ key, fromKey, state, from?, lines? }`, one per piece of a hunk cut at its whitespace-only runs (or two, one per state), `fromKey` the whole hunk's key before, `state` `reviewed` or `crossed-off`, `from` the hunk's line ranges it takes (for a hunk marked by lines), `lines` the piece's (only for part of it, as many as `from`); see "Split carries" |
-| progress | `since-lines-state` | snapshot id (`patchset`), `since` (an earlier patch set's number), file `path`, `reviewed` and `crossed`: each `{ old, new }` line ranges on the since view's sides; the whole set for that (since, path) |
+| progress | `since-lines-state` | snapshot id (`patchset`), `since` (an earlier patch set's number), file `path`, `reviewed` and `crossed`: each `{ old, new }` line ranges on the since view's sides (old-side line 0: the file-level change); the whole set for that (since, path) |
 | progress | `thread-placed` | **read only since CAR-139** (never written again; read as a move, see "Thread moves"): `thread` (the thread's id), `patchset` (number), `anchor` (`path`, `startSide`, `startLine`, `side`, `line`), `engine` (the tracer's version, a positive integer) |
 
 `carried` holds many clusters in one event, so a move costs one event per
@@ -373,7 +373,15 @@ engine computes it for the since view's hunks, `interdiffFileHunks`):
   found by position: the since view numbers it in the earlier head (or its
   virtual rebase), and the engine maps it back through that patch set's
   own diff and the bases' diff (`lineKeys.baseLine`); its text must match
-  as a guard. Never by text alone: a twin elsewhere (a blank line, a `}`)
+  as a guard. A line the base move brought or changed (a rebase onto a
+  base that edited that very line) has no place that way; its GitHub
+  LEFT line on the head (`lineKeys.githubLeft`, the virtual rebase
+  against the new base) places it instead, only when the tracer names it
+  the base move's (`lineKeys.baseMoved`: not placed, not the earlier
+  patch set's own, in a file whose head file pairs with it), the earlier
+  patch set didn't add it, no row `baseLine` places claims that base
+  line, and with the same text guard (CAR-277; otherwise the cluster's
+  line is also an orphan row, shown twice). Never by text alone: a twin elsewhere (a blank line, a `}`)
   is another line. A line the earlier patch set added, or one that can't
   be mapped, is none of the cluster's.
 - A cluster line no piece shows is unchanged since the earlier patch set.
@@ -485,6 +493,14 @@ pieces marks every since-only piece inside it, in the since view only. These mar
 cluster's state, never carry, and never count in the snapshot's progress;
 the since view counts an unmarked since-only piece in "to read", and the
 engine's answer lists them per file (`sinceOnly`) and in `toRead`.
+A file-level change of the interdiff (a mode, a binary file, a submodule
+pointer, a rename the earlier patch set made: it goes on that path's gone
+file, "Renamed from …" in its label) that no reworked or new file-level cluster of the snapshot shows,
+such as one the author reverted since (CAR-297), is a since-only piece
+with no lines (`SincePiece.file`, its label): it is marked as **old-side
+line 0** of the file's since mark (`fileLevelSides`, `src/shared/pieces.ts`),
+a number no line has (they start at 1), so no mark on the file's lines
+ever holds it. The format is unchanged: a crb from before CAR-297 neither shows nor counts the change, and keeps the line-0 range when it writes the file's mark.
 
 **Counts follow the view** (owner, 2026-11-08: "all the counts should be
 related to the interdiff, not the base diff"). In the since view every
@@ -589,8 +605,8 @@ tree, slug identities, compare-and-swap). Written by
 
 | Type | By | Payload |
 |---|---|---|
-| `agent-thread-opened` | human or ai | `thread` (lowercase ULID), `anchor` (`subject` `line`: path, commit, side, line, startSide, startLine, optional columns; `file`: path, commit; `thread`: GitHub thread node id `thread` (1 to 200 characters, not a ULID), path, commit, and optionally side, line, startSide, startLine; or `review`: the review conversation, no other key (any other is dropped on read), human only), `text`, optional `truncated`; `agent` `{name, version, via?, machine?}` (required by ai; `via` `acp` or `mcp`, and a joined session's `machine`: optional, a bad value is dropped and the event kept; a few dozen bytes, this ref is never pushed); ai only: `origin` (below); human only: `view` (below); a human's carries `details.clientId`, an ai one opened with the agent's idempotency key `details.key` |
-| `agent-message` | human or ai | `thread`, `text`, optional `truncated`; ai: `agent` (as above; a joined session's `name` is how it named itself, `version` its harness string, `via` `mcp`, and `machine`; a spawned agent's, written by its MCP `reply` too since 2026-11-13, `via` `acp` with its `agentInfo` name and version), `stop` (the ACP stop reason or `error`), `activity` (`{kind, title, decision?}`, titles only), `replyTo` (the event id of the last human message the answer replies to: `reply`'s `replyTo`, or the question a stopped or failed hand-out ends; a lower ULID, ai only), `error` (with `stop: "error"` only: the agent's reason for the failed turn, one line, at most 1000 characters; an event with it anywhere else is dropped); ai only: `head` (the OID of the checkout the answer came from; older ACP answers only, none since 2026-11-13), `suggests` (`"resolve"`), `origin` (below; an origin message has `stop: "end_turn"`, empty `activity`, no `replyTo`, and `details.key` when the agent gave one); human only: `view`; a human's carries `details.clientId` |
+| `agent-thread-opened` | human or ai | `thread` (lowercase ULID), `anchor` (`subject` `line`: path, commit, side, line, startSide, startLine, optional columns; `file`: path, commit; `thread`: GitHub thread node id `thread` (1 to 200 characters, not a ULID), path, commit, and optionally side, line, startSide, startLine; or `review`: the review conversation, no other key (any other is dropped on read), human only), `text`, optional `truncated`; `agent` `{name, version, via?, machine?}` (required by ai; `via` `acp` or `mcp`, and a joined session's `machine`: optional, a bad value is dropped and the event kept; a few dozen bytes, this ref is never pushed); ai only: `origin` (below) and `suggests` (`"resolve"`: MCP `open` on a GitHub thread, since 2026-11-23; readers keep it only on a `thread` anchor, dropping the field, not the event, on code); human only: `view` (below); a human's carries `details.clientId`, an ai one opened with the agent's idempotency key `details.key` |
+| `agent-message` | human or ai | `thread`, `text`, optional `truncated`; ai: `agent` (as above; a joined session's `name` is how it named itself, `version` its harness string, `via` `mcp`, and `machine`; a spawned agent's, written by its MCP `reply` too since 2026-11-13, `via` `acp` with its `agentInfo` name and version), `stop` (the ACP stop reason or `error`), `activity` (`{kind, title, decision?}`, titles only), `replyTo` (the event id of the last human message the answer replies to: `reply`'s `replyTo`, or the question a stopped or failed hand-out ends; a lower ULID, ai only), `error` (with `stop: "error"` only: the agent's reason for the failed turn, one line, at most 1000 characters; an event with it anywhere else is dropped); ai only: `head` (the OID of the checkout the answer came from; older ACP answers only, none since 2026-11-13), `suggests` (`"resolve"`), `origin` (below; an origin message has `stop: "end_turn"`, empty `activity`, no `replyTo`, `details.key` when the agent gave one, and may carry `suggests`); human only: `view`; a human's carries `details.clientId` |
 | `agent-thread-resolved` | human | `thread`, `resolved` (`false` reopens) |
 | `agent-thread-seen` | human | `thread`, `upTo` (the id of the last message the reviewer has seen; a lowercase ULID) |
 | `agent-comment-posted` | human | `thread`, `message` (the agent message's id, a lowercase ULID), `block` (the ```` ```comment ```` block's index in that message, from 0), `clientId` (`ag.<thread>.<message>.<block>`, the comment's marker id), `github` `{thread, comment, url}` (the GitHub thread and comment node ids, and the comment's https link), `text` (what the reviewer posted, at most 32 KiB) |
@@ -598,9 +614,15 @@ tree, slug identities, compare-and-swap). Written by
 
 `view` is the comparison on screen when a human message was sent:
 `target` (`{patchset}` or `{head}`), `from` (`{branch: true}` or
-`{patchset}`), and the resolved `left` and `right` commit OIDs. Readers drop
+`{patchset}`), and the resolved `left` and `right` commit OIDs, and (since
+CAR-276, 2026-11-24) `base`: the merge base of `right` that LEFT line numbers
+name (the since view's too, since CAR-217); a view without it from a patch
+set may name a patch set's lines, so Comment on GitHub stays off for its LEFT
+lines. About 50 bytes per human message (74 with SHA-256 OIDs); a
+malformed `base` is dropped, its message kept. Readers drop
 an event whose `view` is malformed, or carried by an ai event; the same
-for `origin` on a human event, `head` and `suggests` on a human message,
+for `origin` on a human event, `head` on a human message, `suggests` on a
+human opening or message,
 and any `agent-thread-seen` by ai.
 
 `origin` `{thread, message}` (two lowercase ULIDs, ai only; since
@@ -914,6 +936,30 @@ about 4 ms of CPU at the cap and 45-55 ms at 2,000 × 2,000 (2026-11-16), on
 the server as the snapshot is built. Should a file's hunks not fit its
 text (the display hunks refuse them), each hunk is matched on its own.
 
+**Added files cut at blank lines.** Since CAR-235 (2026-11-24; owner:
+"each cluster should end when reaching a line of only whitespace") a file
+the comparison adds is cut further: each piece with no removed lines ends
+after a run of blank (empty or whitespace-only) lines, the blank lines
+staying with the piece before them, and blank lines at the top joining the
+first piece (`splitAtBlankLines` in `src/server/diff/clusters.ts`, called by
+`cutClusters` for files of status `added`). Edited files are not cut this
+way, nor are added lock files (`LOCK_FILES`, by name: `pnpm-lock.yaml`,
+`package-lock.json`, `Cargo.lock`, `go.sum` and the like), which stay one
+cluster, so a whole-file mark on one stays one event (see "Measurements").
+Files `.gitattributes` marks `linguist-generated` are cut like any other:
+nothing reads that attribute yet. The pieces carry `Cluster.split` like any other, so a review marked
+before (the whole file one cluster) keeps its marks: the split carry puts a
+whole mark on every piece and line marks on the lines they marked. No new
+event and no new stored field. The since view needs nothing of its own: its
+pieces follow the viewed snapshot's clusters, so a file added since the
+compared patch set is cut the same way; `ENGINE_VERSION` went to 7 so no
+cached comparison names the old whole-file key. Ignore whitespace is
+untouched: an added file has no old side, so no piece is whitespace-only.
+Since every added file is now cut, the two CAR-156 cases below are common
+rather than rare: an older crb unticking a split-carried file (see "Mixed
+versions") leaves the pieces marked, and a file carried whole into a later
+patch set counts as N carried clusters, one per piece, not one.
+
 **Mixed versions.** Once progress refs sync, an older crb that unticks the
 whole hunk (its key still a cluster there) leaves pieces already
 split-carried as they were: they still show a mark the reviewer made,
@@ -1123,9 +1169,35 @@ now split. 600 entries (200 hunks reviewed whole, each cut in three), two
 random 64-hex keys and a state each: about 103 KB raw, 31 KB deflated. One
 entry for part of a piece (with `from` and `lines`): 587 bytes raw, 400
 deflated. The test asserts under 120 KiB raw and 60 KiB deflated for the
-first, 1 KiB raw for the second. Real reviews split few hunks (only hunks
-holding a whitespace-only run between changes), and a review started after
-the change never writes one.
+first, 1 KiB raw for the second. Since CAR-235 every added file with a
+blank line between code splits, so a review in progress with such a file
+writes one on its next open (one entry per piece of each marked file); a
+review started after the change never writes one.
+
+**Whole-file marks on added files** (CAR-235, measured 2026-11-24 with
+`buildSnapshot` and `ReviewService.recordStates` on this repo's files,
+added in one commit): "Mark all reviewed" or a cross-off writes one
+`cluster-state` event per cluster (about 300 bytes raw each), so its commit
+grows with the blocks of the file. Before the cut, each was one event (0.5
+KB raw, 0.3 KB deflated).
+
+| Added file | Lines | Clusters (was 1) | Mark all, raw | deflated |
+|---|---|---|---|---|
+| `splitCarry.ts` (typical) | 120 | 5 | 1.8 KB | 0.6 KB |
+| `snapshot.ts` | 611 | 30 | 9.7 KB | 2.0 KB |
+| `session.ts` | 2,733 | 117 | 36.3 KB | 6.8 KB |
+| `pnpm-lock.yaml`, cut (before the blocklist) | 4,084 | 916 | 276.6 KB | 51.3 KB |
+| `pnpm-lock.yaml`, blocklisted (now) | 4,084 | 1 | 0.5 KB | 0.3 KB |
+
+A cross-off with a reason is about the same (298 KB raw, 50 KB deflated for
+the lockfile). Each later patch set start then carries every piece: about
+90 bytes raw an entry, so about 80 KB raw for the lockfile per reviewer per
+start. Cut, one click on a big lock file took a review past the 50 KiB
+target above, so lock files are not cut (owner, 2026-11-24: "skip the
+custom split on a blocklist of files (like lock), and accept the size for
+the rest"). A compact whole-file entry was considered and declined: it
+would tie stored marks to how a file is cut, and a later change to the cut
+could have unforeseen consequences.
 
 **Everyday git** (ms, median of 5) on a 3,000-commit, 2,000-file repo, with the
 review refs on the remote and the clone using the default refspec:

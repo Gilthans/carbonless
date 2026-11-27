@@ -152,7 +152,7 @@ export function ImageCompare(props: {
  * Below this shown size (CSS px) the two corner tags, about 50 × 20 each,
  * would cover much of the picture.
  */
-export const SMALL_STAGE = { w: 240, h: 96 };
+const SMALL_STAGE = { w: 240, h: 96 };
 
 /** The stage inside `box` is shown smaller than SMALL_STAGE (measured). */
 function useSmallStage(box: RefObject<HTMLDivElement | null>): boolean {

@@ -9,6 +9,12 @@ import Fastify, {
 	type FastifyRequest,
 } from "fastify";
 import {
+	type ActivityAnswer,
+	MAX_ACTIVITY_IDS,
+	REQUEST_ID,
+	REQUEST_ID_HEADER,
+} from "../shared/activity.js";
+import {
 	type AgentConfig,
 	type AgentMessageRequest,
 	type AgentPostedRequest,
@@ -16,6 +22,7 @@ import {
 	MAX_AGENT_TEXT,
 	type OpenAgentThreadRequest,
 } from "../shared/agent.js";
+import type { CloneState } from "../shared/firstClone.js";
 import { imageTypeOf, sniffRaster } from "../shared/imageTypes.js";
 import { type LineRanges, parseRanges } from "../shared/lineRanges.js";
 import {
@@ -33,14 +40,19 @@ import {
 } from "../shared/types.js";
 import type { UpdateInfo, UpdateRequest } from "../shared/update.js";
 import { registerAccessKey, registerHostCheck } from "./access.js";
+import { activityOf, enterActivity, trackRequest } from "./activity.js";
 import { checkAgent } from "./agent/acp.js";
 import { agentsDir } from "./agent/checkout.js";
 import {
+	type AgentConfigInput,
 	AgentConflictError,
 	type AgentHost,
 	AgentRequestError,
 	agentConfig,
+	agentConfigForPage,
+	maskAgentEnv,
 	noteAgentConfigSaved,
+	restoreAgentEnv,
 } from "./agent/host.js";
 import { JoinElsewhereError, StaleJoinRequestError } from "./agent/join.js";
 import { isSafePath } from "./agent/prompt.js";
@@ -51,10 +63,12 @@ import {
 } from "./agent/store.js";
 import { markSetupDone, readSetupDone } from "./agentSetupDone.js";
 import { parseAsOf } from "./asOf.js";
+import { browserTraceOn, registerBrowserTrace } from "./browserTrace.js";
+import { isCloning } from "./clone.js";
 import { updateConfig } from "./config.js";
 import { FailureLog } from "./errorLog.js";
 import { GhError, WriteRefusedError } from "./errors.js";
-import { NODE_ID, parsePrArg } from "./gh.js";
+import { NODE_ID, parsePrArg, validOwnerRepo } from "./gh.js";
 import { GitError } from "./git.js";
 import type { HomeService } from "./home/homeService.js";
 import { registerHomeRoutes } from "./home/routes.js";
@@ -254,6 +268,9 @@ function traceRequests(app: FastifyInstance, traced: Tracer): void {
 	if (!traced.enabled) return;
 	const spans = new WeakMap<object, Span>();
 	app.addHook("onRequest", (request, _reply, done) => {
+		// The page's own spans arriving (browserTrace.ts): a span each
+		// would only trace the tracing.
+		if (request.routeOptions.url === "/api/trace") return done();
 		const header = request.headers.traceparent;
 		const incoming = parseTraceparent(
 			typeof header === "string" ? header : undefined,
@@ -281,6 +298,38 @@ function traceRequests(app: FastifyInstance, traced: Tracer): void {
 	});
 }
 
+/**
+ * What each tagged request waits on (CAR-296, activity.ts): a request
+ * whose REQUEST_ID_HEADER is a well-formed id is tracked from its start to
+ * its response or abort, its Activity current for its handler. A callback
+ * hook, as traceRequests: what follows runs in the context it enters.
+ */
+function trackActivity(app: FastifyInstance): void {
+	const ends = new WeakMap<object, () => void>();
+	app.addHook("onRequest", (request, _reply, done) => {
+		const raw = request.headers[REQUEST_ID_HEADER];
+		const id = typeof raw === "string" ? raw : undefined;
+		if (id && REQUEST_ID.test(id) && request.url.startsWith("/api/")) {
+			const tracked = trackRequest(id);
+			ends.set(request, tracked.done);
+			enterActivity(tracked.activity);
+		}
+		done();
+	});
+	const end = (request: object) => {
+		ends.get(request)?.();
+		ends.delete(request);
+	};
+	app.addHook("onResponse", (request, _reply, done) => {
+		end(request);
+		done();
+	});
+	app.addHook("onRequestAbort", (request, done) => {
+		end(request);
+		done();
+	});
+}
+
 export async function buildApp(
 	registry: SessionRegistry,
 	options: AppOptions,
@@ -294,7 +343,9 @@ export async function buildApp(
 		// so there's nothing to drain.
 		forceCloseConnections: true,
 	});
-	traceRequests(app, options.tracer ?? tracer());
+	const traced = options.tracer ?? tracer();
+	traceRequests(app, traced);
+	trackActivity(app);
 	// Lowered only by a test (/api/_test/limits).
 	const limits = defaultLimits();
 	// First hook, so even the access checks' 401/403 replies carry them.
@@ -306,6 +357,8 @@ export async function buildApp(
 		publicUrl: options.publicUrl,
 	});
 	await registerAccessKey(app, options.accessKey, options.publicUrl);
+	// The page's own spans, only while the server traces (CAR-288).
+	if (browserTraceOn(traced)) registerBrowserTrace(app, traced);
 	// A crb of another build must not drive this server (the browser sends
 	// no header and isn't checked: its page comes from this server).
 	app.addHook("onRequest", async (request, reply) => {
@@ -523,6 +576,41 @@ export async function buildApp(
 			.header("cross-origin-resource-policy", "same-origin")
 			.send({ key: options.accessKey });
 	});
+	// Whether crb is cloning owner/repo for the first time now: an open
+	// waiting on it (the opening page, crb <pr>) polls this to say so.
+	app.get<{ Params: { owner: string; repo: string } }>(
+		"/api/clones/:owner/:repo",
+		async (request, reply): Promise<CloneState> => {
+			reply.header("cache-control", "no-store");
+			const { owner, repo } = request.params;
+			if (!validOwnerRepo(owner, repo)) {
+				throw new BadRequestError(`Not a repository: ${owner}/${repo}`);
+			}
+			return { cloning: isCloning(owner, repo) };
+		},
+	);
+	// What tagged requests wait on now (CAR-296): `req=<id>,…`, each id's
+	// innermost step, null for one unknown or doing nothing. Never waits.
+	app.get<{ Querystring: { req?: unknown } }>(
+		"/api/activity",
+		async (request, reply): Promise<ActivityAnswer> => {
+			reply.header("cache-control", "no-store");
+			const { req } = request.query;
+			if (typeof req !== "string" || !req) {
+				throw new BadRequestError("req is required");
+			}
+			const ids = req.split(",");
+			if (ids.length > MAX_ACTIVITY_IDS) {
+				throw new BadRequestError(
+					`At most ${MAX_ACTIVITY_IDS} requests an ask`,
+				);
+			}
+			if (!ids.every((id) => REQUEST_ID.test(id))) {
+				throw new BadRequestError("Not a request id");
+			}
+			return { steps: activityOf(ids) };
+		},
+	);
 	// Opens (or finds) the review of a PR: crb <pr>.
 	app.post("/api/reviews", async (request) => {
 		const req = parseOpenBody(request.body);
@@ -1125,22 +1213,34 @@ export async function buildApp(
 	);
 
 	// The setup modal: what is configured, save the agent, or try it once.
-	app.get("/api/config/agent", () => agentConfig());
+	// The env's values never reach the page (they hold tokens): it gets
+	// AGENT_ENV_MASK for each, and a Save or Check carrying the mask (or no
+	// env) keeps the stored value (CAR-59).
+	app.get("/api/config/agent", () => agentConfigForPage());
 	app.put("/api/config/agent", async (request) => {
-		const agent = parseAgentConfig(request.body, true);
+		const sent = parseAgentConfig(request.body, true);
 		try {
-			const c = await updateConfig((config) => ({ ...config, agent }));
+			const c = await updateConfig((config) => ({
+				...config,
+				agent: sent && restoreAgentEnv(sent, config.agent),
+			}));
 			noteAgentConfigSaved();
-			return { agent: c.agent };
+			return { agent: maskAgentEnv(c.agent) };
 		} catch (error) {
 			throw new BadRequestError((error as Error).message);
 		}
 	});
 	// Which one-time setups this machine has done (folded in the modal).
 	app.get("/api/config/agent/setup", () => readSetupDone());
-	app.post("/api/config/agent/check", (request) => {
-		const agent = parseAgentConfig(request.body, false);
-		if (!agent) throw new BadRequestError("Expected an agent");
+	app.post("/api/config/agent/check", async (request) => {
+		const sent = parseAgentConfig(request.body, false);
+		if (!sent) throw new BadRequestError("Expected an agent");
+		let agent: AgentConfig;
+		try {
+			agent = restoreAgentEnv(sent, (await agentConfig()).agent);
+		} catch (error) {
+			throw new BadRequestError((error as Error).message);
+		}
 		return checkAgent(agent, agentsDir());
 	});
 
@@ -1574,11 +1674,12 @@ function parseAgentView(
 /**
  * The setup modal's agent: `{command, args, env, leash}` (null when
  * `nullable`, to remove it), checked as config.json's agent section is.
+ * `env` stays absent when the body has none (restoreAgentEnv: the stored).
  */
 function parseAgentConfig(
 	body: unknown,
 	nullable: boolean,
-): AgentConfig | null {
+): AgentConfigInput | null {
 	if (body === null && nullable) return null;
 	const fail = (m: string) => new BadRequestError(m);
 	if (typeof body !== "object" || body === null || Array.isArray(body)) {
@@ -1587,7 +1688,7 @@ function parseAgentConfig(
 	const {
 		command,
 		args = [],
-		env = {},
+		env,
 		leash = "open",
 	} = body as Record<string, unknown>;
 	if (
@@ -1601,10 +1702,11 @@ function parseAgentConfig(
 		throw fail("agent.args must be an array of strings");
 	}
 	if (
-		typeof env !== "object" ||
-		env === null ||
-		Array.isArray(env) ||
-		!Object.values(env).every((v) => typeof v === "string")
+		env !== undefined &&
+		(typeof env !== "object" ||
+			env === null ||
+			Array.isArray(env) ||
+			!Object.values(env).every((v) => typeof v === "string"))
 	) {
 		throw fail("agent.env must be an object of strings");
 	}
@@ -1614,7 +1716,7 @@ function parseAgentConfig(
 	return {
 		command: command.trim(),
 		args: args as string[],
-		env: env as Record<string, string>,
+		...(env === undefined ? {} : { env: env as Record<string, string> }),
 		leash: "open",
 	};
 }

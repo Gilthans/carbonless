@@ -92,7 +92,7 @@ export function agentTip(status: AgentStatus): string {
  * moves, the threads are read again (a reply landed, a question was taken
  * up).
  */
-export function useAgentSync(
+function useAgentSync(
 	client: QueryClient,
 	status: AgentStatus | undefined,
 ): void {
@@ -150,7 +150,7 @@ export function chipOpensDrawer(status: AgentStatus | undefined): boolean {
 let earlyPress = false;
 
 /** The drawer's composer (else the drawer): where focus goes as the setup over it closes. */
-export const drawerFocusTarget = (): HTMLElement | null => {
+const drawerFocusTarget = (): HTMLElement | null => {
 	const drawer = document.getElementById("review-conversation");
 	return (
 		drawer?.querySelector<HTMLElement>('textarea[aria-label="Ask agent"]') ??
@@ -206,7 +206,7 @@ export function agentInk(status: AgentStatus): string {
 }
 
 /** The chip's one size, wherever it is (and the space kept for it): its tap target. */
-export const CHIP_BOX = "flex h-10 w-10 shrink-0 items-center justify-center";
+const CHIP_BOX = "flex h-10 w-10 shrink-0 items-center justify-center";
 
 /**
  * The header's right column for the chip, mirroring the logo on the left:

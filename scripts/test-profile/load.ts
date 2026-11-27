@@ -22,6 +22,9 @@ export interface Span {
 	endMs: number;
 	attrs: Record<string, string | number | boolean>;
 	error: boolean;
+	/** The build that wrote it (resource `service.version`, `service.commit`), when recorded. */
+	version?: string;
+	commit?: string;
 }
 
 interface OtlpValue {
@@ -59,6 +62,20 @@ const value = (v: OtlpValue) =>
 
 const attrsOf = (list: OtlpAttr[] | undefined) =>
 	Object.fromEntries((list ?? []).map((a) => [a.key, value(a.value)]));
+
+/**
+ * The least and greatest of `values` by a loop: spreading them into
+ * Math.min/max overflows the stack past ~125k (a server's week of spans).
+ */
+export function extent(values: Iterable<number>): [number, number] | null {
+	let lo = Number.POSITIVE_INFINITY;
+	let hi = Number.NEGATIVE_INFINITY;
+	for (const v of values) {
+		if (v < lo) lo = v;
+		if (v > hi) hi = v;
+	}
+	return lo <= hi ? [lo, hi] : null;
+}
 
 /** Nanosecond string to epoch milliseconds (fractions kept). */
 export const nanosToMs = (n: string) =>
@@ -110,9 +127,19 @@ export function readRequests(dir: string, traceId?: string): OtlpRequest[] {
 export function spansOf(requests: OtlpRequest[]): Span[] {
 	const spans: Span[] = [];
 	for (const req of requests) {
+		// A line that parses to no object (`null`, a number) is skipped.
+		if (!req || typeof req !== "object") continue;
 		for (const rs of req.resourceSpans ?? []) {
 			const res = attrsOf(rs.resource?.attributes);
 			const service = String(res["service.name"] ?? "?");
+			const build = {
+				...(res["service.version"] !== undefined
+					? { version: String(res["service.version"]) }
+					: {}),
+				...(res["service.commit"] !== undefined
+					? { commit: String(res["service.commit"]) }
+					: {}),
+			};
 			for (const ss of rs.scopeSpans ?? []) {
 				for (const s of ss.spans ?? []) {
 					spans.push({
@@ -125,6 +152,7 @@ export function spansOf(requests: OtlpRequest[]): Span[] {
 						endMs: nanosToMs(s.endTimeUnixNano),
 						attrs: attrsOf(s.attributes),
 						error: s.status?.code === 2,
+						...build,
 					});
 				}
 			}
@@ -176,7 +204,7 @@ export function compactRun(
 	try {
 		mtime = statSync(dir).mtime;
 		for (const f of readdirSync(dir)) {
-			const plain = /-(\d+)-[0-9a-f]+\.jsonl$/.exec(f);
+			const plain = /-(\d+)-[0-9a-f]+(?:\.\d{8}\.\d+)?\.jsonl$/.exec(f);
 			if (plain) {
 				if (!isAlive(Number(plain[1]))) claim(f, f);
 				continue;
@@ -226,7 +254,7 @@ export function compactRun(
 }
 
 /** Whether the run's runner (the pid that ends its directory name) still runs. */
-export function runnerAlive(
+function runnerAlive(
 	dir: string,
 	isAlive: (pid: number) => boolean = alive,
 ): boolean {

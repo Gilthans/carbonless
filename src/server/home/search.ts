@@ -54,11 +54,11 @@ export function parseQuery(q: string): ParsedQuery {
 }
 
 /** GitHub searches start only for this many characters. */
-export const MIN_GITHUB_CHARS = 3;
+const MIN_GITHUB_CHARS = 3;
 /** A finished GitHub search (or a failed read of the viewer's repos) is reused this long. */
 const SEARCH_TTL_MS = 60_000;
 /** The viewer's repos are read again at most this often. */
-export const VIEWER_REPOS_TTL_MS = 3_600_000;
+const VIEWER_REPOS_TTL_MS = 3_600_000;
 const MAX_REPOS = 10;
 const MAX_PRS = 30;
 const MAX_CACHED = 200;
@@ -445,7 +445,7 @@ function json(out: string): unknown[] {
 }
 
 /** `gh search prs --repo`: title words, by last activity. */
-export async function searchPrs(
+async function searchPrs(
 	owner: string,
 	repo: string,
 	words: readonly string[],

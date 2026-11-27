@@ -2,15 +2,14 @@ import { AlertIcon, SparkleFillIcon } from "@primer/octicons-react";
 import type { MouseEvent, ReactNode } from "react";
 import type { AgentThread } from "../../shared/agent";
 import type { ReviewThread } from "../../shared/types";
-import { Spinner } from "../Spinner";
+import { Spinner, SpinnerIcon } from "../Spinner";
 import { Tooltip } from "../Tooltip";
 import { useAgentOn } from "./api";
 import { ASK_HANDLE, HANDLE } from "./handle";
 import {
 	agentButtonName,
 	agentFor,
-	useAgentThreadsFailed,
-	useAgentThreadsLoading,
+	useAgentThreadsRead,
 	useThreadAgentContext,
 } from "./threadAgent";
 
@@ -31,8 +30,9 @@ const keepFocus = (e: MouseEvent) => e.preventDefault();
  * before there is one. Pressed while the conversation is open: the
  * panel's handle. A spinner in its place while the agent threads load
  * (never "Ask agent" that would then turn into a count); an alert in
- * `bad` when they couldn't be read, still pressable (it opens the panel
- * and reads them again). Absent on a thread with no id, a deleted one,
+ * `bad` when they couldn't be read, still pressable (it reads them again,
+ * and opens the panel when closed; open, it stays open), kept while they
+ * are read again with a spinner in the alert's place, a press ignored. Absent on a thread with no id, a deleted one,
  * and where the session doesn't write.
  */
 export function ThreadAgentButton(props: {
@@ -46,11 +46,10 @@ export function ThreadAgentButton(props: {
 	const { conversation, open } = props;
 	const handle = `${HANDLE} ${props.className ?? "relative"}`;
 	const on = useAgentOn();
-	const loading = useAgentThreadsLoading();
-	const { failed, retry } = useAgentThreadsFailed();
+	const read = useAgentThreadsRead();
 	const ref = useThreadAgentContext()?.buttonRef;
 	if (!agentFor(props.thread, on)) return null;
-	if (loading && !conversation) {
+	if (read.state === "loading" && !conversation) {
 		return (
 			<span
 				data-testid="thread-agent-loading"
@@ -61,7 +60,7 @@ export function ThreadAgentButton(props: {
 			</span>
 		);
 	}
-	if (failed && !conversation) {
+	if (read.state === "failed" && !conversation) {
 		const failedName = "Agent messages couldn't load";
 		return (
 			<Tooltip content={failedName} describe={false}>
@@ -78,13 +77,22 @@ export function ThreadAgentButton(props: {
 						aria-label={failedName}
 						aria-pressed={open}
 						onMouseDown={keepFocus}
+						aria-busy={read.retrying}
 						onClick={() => {
-							retry();
-							props.onToggle();
+							// Reading again: a press waits (the button stays, focus too).
+							if (read.retrying) return;
+							read.retry();
+							// Open, a press reads again and keeps the panel (its Retry's twin).
+							if (!open) props.onToggle();
 						}}
 						className={`${handle} border-dashed border-bad text-bad hover:bg-agent focus-visible:outline-2 focus-visible:outline-accent`}
 					>
-						<AlertIcon size={14} aria-hidden />
+						{/* Reading again: the spinner in the icon's place (its size). */}
+						{read.retrying ? (
+							<SpinnerIcon size={14} />
+						) : (
+							<AlertIcon size={14} aria-hidden />
+						)}
 					</button>
 				)}
 			</Tooltip>

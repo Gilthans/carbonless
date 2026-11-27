@@ -50,7 +50,7 @@ const RESET_TIMEOUT_MS = 20_000;
 export const FINISH_BOUND_MS = RESET_TIMEOUT_MS + GH_SETTLE_MS + 5_000;
 
 /** A sha256 over the files under `dir` (paths and contents); "" when none. */
-export function dirHash(dir: string): string {
+function dirHash(dir: string): string {
 	if (!existsSync(dir)) return "";
 	const hash = createHash("sha256");
 	const files = (readdirSync(dir, { recursive: true }) as string[])
@@ -65,7 +65,7 @@ export function dirHash(dir: string): string {
 }
 
 /** The last `n` lines of `text`, for a message (a server's output grows all its life). */
-export function tail(text: string, n = 200): string {
+function tail(text: string, n = 200): string {
 	const lines = text.trimEnd().split("\n");
 	return lines.length <= n
 		? lines.join("\n")

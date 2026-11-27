@@ -1,6 +1,5 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { quietFor } from "../../../test/sleep";
 import { newQueryClient } from "../queryClient";
 import { leaveHome, repoKey } from "./homeApi";
 import {
@@ -12,6 +11,8 @@ import {
 
 const stops: (() => void)[] = [];
 afterEach(async () => {
+	// A test that timed out on a fake clock leaks it to none after.
+	vi.useRealTimers();
 	// Stopping drops a throttled save already timed: none lands in the next test.
 	for (const stop of stops.splice(0)) stop();
 	sessionStorage.clear();
@@ -77,11 +78,17 @@ describe("persistHome", () => {
 		await until(() => stored().includes("kept"));
 		// That page is gone: only the review page's save could write.
 		stops.pop()?.();
-		const review = await page({ restore: false });
-		review.setQueryData(["session"], { id: "review" });
-		window.dispatchEvent(new Event("pagehide"));
-		await quietFor(5, "the review page's save wiping Home's");
-		expect(stored()).toContain("kept");
+		vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+		try {
+			const review = await page({ restore: false });
+			review.setQueryData(["session"], { id: "review" });
+			window.dispatchEvent(new Event("pagehide"));
+			// Past the throttled save too.
+			await vi.advanceTimersByTimeAsync(5_000);
+			expect(stored()).toContain("kept");
+		} finally {
+			vi.useRealTimers();
+		}
 	});
 
 	it("leaving the page saves at once, not after the throttle", async () => {
@@ -129,13 +136,19 @@ describe("persistHome", () => {
 		expect(review.getQueryData(VIEW)).toEqual({ view: "v" });
 		// Restored and marked stale: saved once as such.
 		await until(() => writes === 1);
-		for (let i = 0; i < 5; i++) {
-			review.setQueryData(["session"], { id: i });
-			review.setQueryData(["files", i], { n: i });
+		vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+		try {
+			for (let i = 0; i < 5; i++) {
+				review.setQueryData(["session"], { id: i });
+				review.setQueryData(["files", i], { n: i });
+			}
+			window.dispatchEvent(new Event("pagehide"));
+			// Past the throttled saves too.
+			await vi.advanceTimersByTimeAsync(5_000);
+			expect(writes).toBe(1);
+		} finally {
+			vi.useRealTimers();
 		}
-		window.dispatchEvent(new Event("pagehide"));
-		await quietFor(5, "a write of unchanged Home answers");
-		expect(writes).toBe(1);
 		// A change of Home's own is saved.
 		review.setQueryData(VIEW, { view: "w" });
 		await until(() => writes === 2);

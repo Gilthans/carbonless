@@ -1,4 +1,5 @@
 import { type ChildProcess, spawn } from "node:child_process";
+import { beginCall } from "./activity.js";
 import { argsSummary, tracer } from "./trace.js";
 
 export class GitError extends Error {}
@@ -176,9 +177,12 @@ export function runGitFull(
 			fail("git was stopped");
 			return;
 		}
+		const name = `git ${gitCommand(args)}`;
+		// What a request waiting on it says (activity.ts), always.
+		const endStep = beginCall(name);
 		const span = traced.enabled
 			? traced.start(
-					`git ${gitCommand(args)}`,
+					name,
 					{ args: argsSummary(args) },
 					{
 						kind: "client",
@@ -205,6 +209,7 @@ export function runGitFull(
 		let timedOut = false;
 		const stop = (message: string) => {
 			timedOut = true;
+			endStep();
 			span?.end({ exit: "killed" }, message);
 			if (opts.timeoutMs !== undefined) killGroup(child);
 			else child.kill("SIGKILL");
@@ -225,12 +230,14 @@ export function runGitFull(
 		child.stderr.on("data", (chunk: Buffer) => err.push(chunk));
 		child.stdin.on("error", () => {});
 		child.on("error", (error) => {
+			endStep();
 			span?.end(undefined, error.message);
 			clearTimeout(timer);
 			opts.signal?.removeEventListener("abort", onAbort);
 			fail(error.message);
 		});
 		child.on("close", (code) => {
+			endStep();
 			span?.end({ exit: code ?? -1 });
 			clearTimeout(timer);
 			opts.signal?.removeEventListener("abort", onAbort);

@@ -7,7 +7,7 @@ import type {
 } from "../shared/types.js";
 
 /** Rows a window keeps before and after the commented range. */
-export const CONTEXT = 3;
+const CONTEXT = 3;
 
 /** Index of the last line numbered `no` on `side`, at or before `upTo`. */
 function lastIndex(

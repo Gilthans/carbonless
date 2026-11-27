@@ -40,9 +40,7 @@ import {
 	type ToRead,
 	toReadCounts,
 } from "./graphCards";
-
-/** The rail's last slot is always this wide: "up to date", or the head connector and dot. */
-export const TAIL_WIDTH = { desktop: 150, phone: 84 } as const;
+import { goneCount } from "./since";
 
 /** A dot of the rail. */
 interface Dot {
@@ -462,10 +460,7 @@ const stubShape = (code: Shape["code"], commits: number): Shape => ({
 function toReadOf(answer: RereviewAnswer, ignoreWs: boolean): ToRead {
 	return {
 		...toReadCounts(answer.toRead, ignoreWs),
-		gone: answer.files.reduce(
-			(n, f) => n + f.clusters.filter((c) => c.kind === "gone").length,
-			0,
-		),
+		gone: goneCount(answer),
 	};
 }
 
@@ -795,7 +790,7 @@ function countOf(
  * base branch dot, one dot per patch set of the reviewer (before any patch
  * set, a dot for the snapshot being reviewed, even when it is the PR's
  * head: where the PR is, nothing stored for it), and a last slot
- * that is always rendered at one width (TAIL_WIDTH): "up to date" when the
+ * that is always rendered at one width (150px, 84px on a phone): "up to date" when the
  * PR's head is the newest dot, else a dashed connector with its commit
  * count and the hollow head dot (nothing below the rail moves when a push
  * arrives). Two markers set the comparison: viewing and comparison base,
@@ -1196,7 +1191,14 @@ export function PatchsetGraph(props: {
 			<div
 				data-testid="ps-tail"
 				data-state={head ? "head" : upToDate ? "up-to-date" : "none"}
-				className="flex w-[84px] shrink-0 items-start sm:w-[150px]"
+				// On a phone the head dot's "comp. target" marker is wider than
+				// the slot leaves it: the slot widens while the head is the
+				// target, so its connector keeps a line to hover or tap (CAR-266).
+				className={`flex shrink-0 items-start sm:w-[150px] ${
+					head && sameViewing(head.viewing, comparison.viewing)
+						? "w-[124px]"
+						: "w-[84px]"
+				}`}
 			>
 				{head && headConnector ? (
 					<>
@@ -1204,6 +1206,7 @@ export function PatchsetGraph(props: {
 							c={headConnector}
 							phone={phone}
 							baseBranch={session.head?.baseBranch}
+							className="min-w-[26px]"
 						/>
 						{node(head)}
 					</>

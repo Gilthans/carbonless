@@ -3,7 +3,7 @@ import type { UpdateInfo } from "../shared/update";
 import { Tooltip } from "./Tooltip";
 
 /** The FAQ on GitHub: crb has no docs site, and the repo is public. */
-export const FAQ_URL =
+const FAQ_URL =
 	"https://github.com/Gilthans/carbonless/blob/master/docs/faq.md";
 
 /**

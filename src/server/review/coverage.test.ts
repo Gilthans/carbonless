@@ -479,6 +479,24 @@ describe("humanMarksOf (CAR-195)", () => {
 		expect(marks.get("k2")).toMatchObject({ reviewed: [], crossed: [] });
 		expect(marks.get("k3")).toMatchObject({ reviewed: [], crossed: [] });
 	});
+
+	it("leaves out clusters sharing a key, marks and all: nothing of them carries on", () => {
+		// Two files' clusters with one key (never expected): neither is
+		// anyone's mark to carry, as the coverage join leaves both unreviewed.
+		const snap = snapshot([
+			file(0, "a.ts", [cluster("dup", 2), cluster("k1", 2)]),
+			file(1, "b.ts", [cluster("dup", 2)]),
+		]);
+		const marks = humanMarksOf(
+			snap,
+			new Map<string, StateEntry>([
+				["dup", { state: "reviewed" }],
+				["k1", { state: "reviewed" }],
+			]),
+		);
+		expect([...marks.keys()]).toEqual(["k1"]);
+		expect(marks.get("k1")).toMatchObject({ reviewed: [[0, 2]], crossed: [] });
+	});
 });
 
 /*

@@ -1,16 +1,7 @@
 import type { Plugin } from "vite";
 
-export const FILE_NAME: string;
-export const LICENSE_CHOICES: Record<string, string>;
-export const LICENSE_CUTS: Record<string, { file: string; before: string }>;
-export const VIRTUAL_PACKAGES: Record<string, string>;
 export function virtualPackageFile(id: string, root: string): string;
-export function cssImports(css: string): string[];
 export function cssPackageFiles(file: string, seen?: Set<string>): string[];
-export const LICENSE_OVERRIDES: Record<
-	string,
-	{ file: string; source: string }
->;
 export type NoticePackage = {
 	name: string;
 	version: string;
@@ -36,5 +27,3 @@ export function thirdPartyNotices(options?: {
 	required?: string[];
 }): Plugin;
 export const LICENSES_DIR: string;
-export const LICENSE_FILE: RegExp;
-export const ROWS_PER_MODULE: Record<string, RegExp>;
