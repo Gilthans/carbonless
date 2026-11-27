@@ -513,6 +513,20 @@ test("typing in a suggested comment at the end of a long conversation keeps the 
 	const scroller = card.getByTestId("agent-thread-scroll");
 	const gap = () =>
 		scroller.evaluate((el) => el.scrollHeight - el.clientHeight - el.scrollTop);
+	/** The gap once the page has drawn a frame: a keystroke grows the box
+	 * at once, the pin follows in that frame's ResizeObserver (before it
+	 * paints), so a read straight after the key can come before it. */
+	const gapDrawn = () =>
+		scroller.evaluate(
+			(el) =>
+				new Promise<number>((done) =>
+					requestAnimationFrame(() =>
+						requestAnimationFrame(() =>
+							done(el.scrollHeight - el.clientHeight - el.scrollTop),
+						),
+					),
+				),
+		);
 	await expect.poll(gap).toBeLessThanOrEqual(1);
 	/** `el`'s bottom inside the scroller's view. */
 	const bottomInBox = async (el: typeof text) =>
@@ -538,7 +552,7 @@ test("typing in a suggested comment at the end of a long conversation keeps the 
 	for (let i = 0; i < 4; i++) {
 		await page.keyboard.press("Enter");
 		await page.keyboard.type(`More ${i + 1}`);
-		expect(await gap()).toBeLessThanOrEqual(1);
+		expect(await gapDrawn()).toBeLessThanOrEqual(1);
 	}
 	await expect(text).toHaveValue(/More 4$/);
 	await expect.poll(gap).toBeLessThanOrEqual(1);
