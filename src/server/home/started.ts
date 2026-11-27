@@ -39,7 +39,7 @@ const MAX_BUILDS = 4;
  * any change to the code that counts (the diff, clusters, the fold, split
  * carries, `coverageOf`) is never read with counts made by other code.
  */
-export const COVERAGE_VERSION = 1;
+const COVERAGE_VERSION = 1;
 
 /** Coverage files not written for this long are deleted (other builds', removed clones', crashed temp files). */
 const PRUNE_AFTER_MS = 14 * 24 * 60 * 60 * 1000;
