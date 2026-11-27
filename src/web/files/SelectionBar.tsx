@@ -16,7 +16,6 @@ import { Tooltip } from "../Tooltip";
 import { NOT_PHONE, useMedia } from "../useMedia";
 import {
 	CODE_CELL,
-	inHunk,
 	type NoLine,
 	noLineIn,
 	onGithub,

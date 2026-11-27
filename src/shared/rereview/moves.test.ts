@@ -364,7 +364,6 @@ describe("placeWithMoves", () => {
 						);
 					}
 					const placed = placeWithMoves(inputs, choices, count);
-					const bare = placeWithMoves(inputs, new Map(), count);
 					// One placement per thread, in order: none dropped, none added.
 					expect(placed.map((p) => p.id)).toEqual(inputs.map((i) => i.id));
 					expect(new Set(placed.map((p) => p.id)).size).toBe(inputs.length);

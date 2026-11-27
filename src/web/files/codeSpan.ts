@@ -233,7 +233,7 @@ function pointIn(
 }
 
 /** Whether the cell's line is in GitHub's diff (a hunk's, not expanded context). */
-export const inHunk = (c: Pick<CellLine, "hunk">) => c.hunk.startsWith("h");
+const inHunk = (c: Pick<CellLine, "hunk">) => c.hunk.startsWith("h");
 
 /**
  * Whether GitHub takes a comment on the cell's line: a hunk's, and not a
