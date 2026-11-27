@@ -330,13 +330,82 @@ export function classifyJob(job) {
 }
 
 const ok = (b) => b === "pass" || b === "skipping";
+/** How long a rebase asked for missing code scanning may take before the owner hears. */
+export const SCAN_REBASE_WAIT_MS = 6 * 60 * 60 * 1000;
+/** The ruleset's text when a merge waits for code scanning results. */
+export const SCAN_WAITING = /Code scanning is waiting for results/i;
+
+/** How long after its workflow ran a missing code scanning result may still appear. */
+export const SCAN_UPLOAD_GRACE_MS = 60 * 60 * 1000;
+
+/**
+ * Is a workflow named after one of the missing tools (CodeQL's is
+ * "CodeQL") still running on the head, or done within the grace period?
+ */
+export function scanWorkflowBusy(tools, runs, now) {
+	return (runs ?? []).some(
+		(r) =>
+			(tools ?? []).includes(r.name) &&
+			(r.status !== "completed" ||
+				now - Date.parse(r.updatedAt) < SCAN_UPLOAD_GRACE_MS),
+	);
+}
+
+/**
+ * The error for a failed command: its message ends with the output's last
+ * lines; `output` keeps all of it (gh may append hints after the error).
+ */
+export function runError(cmd, args, r) {
+	const text = `${r.stderr ?? ""}${r.stdout ?? ""}`;
+	const e = new Error(
+		`${cmd} ${args.join(" ")} exited ${r.status}: ${(r.stderr || r.stdout || "").trim().split("\n").slice(-5).join(" | ")}`,
+	);
+	e.output = text;
+	return e;
+}
+
+/**
+ * state.json after asking Dependabot to rebase. The two asks are tracked
+ * apart: one for missing code scanning results (per PR) mustn't make a
+ * later BEHIND or DIRTY state of the same head wait on it.
+ */
+export function recordRebase(state, n, sha, action, at) {
+	return action.scan
+		? {
+				...state,
+				scanRebaseAsked: { ...state.scanRebaseAsked, [String(n)]: { sha, at } },
+			}
+		: { ...state, rebaseAsked: { ...state.rebaseAsked, [sha]: at } };
+}
+
+/** Was this merge error the ruleset waiting for code scanning results? */
+export const isScanRefusal = (e) =>
+	SCAN_WAITING.test(`${e?.message ?? ""}\n${e?.output ?? ""}`);
+
+/**
+ * The required code scanning tools (from master's rules) that have no
+ * completed analysis on the head commit: GitHub posts one check run per
+ * tool, named after it, from its code scanning app.
+ */
+export function missingScans(tools, checkRuns) {
+	return (tools ?? []).filter(
+		(t) =>
+			!(checkRuns ?? []).some(
+				(r) =>
+					r.name === t &&
+					r.app === "github-advanced-security" &&
+					r.status === "completed",
+			),
+	);
+}
 
 /**
  * What to do with one PR, from facts the launcher gathered. Pure.
  * Returns { type, reason, key? , ... } where type is one of:
  *   skip      not the sweep's to touch
  *   owner     comment once (key) for the owner and leave it
- *   rebase    comment `@dependabot rebase`
+ *   rebase    comment `@dependabot rebase` (`scan`: for missing code
+ *             scanning results, tracked per PR)
  *   wait      nothing now; a later run looks again
  *   add-note  add `note` to the description
  *   refresh-note  run merge-ok, which reruns a stale release-note check
@@ -492,6 +561,48 @@ export function decide(f) {
 		};
 	if ((f.required ?? []).length === 0)
 		return { type: "wait", reason: "no required checks reported" };
+	// Code scanning (a ruleset rule, not a status check): a head the
+	// required tools never analyzed (opened before their workflow existed)
+	// can't merge. A rebase makes the workflow run; ask for one, once per PR.
+	const scans = f.scansMissing ?? [];
+	if (scans.length > 0) {
+		const asked = f.scanRebase;
+		const what = `no ${scans.join(", ")} results for its head`;
+		// Its workflow ran on this head just now (or still runs): the result
+		// may be on its way to the head's check runs.
+		if (scanWorkflowBusy(scans, f.scanWorkflowRuns, f.now ?? 0))
+			return {
+				type: "wait",
+				reason: `${what} yet; its workflow ran on it within the hour`,
+			};
+		if (!asked)
+			return {
+				type: "rebase",
+				scan: true,
+				reason: `${what}; a rebase runs it`,
+			};
+		if (asked.sha === sha) {
+			if ((f.now ?? 0) - Date.parse(asked.at) < SCAN_REBASE_WAIT_MS)
+				return {
+					type: "wait",
+					reason: `${what}; rebase asked, waiting for Dependabot`,
+				};
+			return {
+				type: "owner",
+				key: `scan-norebase:${sha}`,
+				comment:
+					"code scanning has no results for its head commit, and Dependabot didn't rebase it when the sweep asked; recreate it, or merge by hand once code scanning has run.",
+				reason: `${what}, and Dependabot didn't rebase it when asked (${asked.at})`,
+			};
+		}
+		return {
+			type: "owner",
+			key: `scan:${sha}`,
+			comment:
+				"code scanning still has no results for its head commit after a rebase, so the code scanning rule blocks the merge; check the CodeQL workflow, then merge by hand.",
+			reason: `${what}, even after the rebase the sweep asked for`,
+		};
+	}
 	const others = otherNoteLines(pr.body);
 	if (others.length > 0)
 		return {
@@ -569,10 +680,7 @@ function run(cmd, args, opts = {}) {
 		...opts,
 	});
 	if (r.error) throw r.error;
-	if (r.status !== 0 && !opts.allowFail)
-		throw new Error(
-			`${cmd} ${args.join(" ")} exited ${r.status}: ${(r.stderr || r.stdout).trim().split("\n").slice(-5).join(" | ")}`,
-		);
+	if (r.status !== 0 && !opts.allowFail) throw runError(cmd, args, r);
 	return r;
 }
 const out = (cmd, args, opts) => run(cmd, args, opts).stdout;
@@ -718,6 +826,29 @@ function gatherFacts(n, ctx) {
 				kind: "major",
 			});
 	}
+	// Code scanning results the ruleset requires, by their check runs on
+	// the head (the ruleset itself isn't a check `gh pr checks` lists).
+	const scanRuns = [];
+	if (SHA_RE.test(sha ?? ""))
+		for (const tool of ctx.scanTools)
+			for (const r of ghJson([
+				"api",
+				`repos/{owner}/{repo}/commits/${sha}/check-runs?check_name=${encodeURIComponent(tool)}&per_page=100`,
+			])?.check_runs ?? [])
+				scanRuns.push({ name: r.name, app: r.app?.slug, status: r.status });
+	const scanWorkflowRuns =
+		ctx.scanTools.length > 0 && SHA_RE.test(sha ?? "")
+			? (
+					ghJson([
+						"api",
+						`repos/{owner}/{repo}/actions/runs?head_sha=${sha}&per_page=100`,
+					])?.workflow_runs ?? []
+				).map((r) => ({
+					name: r.name,
+					status: r.status,
+					updatedAt: r.updated_at,
+				}))
+			: [];
 	const mine = (pr.comments ?? []).filter((c) => c.author?.login === ctx.me);
 	return {
 		pr: {
@@ -736,6 +867,11 @@ function gatherFacts(n, ctx) {
 		runs,
 		rebaseAsked: Boolean(ctx.state.rebaseAsked?.[sha]),
 		agentTried: Boolean(ctx.state.agentTried?.[sha]),
+		scanTools: ctx.scanTools,
+		scansMissing: missingScans(ctx.scanTools, scanRuns),
+		scanRebase: ctx.state.scanRebaseAsked?.[String(n)] ?? null,
+		scanWorkflowRuns,
+		now: Date.now(),
 		note: releaseNote(bump, ctx.alerts),
 		bump,
 		commented: (key) => mine.some((c) => c.body.includes(marker(key))),
@@ -1122,10 +1258,13 @@ function act(n, facts, action, ctx) {
 			);
 		case "rebase": {
 			comment(n, "@dependabot rebase", null, ctx);
-			ctx.state.rebaseAsked = {
-				...ctx.state.rebaseAsked,
-				[sha]: new Date().toISOString(),
-			};
+			ctx.state = recordRebase(
+				ctx.state,
+				n,
+				sha,
+				action,
+				new Date().toISOString(),
+			);
 			ctx.saveState();
 			return "asked Dependabot to rebase";
 		}
@@ -1163,15 +1302,25 @@ function act(n, facts, action, ctx) {
 				"headRefOid",
 			]).headRefOid;
 			if (now !== sha) return "head moved; next run";
-			gh([
-				"pr",
-				"merge",
-				String(n),
-				"--merge",
-				"--admin",
-				"--match-head-commit",
-				sha,
-			]);
+			try {
+				gh([
+					"pr",
+					"merge",
+					String(n),
+					"--merge",
+					"--admin",
+					"--match-head-commit",
+					sha,
+				]);
+			} catch (e) {
+				// The check runs said the scans were there, the ruleset says
+				// not: handle it as missing results.
+				if (!isScanRefusal(e)) throw e;
+				const tools = facts.scanTools?.length ? facts.scanTools : ["CodeQL"];
+				const again = decide({ ...facts, scansMissing: tools });
+				if (again.type === "merge") throw e;
+				return `merge refused for missing code scanning results; ${again.type} (${again.reason}): ${act(n, facts, again, ctx)}`;
+			}
 			return `merged ${sha.slice(0, 7)}`;
 		}
 		default:
@@ -1262,6 +1411,14 @@ function main(argv) {
 			ghsa: a.security_advisory?.ghsa_id,
 			patched: a.security_vulnerability?.first_patched_version?.identifier,
 		})),
+		// Code scanning tools master's rules require results from.
+		scanTools: (
+			ghJson(["api", "repos/{owner}/{repo}/rules/branches/master"]) ?? []
+		)
+			.filter((r) => r.type === "code_scanning")
+			.flatMap((r) => r.parameters?.code_scanning_tools ?? [])
+			.map((t) => String(t.tool ?? ""))
+			.filter((t) => /^[\w .-]+$/.test(t)),
 		cleanups: [],
 		tmp: mkdtempSync(join(tmpdir(), "crb-sweep-")),
 	};
@@ -1306,7 +1463,7 @@ function main(argv) {
 	}
 	if (!dryRun)
 		appendFileSync(
-			join(stateDir, `${ctx.stamp.slice(0, 8)}.log`),
+			join(stateDir, `${ctx.stamp.slice(0, 10)}.log`),
 			`${ctx.stamp}\n${lines.join("\n")}\n`,
 		);
 	if (failed) say("FAILED: one or more PRs hit an error (above)");

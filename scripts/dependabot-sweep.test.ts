@@ -11,12 +11,20 @@ import {
 	decide,
 	dependabotNames,
 	hasReleaseNote,
+	isScanRefusal,
 	manifestProblems,
 	metadataMajor,
+	missingScans,
 	otherNoteLines,
 	parseResult,
+	recordRebase,
 	releaseNote,
+	runError,
+	SCAN_REBASE_WAIT_MS,
+	SCAN_UPLOAD_GRACE_MS,
+	SCAN_WAITING,
 	sandboxArgs,
+	scanWorkflowBusy,
 	scrub,
 } from "./dependabot-sweep.mjs";
 import { prBodyNote } from "./release-notes";
@@ -307,6 +315,171 @@ describe("decide", () => {
 				}),
 			).type,
 		).toBe("refresh-note");
+	});
+});
+
+describe("missing code scanning results (CAR-311)", () => {
+	const NOW = Date.parse("2026-11-27T06:00:00Z");
+	const ago = (ms: number) => new Date(NOW - ms).toISOString();
+	const noScan = (over: Record<string, unknown> = {}, pr = {}) =>
+		facts(
+			{ scanTools: ["CodeQL"], scansMissing: ["CodeQL"], now: NOW, ...over },
+			pr,
+		);
+
+	it("finds a required tool with no completed check run on the head", () => {
+		const done = {
+			name: "CodeQL",
+			app: "github-advanced-security",
+			status: "completed",
+		};
+		expect(missingScans(["CodeQL"], [])).toEqual(["CodeQL"]);
+		expect(missingScans(["CodeQL"], [done])).toEqual([]);
+		expect(
+			missingScans(["CodeQL"], [{ ...done, status: "in_progress" }]),
+		).toEqual(["CodeQL"]);
+		// A workflow job can't stand in for the code scanning app's run.
+		expect(
+			missingScans(["CodeQL"], [{ ...done, app: "github-actions" }]),
+		).toEqual(["CodeQL"]);
+		expect(missingScans([], [])).toEqual([]);
+	});
+
+	it("asks Dependabot to rebase instead of merging, once per PR", () => {
+		const first = decide(noScan());
+		expect(first).toMatchObject({ type: "rebase", scan: true });
+		expect(first.reason).toContain("CodeQL");
+		// Asked at this head, Dependabot hasn't rebased yet: wait a while.
+		expect(
+			decide(noScan({ scanRebase: { sha: SHA, at: ago(60_000) } })).type,
+		).toBe("wait");
+	});
+
+	it("leaves it to the owner when results are still missing after the rebase", () => {
+		const d = decide(
+			noScan({ scanRebase: { sha: "b".repeat(40), at: ago(60_000) } }),
+		);
+		expect(d).toMatchObject({ type: "owner", key: `scan:${SHA}` });
+		expect(d.comment).toMatch(/after a rebase/);
+	});
+
+	it("leaves it to the owner when Dependabot never rebased", () => {
+		const d = decide(
+			noScan({ scanRebase: { sha: SHA, at: ago(SCAN_REBASE_WAIT_MS + 1) } }),
+		);
+		expect(d).toMatchObject({ type: "owner", key: `scan-norebase:${SHA}` });
+	});
+
+	it("merges once the results are there, and never before checks finish", () => {
+		expect(decide(noScan({ scansMissing: [] })).type).toBe("merge");
+		expect(
+			decide(
+				noScan({
+					scanRebase: { sha: "b".repeat(40), at: ago(60_000) },
+					scansMissing: [],
+				}),
+			).type,
+		).toBe("merge");
+		const running = noScan({
+			checks: [...REQUIRED.map(pass), { name: "analyze", bucket: "pending" }],
+		});
+		expect(decide(running).type).toBe("wait");
+	});
+
+	it("knows the ruleset's refusal, the fallback when the check runs misled it", () => {
+		expect(
+			SCAN_WAITING.test(
+				"gh pr merge 201 --merge --admin exited 1: GraphQL: Repository rule violations found |  | Code scanning is waiting for results from CodeQL for the commits 2d16cc3 or 7d79f0b. |  |  (mergePullRequest)",
+			),
+		).toBe(true);
+		expect(SCAN_WAITING.test("Required status check is expected")).toBe(false);
+	});
+
+	it("tracks a scan ask apart, so a head that turns BEHIND still gets the usual rebase", () => {
+		const at = ago(60_000);
+		const state = recordRebase({}, 201, SHA, { scan: true }, at);
+		expect(state).toEqual({ scanRebaseAsked: { "201": { sha: SHA, at } } });
+		const rebaseAsked = Boolean(
+			(state.rebaseAsked as Record<string, string> | undefined)?.[SHA],
+		);
+		expect(
+			decide(
+				noScan(
+					{ rebaseAsked, scanRebase: { sha: SHA, at } },
+					{ mergeStateStatus: "BEHIND" },
+				),
+			).type,
+		).toBe("rebase");
+		// The behind ask is still once per head commit.
+		expect(recordRebase({}, 201, SHA, {}, at)).toEqual({
+			rebaseAsked: { [SHA]: at },
+		});
+	});
+
+	it("waits while the scan's workflow runs on the head or finished within the hour", () => {
+		const run = (status: string, updated: number) => ({
+			name: "CodeQL",
+			status,
+			updatedAt: ago(updated),
+		});
+		const rebased = { sha: "b".repeat(40), at: ago(2 * 60 * 60 * 1000) };
+		for (const r of [run("in_progress", 0), run("completed", 5 * 60_000)]) {
+			expect(scanWorkflowBusy(["CodeQL"], [r], NOW)).toBe(true);
+			expect(
+				decide(noScan({ scanRebase: rebased, scanWorkflowRuns: [r] })).type,
+			).toBe("wait");
+		}
+		const old = run("completed", SCAN_UPLOAD_GRACE_MS + 1);
+		expect(scanWorkflowBusy(["CodeQL"], [old], NOW)).toBe(false);
+		expect(
+			decide(noScan({ scanRebase: rebased, scanWorkflowRuns: [old] })).type,
+		).toBe("owner");
+		// Another workflow on the head doesn't count.
+		expect(
+			scanWorkflowBusy(
+				["CodeQL"],
+				[{ ...run("in_progress", 0), name: "CI" }],
+				NOW,
+			),
+		).toBe(false);
+	});
+
+	it("finds the refusal in gh's whole output, past a hint gh appends", () => {
+		const hint = Array.from({ length: 8 }, (_, i) => `hint: line ${i}`).join(
+			"\n",
+		);
+		const e = runError("gh", ["pr", "merge", "201"], {
+			status: 1,
+			stderr: `GraphQL: Repository rule violations found\n\nCode scanning is waiting for results from CodeQL for the commits 2d16cc3 or 7d79f0b.\n\n (mergePullRequest)\n${hint}\n`,
+		});
+		expect(e.message).not.toMatch(/Code scanning/);
+		expect(isScanRefusal(e)).toBe(true);
+		expect(
+			isScanRefusal(
+				runError("gh", ["pr", "merge"], { status: 1, stderr: `boom\n${hint}` }),
+			),
+		).toBe(false);
+	});
+
+	it("posts fixed text only", () => {
+		const evil = "@evil <img src=x> https://evil.example `x` #9";
+		for (const scanRebase of [
+			{ sha: "b".repeat(40), at: ago(1) },
+			{ sha: SHA, at: ago(SCAN_REBASE_WAIT_MS + 1) },
+		]) {
+			const d = decide(
+				noScan(
+					{ scanRebase },
+					{
+						title: evil,
+						body: `${evil}\n\nRelease note: none (dependency update)`,
+					},
+				),
+			);
+			expect(d.type).toBe("owner");
+			expect(d.comment).not.toMatch(/evil|@|<|`|http/);
+			expect(d.key).toMatch(/^[a-z-]+:[0-9a-f]{40}$/);
+		}
 	});
 });
 

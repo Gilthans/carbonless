@@ -30,6 +30,7 @@ export interface Action {
 	key?: string;
 	sha?: string;
 	note?: string;
+	scan?: boolean;
 	runIds?: string[];
 	failure?: { check: string; runId: string; jobId: string; kind: string };
 }
@@ -67,6 +68,31 @@ export function releaseNote(
 	alerts: Alert[],
 ): string;
 export function classifyJob(job: unknown): "test" | "build" | "infra";
+export const SCAN_REBASE_WAIT_MS: number;
+export const SCAN_WAITING: RegExp;
+export const SCAN_UPLOAD_GRACE_MS: number;
+export function scanWorkflowBusy(
+	tools: string[],
+	runs: { name: string; status?: string; updatedAt?: string }[],
+	now: number,
+): boolean;
+export function runError(
+	cmd: string,
+	args: string[],
+	r: { status: number | null; stderr?: string; stdout?: string },
+): Error & { output: string };
+export function isScanRefusal(e: unknown): boolean;
+export function recordRebase(
+	state: Record<string, unknown>,
+	n: number | string,
+	sha: string,
+	action: { scan?: boolean },
+	at: string,
+): Record<string, unknown>;
+export function missingScans(
+	tools: string[],
+	checkRuns: { name: string; app?: string; status?: string }[],
+): string[];
 // biome-ignore lint/suspicious/noExplicitAny: facts are plain JSON from gh
 export function decide(facts: any): Action;
 export function scrub(text: string, max?: number): string;
