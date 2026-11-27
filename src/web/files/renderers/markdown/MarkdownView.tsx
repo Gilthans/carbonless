@@ -88,6 +88,7 @@ import {
 	sinceLeft,
 } from "../../threadPlacement";
 import { wordMarks } from "../../wordDiff";
+import { VIEW_BAR } from "../ViewSwitch";
 import { type ImageFile, imageResolver, remoteImageUrl } from "./images";
 import {
 	blockCommentSpan,
@@ -938,10 +939,7 @@ export function MarkdownView(props: {
 		);
 	};
 	const bar = (
-		<div
-			data-testid="view-bar"
-			className="flex min-h-12 flex-wrap items-center gap-2 border-line border-b bg-band px-2 py-1"
-		>
+		<div data-testid="view-bar" data-view-bar className={VIEW_BAR}>
 			{props.view}
 		</div>
 	);
@@ -1071,8 +1069,32 @@ export function MarkdownView(props: {
 			? "md-row md-split"
 			: "md-row";
 
+	// The new lines a row shows (`from-to`): a view switch keeps the
+	// reader's place by them (keepPlace.ts, CAR-317).
+	const newBlocks = base && base !== "failed" ? base.newBlocks : [];
+	const linesOf = (key: string): string | undefined => {
+		const n = Number(key.slice(1));
+		const row =
+			key[0] === "c"
+				? doc.rows[n]
+				: key[0] === "f"
+					? doc.rows.find((r) => r.kind === "fold" && r.blocks[0] === n)
+					: undefined;
+		const blocks =
+			key[0] === "s"
+				? [n]
+				: row?.kind === "change"
+					? row.newBlocks
+					: row?.kind === "fold"
+						? row.blocks
+						: [];
+		const first = newBlocks[blocks[0] ?? -1];
+		const last = newBlocks[blocks[blocks.length - 1] ?? -1];
+		return first && last ? `${first.from}-${last.to}` : undefined;
+	};
 	const rowMarks = (key: string) => ({
 		"data-row": key,
+		"data-new-lines": linesOf(key),
 		"data-find-current": findKey === key || undefined,
 	});
 

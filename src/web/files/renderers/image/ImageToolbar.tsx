@@ -7,7 +7,7 @@ import type { ReactNode } from "react";
 import { LabeledIcon } from "../../../overview/parts";
 import { SkeletonBar } from "../../../Spinner";
 import { Tooltip } from "../../../Tooltip";
-import { ICON_BUTTON } from "../ViewSwitch";
+import { ICON_BUTTON, VIEW_BAR } from "../ViewSwitch";
 import { dimsText, TONE_TEXT, type Tone } from "./ImageSingle";
 import type { Size } from "./stage";
 
@@ -37,7 +37,7 @@ export function ImageToolbar(props: {
 	const pending = props.dims.some((d) => d.size === undefined);
 	const known = props.dims.filter((d) => dimsText(d.size) !== "");
 	return (
-		<div className="flex min-h-12 flex-wrap items-center gap-2 border-line border-b bg-band px-2 py-1">
+		<div data-view-bar className={VIEW_BAR}>
 			{props.view}
 			<span className="flex-1" />
 			{props.failed && (
