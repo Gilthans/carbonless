@@ -932,10 +932,7 @@ export interface PairHtml {
 function marksHidden(body: HTMLElement): boolean {
 	for (const m of body.querySelectorAll("del.md-del, ins.md-ins")) {
 		const look = looksOf(m);
-		if (
-			look.replace(/<\/?[a-z][a-z0-9]*>/g, "") === "" &&
-			!/<img /.test(look)
-		) {
+		if (/^(?:<\/?[a-z][a-z0-9]*>)*$/.test(look) && !/<img /.test(look)) {
 			return true;
 		}
 		if (hasUnseen(m.textContent ?? "")) return true;
