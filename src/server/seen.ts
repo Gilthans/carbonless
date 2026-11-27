@@ -73,13 +73,20 @@ export async function writeSeen(
  * disk: opening a review never waits on this note (on Windows a busy file
  * can hold a save for seconds, CAR-181). readSeen answers it at once; one
  * review's writes go to disk in order, so the newest recorded wins; a
- * failed write only loses the note.
+ * failed write only loses the note. A review id or head that isn't one is
+ * no note (false).
  */
 export function recordSeen(
 	reviewId: string,
 	head: string,
 	at: number = Date.now(),
-): void {
+): boolean {
+	try {
+		seenPath(reviewId);
+	} catch {
+		return false;
+	}
+	if (!OID.test(head)) return false;
 	const before = writing.get(reviewId)?.done ?? Promise.resolve();
 	const entry = {
 		seen: { head, at },
@@ -89,9 +96,17 @@ export function recordSeen(
 	void entry.done.then(() => {
 		if (writing.get(reviewId) === entry) writing.delete(reviewId);
 	});
+	return true;
 }
 
-/** Resolves once every recorded note is written (or failed). */
-export async function seenSettled(): Promise<void> {
-	await Promise.all([...writing.values()].map((w) => w.done));
+/**
+ * Resolves once the review's recorded notes are written (or failed); with
+ * no review, every review's.
+ */
+export async function seenSettled(reviewId?: string): Promise<void> {
+	const pending =
+		reviewId === undefined
+			? [...writing.values()]
+			: [writing.get(reviewId)].filter((w) => w !== undefined);
+	await Promise.all(pending.map((w) => w.done));
 }

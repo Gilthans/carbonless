@@ -620,10 +620,10 @@ export class Session {
 				this.#queue,
 				// Its process, checkout and claim.
 				this.#agent?.close(),
-				// Saves the answers didn't wait for.
-				this.#cache.settled(),
-				seenSettled(),
 			]);
+			// Then the saves the answers didn't wait for: only now, as a job
+			// that ended above may just have started one.
+			await Promise.all([this.#cache.settled(), seenSettled(this.id)]);
 		})();
 		return this.#closed;
 	}

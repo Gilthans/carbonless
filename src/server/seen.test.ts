@@ -11,8 +11,14 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { readSeen, recordSeen, seenSettled, writeSeen } from "./seen";
 
-/** While `held`, every atomic write waits for it (a busy file on Windows). */
-const gate = vi.hoisted(() => ({ held: null as Promise<void> | null }));
+/**
+ * The next atomic writes, in turn, each wait for one hold (a busy file on
+ * Windows); `started` lists the data of every write that began.
+ */
+const gate = vi.hoisted(() => ({
+	holds: [] as Promise<void>[],
+	started: [] as string[],
+}));
 vi.mock("./atomicFile", async (original) => {
 	const real = await original<typeof import("./atomicFile")>();
 	return {
@@ -20,11 +26,23 @@ vi.mock("./atomicFile", async (original) => {
 		writeFileAtomic: async (
 			...args: Parameters<typeof real.writeFileAtomic>
 		) => {
-			await gate.held;
+			gate.started.push(args[1]);
+			await gate.holds.shift();
 			return real.writeFileAtomic(...args);
 		},
 	};
 });
+
+/** Holds the next write that starts; the result lets it go. */
+const holdNextWrite = (): (() => void) => {
+	let release = () => {};
+	gate.holds.push(
+		new Promise((r) => {
+			release = r;
+		}),
+	);
+	return release;
+};
 
 const ID = "01jb0000000000000000000000";
 const HEAD = "a".repeat(40);
@@ -39,7 +57,8 @@ describe("last-seen head", () => {
 		process.env.XDG_STATE_HOME = dir;
 	});
 	afterEach(async () => {
-		gate.held = null;
+		gate.holds = [];
+		gate.started = [];
 		await seenSettled();
 		if (saved === undefined) delete process.env.XDG_STATE_HOME;
 		else process.env.XDG_STATE_HOME = saved;
@@ -93,22 +112,62 @@ describe("last-seen head", () => {
 	});
 
 	describe("recorded without waiting for the disk (CAR-181)", () => {
-		it("answers the newest note at once while the write is held, and writes one review's notes in order", async () => {
-			let release = () => {};
-			gate.held = new Promise((r) => {
-				release = r;
-			});
-			recordSeen(ID, HEAD, 1);
-			recordSeen(ID, "b".repeat(40), 2);
-			expect(await readSeen(ID)).toEqual({ head: "b".repeat(40), at: 2 });
+		const B = "b".repeat(40);
+		const note = (head: string, at: number) =>
+			`${JSON.stringify({ head, at })}\n`;
+		/** Lets pending promise callbacks and I/O run. */
+		const turn = () => new Promise((r) => setImmediate(r));
+
+		it("answers the newest note at once while the write is held", async () => {
+			const release = holdNextWrite();
+			expect(recordSeen(ID, HEAD, 1)).toBe(true);
+			expect(await readSeen(ID)).toEqual({ head: HEAD, at: 1 });
 			expect(existsSync(file())).toBe(false);
 			release();
-			await seenSettled();
+			await seenSettled(ID);
 			expect(JSON.parse(readFileSync(file(), "utf8"))).toEqual({
-				head: "b".repeat(40),
+				head: HEAD,
+				at: 1,
+			});
+		});
+
+		it("writes one review's notes in order: a newer note waits for the older write", async () => {
+			const release = holdNextWrite();
+			recordSeen(ID, HEAD, 1);
+			recordSeen(ID, B, 2);
+			for (let i = 0; i < 5; i++) await turn();
+			// The newer note's write hasn't started behind the held one.
+			expect(gate.started).toEqual([note(HEAD, 1)]);
+			expect(await readSeen(ID)).toEqual({ head: B, at: 2 });
+			release();
+			await seenSettled(ID);
+			expect(gate.started).toEqual([note(HEAD, 1), note(B, 2)]);
+			expect(JSON.parse(readFileSync(file(), "utf8"))).toEqual({
+				head: B,
 				at: 2,
 			});
-			expect(await readSeen(ID)).toEqual({ head: "b".repeat(40), at: 2 });
+		});
+
+		it("waits only for the review asked about", async () => {
+			const OTHER = "01jb0000000000000000000001";
+			const release = holdNextWrite();
+			recordSeen(OTHER, HEAD, 1);
+			recordSeen(ID, B, 2);
+			await seenSettled(ID);
+			expect(JSON.parse(readFileSync(file(), "utf8"))).toEqual({
+				head: B,
+				at: 2,
+			});
+			release();
+		});
+
+		it("a review id or head that isn't one is no note, not even while a write is pending", async () => {
+			const release = holdNextWrite();
+			expect(recordSeen(ID, "not an oid", 1)).toBe(false);
+			expect(await readSeen(ID)).toBeNull();
+			expect(recordSeen("../x", HEAD, 1)).toBe(false);
+			expect(gate.started).toEqual([]);
+			release();
 		});
 
 		it("a failed write only loses the note", async () => {
