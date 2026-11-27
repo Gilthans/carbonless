@@ -262,7 +262,7 @@ jobs:
             find "$shard" -type f \( -name '*.jsonl' -o -name '*.jsonl.gz' \) |
               while read -r f; do cp "$f" "$run/s$n-$(basename "$f")"; done
           done
-          ls "$run" | wc -l
+          find "$run" -mindepth 1 -maxdepth 1 | wc -l
       - uses: actions/upload-artifact@v4
         with:
           name: test-traces-e2e

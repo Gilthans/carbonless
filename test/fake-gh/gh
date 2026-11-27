@@ -54,7 +54,10 @@ if [[ $CRB_FAKE_GH_SERVER =~ ^127\.0\.0\.1:([0-9]+):([0-9a-f]{32})$ ]] &&
 	code=${BASH_REMATCH[1]}
 	errn=${BASH_REMATCH[2]}
 	outn=${BASH_REMATCH[3]}
+	# broken exits: either the read or the length check failing ends the call.
+	# shellcheck disable=SC2015
 	IFS= read -r -N "$errn" e <&3 && ((${#e} == errn)) || broken "a short answer"
+	# shellcheck disable=SC2015
 	IFS= read -r -N "$outn" o <&3 && ((${#o} == outn)) || broken "a short answer"
 	printf '%s' "$o"
 	printf '%s' "$e" >&2
