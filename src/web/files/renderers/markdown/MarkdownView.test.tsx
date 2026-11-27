@@ -2,6 +2,7 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import {
 	cleanup,
+	fireEvent,
 	render,
 	screen,
 	waitFor,
@@ -888,6 +889,61 @@ describe("MarkdownView: gallery #61 images, full diff and since view (CAR-167 QA
 			);
 			// The added image, loaded, stays an image.
 			expect(row?.querySelector("ins.md-ins img")).not.toBeNull();
+		},
+	);
+
+	it("since view: a new side's image that fails to load says it isn't loaded, not that the patch set lacks it (CAR-318)", async () => {
+		show(
+			docFixture(IOLD, INEW, imgEdit, { path: "md/images.md", since: true }),
+			{ files: FILES, from: 1 },
+		);
+		const row = rowOf(await doc(), "p:0:0");
+		row?.querySelector("ins.md-ins img")?.dispatchEvent(new Event("error"));
+		expect(row?.querySelector("ins.md-ins img")).toBeNull();
+		expect(row?.querySelector("ins.md-ins .md-local-image")).toHaveAttribute(
+			"title",
+			"Not loaded",
+		);
+	});
+
+	it.each([
+		["full diff", undefined],
+		["since view", 1],
+	])(
+		"%s: a remote image clicked to load that fails becomes a still placeholder with its alt and URL, never a broken image (CAR-318)",
+		async (_, from) => {
+			const lines = [
+				"Intro.",
+				"",
+				"![Fleet photo](https://example.com/fleet.png)",
+			];
+			show(
+				docFixture(["Intro."], lines, [{ key: "r", new: [2, 4] }], {
+					since: from !== undefined,
+				}),
+				from === undefined ? {} : { from },
+			);
+			const root = await doc();
+			const button = root.querySelector("button.md-remote-image");
+			expect(button).not.toBeNull();
+			fireEvent.click(button as Element);
+			const img = root.querySelector(
+				'img[src="https://example.com/fleet.png"]',
+			);
+			expect(img).toHaveAttribute("referrerpolicy", "no-referrer");
+			expect(img).toHaveAttribute("alt", "Fleet photo");
+			img?.dispatchEvent(new Event("error"));
+			expect(
+				root.querySelector('img[src="https://example.com/fleet.png"]'),
+			).toBeNull();
+			const still = root.querySelector(".md-local-image");
+			expect(still).toHaveAttribute("title", "Not loaded");
+			expect(still?.querySelector(".md-image-alt")).toHaveTextContent(
+				"Fleet photo",
+			);
+			expect(still?.querySelector(".md-image-path")).toHaveTextContent(
+				"https://example.com/fleet.png",
+			);
 		},
 	);
 

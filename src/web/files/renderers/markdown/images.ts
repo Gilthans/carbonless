@@ -87,3 +87,27 @@ export function remoteImageUrl(raw: string | null): string | null {
 		return null;
 	}
 }
+
+/**
+ * What an image that failed to load says (its still placeholder,
+ * `stillImage`): in the since view, a removed image the compared patch
+ * set doesn't have, "Not at this patch set": only one loaded from the old
+ * side (blobUrl's `side=old` on the review's own blob route). Anything
+ * else, the full diff's, a new side's, a remote one clicked to load:
+ * "Not loaded" (CAR-318).
+ */
+export function failedImageWhy(src: string, from: number | undefined): string {
+	if (from === undefined) return "Not loaded";
+	try {
+		const url = new URL(src, window.location.href);
+		const own =
+			url.origin === window.location.origin &&
+			/\/api\/files\/\d+\/blob$/.test(url.pathname);
+		if (own && url.searchParams.get("side") === "old") {
+			return "Not at this patch set";
+		}
+	} catch {
+		// Not a URL: not one of ours.
+	}
+	return "Not loaded";
+}

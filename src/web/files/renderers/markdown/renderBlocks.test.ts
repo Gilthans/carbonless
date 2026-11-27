@@ -8,11 +8,13 @@ import {
 import {
 	type RenderedBlock,
 	renderBlocks,
+	renderMerged,
 	renderPair,
 	renderSource,
 	sideBlocks,
 	tableHeaders,
 } from "./renderBlocks";
+import { mergedSource } from "./wordMarks";
 
 const local = (src: string) => `/blob?path=${encodeURIComponent(src)}`;
 const opts = {
@@ -279,6 +281,49 @@ describe("nested list items (gallery #61 lists.md)", () => {
 		expect(render("> - a\n>   - b").map((b) => lists(b.html))).toEqual([1, 2]);
 	});
 
+	it("an item's tail after its nested list stays in its list: numbered under a numbered item (CAR-318)", () => {
+		const text =
+			"1. one\n   - sub\n\n   tail\n2. two\n\n- b\n  - sub\n\n  b tail";
+		const out = render(text);
+		const tailOf = (word: string) =>
+			out
+				.map((b) => dom(b.html))
+				.find((d) =>
+					d.querySelector("li.md-continuation")?.textContent?.includes(word),
+				);
+		const numbered = tailOf("tail")?.querySelector("li.md-continuation");
+		expect(numbered?.parentElement?.tagName).toBe("OL");
+		const bulleted = tailOf("b tail")?.querySelector("li.md-continuation");
+		expect(bulleted?.parentElement?.tagName).toBe("UL");
+		// Changed, its words marked: still in the numbered list.
+		const oldL = ["1. one", "   - sub", "", "   tail text"];
+		const newL = ["1. one", "   - sub", "", "   tail words"];
+		const pair = renderPair(
+			sideBlocks(oldL, markdownBlocks(oldL)),
+			2,
+			sideBlocks(newL, markdownBlocks(newL)),
+			2,
+			opts,
+		);
+		for (const html of [pair?.merged, pair?.old, pair?.new]) {
+			expect(
+				dom(html ?? "").querySelector("li.md-continuation")?.parentElement
+					?.tagName,
+			).toBe("OL");
+		}
+		// A tail that moved from a numbered item to a bulleted one: struck above new.
+		const bulletL = ["- one", "  - sub", "", "  tail words"];
+		expect(
+			renderPair(
+				sideBlocks(oldL, markdownBlocks(oldL)),
+				2,
+				sideBlocks(bulletL, markdownBlocks(bulletL)),
+				2,
+				opts,
+			),
+		).toBeNull();
+	});
+
 	it("a changed nested item renders nested, its words marked", () => {
 		const oldL = ["- Mooring lines", "  - Stern line"];
 		const newL = ["- Mooring lines", "  - Heaving line"];
@@ -472,6 +517,54 @@ describe("sanitizing", () => {
 		expect(button?.querySelector(".md-image-path")?.textContent).toBe(
 			"https://example.com/b.png",
 		);
+	});
+});
+
+describe("renderMerged checks each side against its block's own source (CAR-318)", () => {
+	it("a merge whose side isn't its block's own source gives null, never a wrong picture", () => {
+		const merged = mergedSource("Ferry at nine.", "Ferry at ten.", "paragraph");
+		expect(merged).not.toBeNull();
+		const src = merged as string;
+		// Its own sides: marks.
+		expect(
+			renderMerged(src, {
+				...opts,
+				sources: { old: "Ferry at nine.", new: "Ferry at ten." },
+			}),
+		).not.toBeNull();
+		// A side that lost a change (the block reads otherwise): none.
+		expect(
+			renderMerged(src, {
+				...opts,
+				sources: { old: "Ferry at nine.", new: "Ferry at ten, or later." },
+			}),
+		).toBeNull();
+		expect(
+			renderMerged(src, {
+				...opts,
+				sources: { old: "Bus at nine.", new: "Ferry at ten." },
+			}),
+		).toBeNull();
+	});
+
+	it("a table cell whose URL runs up to its pipe gets its words marked, as GitHub ends the URL at the pipe", () => {
+		const oldL = ["| a | b |", "|---|---|", "|old|2|"];
+		const newL = ["| a | b |", "|---|---|", "|https://example.com/x|2|"];
+		const pair = renderPair(
+			sideBlocks(oldL, markdownBlocks(oldL)),
+			1,
+			sideBlocks(newL, markdownBlocks(newL)),
+			1,
+			opts,
+		);
+		expect(pair).not.toBeNull();
+		const d = dom(pair?.merged ?? "");
+		expect(d.querySelector("del.md-del")).toHaveTextContent("old");
+		expect(d.querySelector("ins.md-ins a")).toHaveAttribute(
+			"href",
+			"https://example.com/x",
+		);
+		expect(d.querySelectorAll("td")).toHaveLength(2);
 	});
 });
 

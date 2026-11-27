@@ -520,8 +520,9 @@ const UNMARKED: ReadonlySet<MdBlockKind> = new Set([
  * as long as `BLOCK_DIFF_MAX` or a line as long as `WORD_DIFF_MAX` (the line
  * view's cut). Identical sources come back as they are. Content's own
  * sentinel code points are replaced first, so every mark in the result is
- * ours. Render it with `renderMerged`, which can still say null (the marks
- * didn't land cleanly): the view then shows old struck above new.
+ * ours. Render it with `renderMerged`, given both blocks' own sources
+ * (`sources`), which can still say null (the marks didn't land cleanly, or
+ * a side isn't its block): the view then shows old struck above new.
  */
 export function mergedSource(
 	oldSrc: string,
@@ -549,12 +550,12 @@ export function mergedSource(
 			if (s.ins) out += INS_OPEN + fenceUrls(s.ins) + INS_CLOSE;
 		}
 	}
-	// Each side, marks taken out, must be that side's own source (its bare
-	// URLs fenced): a merge that lost or moved a change (an attribute's
-	// edit inside a tag token) gives no marks, never a wrong picture.
-	if (oldSide(out) !== fenceUrls(a) || newSide(out) !== fenceUrls(b)) {
-		return null;
-	}
+	// Whether each side, marks taken out, is that side's own block is
+	// checked where it counts, rendered (renderMerged's `sources`,
+	// CAR-318): a merge that lost or moved a change gives no marks, never
+	// a wrong picture. A check here on the source, its bare URLs fenced as
+	// a whole, read a table cell's URL against its pipe as running through
+	// the pipe, and refused a merge GitHub renders the same.
 	return out;
 }
 

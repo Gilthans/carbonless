@@ -88,7 +88,12 @@ import {
 	sinceLeft,
 } from "../../threadPlacement";
 import { wordMarks } from "../../wordDiff";
-import { type ImageFile, imageResolver, remoteImageUrl } from "./images";
+import {
+	failedImageWhy,
+	type ImageFile,
+	imageResolver,
+	remoteImageUrl,
+} from "./images";
 import {
 	blockCommentSpan,
 	blocksOf,
@@ -104,6 +109,7 @@ import {
 	type Tone,
 } from "./markdownDoc";
 import {
+	loadRemoteImage,
 	type PairHtml,
 	renderBlocks,
 	renderPair,
@@ -273,9 +279,10 @@ export function MarkdownView(props: {
 				}
 			} else {
 				for (const piece of hunks.data?.pieces ?? []) {
-					// A file-level piece (CAR-297) has no block to sit on: the
-					// document is left to the Text view, which shows its row.
-					if (piece.file !== undefined) return "failed" as const;
+					// A file-level piece (CAR-297) has no block to sit on: its
+					// row (its box) is the head's, DiffBody's, above the
+					// document (CAR-318).
+					if (piece.file !== undefined) continue;
 					const mark = pieceMark(piece, {
 						clusters,
 						since: from,
@@ -416,13 +423,17 @@ export function MarkdownView(props: {
 	}, [ready, realign]);
 	// An image that fails to load becomes a still placeholder, never a
 	// broken image: in the since view, a removed image the compared patch
-	// set doesn't have. A layout effect: listening before any load ends.
+	// set doesn't have ("Not at this patch set"); any other, a remote one
+	// clicked to load included, "Not loaded" (failedImageWhy). A layout
+	// effect: listening before any load ends.
 	useLayoutEffect(() => {
 		const el = root.current;
 		if (!ready || !el) return;
-		const why = from === undefined ? "Not loaded" : "Not at this patch set";
 		const onError = (e: Event) => {
-			if (e.target instanceof HTMLImageElement) stillImage(e.target, why);
+			const img = e.target;
+			if (img instanceof HTMLImageElement) {
+				stillImage(img, failedImageWhy(img.getAttribute("src") ?? "", from));
+			}
 		};
 		el.addEventListener("error", onError, true);
 		return () => el.removeEventListener("error", onError, true);
@@ -1403,6 +1414,9 @@ export function MarkdownView(props: {
 					clusters={file.clusters}
 					kinds={props.kinds}
 					hunks={hunks.data}
+					fileLevel={
+						(hunks.data.pieces ?? []).filter((p) => p.file !== undefined).length
+					}
 				/>
 			)}
 		</>
@@ -1526,11 +1540,7 @@ function onDocClick(event: MouseEvent<HTMLDivElement>) {
 	if (!button || !event.currentTarget.contains(button)) return;
 	const url = remoteImageUrl(button.getAttribute("data-remote-src"));
 	if (!url) return;
-	const img = document.createElement("img");
-	img.referrerPolicy = "no-referrer";
-	img.alt = "";
-	img.src = url;
-	button.replaceWith(img);
+	loadRemoteImage(button, url);
 }
 
 /** A unit's box and what it says of itself. */
