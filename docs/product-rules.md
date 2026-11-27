@@ -759,8 +759,12 @@ whitespace-only when every line is a `~` row there and every line was
 read (reviewed or crossed off) at the earlier patch set, or is a base
 line that patch set left alone (nothing to read there; the full diff
 leaves the same re-indent out: owner 2026-11-23, "Interdiff should
-behave similarly to a basediff compare"). A line nobody read there that
-this patch set only re-indented is still unread. The rest of a cluster
+behave similarly to a basediff compare"), or is whitespace only against
+the base too (its new side is in a whitespace-only cluster of the viewed
+snapshot: the full diff leaves it out, read or not; CAR-319). A line
+nobody read there that is a real change against the base (added, or
+edited, by that patch set) and that this patch set only re-indented is
+still unread. The rest of a cluster
 that no piece shows keeps its cluster's flag. A piece collapses by its
 own flag, not its cluster's: a real edit since, in a cluster
 whitespace-only against the base, stays open. A file is

@@ -958,10 +958,11 @@ describe("since pieces and the view's `~` rows agree (CAR-218)", () => {
 	});
 	afterAll(() => r.cleanup());
 
-	it("every piece starts a view run; every whitespace-only piece's lines are `~` rows; nothing marked, only re-indents of lines PS1 left alone are", async () => {
+	it("every piece starts a view run; every whitespace-only piece's lines are `~` rows; nothing marked, only re-indents of lines PS1 left alone or whitespace-only against the base are", async () => {
 		let flagged = 0;
 		let wsRows = 0;
 		let leftAlone = 0;
+		let quietSince = 0;
 		for (const marked of [true, false]) {
 			const view = await sinceView(
 				r.path,
@@ -977,21 +978,40 @@ describe("since pieces and the view's `~` rows agree (CAR-218)", () => {
 				const hunks = view.hunks(f.index);
 				const seen = expectAgree(hunks, cut, f.path);
 				if (!marked) {
-					// Each line of a flagged piece stands for a removed line
-					// no cluster of PS1 added (itself, or an added line's twin).
+					// Each line of a flagged piece is whitespace only against
+					// the base, as the full diff reads it (CAR-319): its new
+					// side (itself, or a removed line's added twin) is in a
+					// whitespace-only cluster of PS2; or it stands for a
+					// removed line no cluster of PS1 added (itself, or an
+					// added line's twin).
 					const addedThen = view.traced.lineKeys.old[f.path] ?? {};
+					const quiet = new Set(
+						(b.files.find((x) => x.path === f.path)?.clusters ?? []).flatMap(
+							(c) =>
+								c.kind === "lines" && c.whitespaceOnly
+									? Array.from({ length: c.newCount }, (_, i) => c.newStart + i)
+									: [],
+						),
+					);
 					for (const p of hunks.pieces ?? []) {
 						// An orphan's flag is its cluster's (CAR-216), not a twin's.
 						if (!p.whitespaceOnly || p.orphan) continue;
 						const all = hunks.hunks[p.hunk]?.lines ?? [];
 						const twins = matchDisplayHunk(all);
 						const n = size(p.old) + size(p.new);
+						let alone = true;
 						for (const l of all.slice(p.line, p.line + n)) {
+							const young = l.kind === "del" ? twins.get(l) : l;
+							if (young?.kind === "add" && quiet.has(young.newNo as number)) {
+								alone = false;
+								continue;
+							}
 							const old = l.kind === "add" ? twins.get(l) : l;
 							expect(old?.kind, f.path).toBe("del");
 							expect(addedThen[old?.oldNo as number], f.path).toBeUndefined();
 						}
-						leftAlone++;
+						if (alone) leftAlone++;
+						else quietSince++;
 					}
 				}
 				flagged += seen.flagged;
@@ -1001,6 +1021,7 @@ describe("since pieces and the view's `~` rows agree (CAR-218)", () => {
 		expect(wsRows).toBeGreaterThan(0);
 		expect(flagged).toBeGreaterThan(0);
 		expect(leftAlone).toBeGreaterThan(0);
+		expect(quietSince).toBeGreaterThan(0);
 	});
 });
 
@@ -1373,10 +1394,19 @@ describe("a base line PS1 left alone, only re-indented since (CAR-218)", () => {
 		const view = await sinceView(r.path, a, b, new Map());
 		const { baseLine: _, ...keys } = view.traced.lineKeys;
 		const stale = { ...view.traced, lineKeys: keys };
+		// Nor the full diff's judgment (CAR-319, which would leave these
+		// re-indents out on its own): only the placement is asked here.
+		const noWs: Snapshot = {
+			...b,
+			files: b.files.map((f) => ({
+				...f,
+				clusters: f.clusters.map(({ whitespaceOnly: _w, ...c }) => c),
+			})),
+		};
 		for (const path of ["a.ts", "b.ts"]) {
 			const hunks = interdiffFileHunks(
 				stale,
-				b,
+				noWs,
 				view.answer,
 				at(path),
 				view.sources,
@@ -1412,6 +1442,91 @@ describe("a base line PS1 left alone, only re-indented since (CAR-218)", () => {
 		const pieces = view.hunks(at("c.ts")).pieces ?? [];
 		expect(pieces.length).toBeGreaterThan(0);
 		expect(pieces.filter((p) => p.whitespaceOnly)).toEqual([]);
+	});
+});
+
+describe("a line PS1 only re-indented, unmarked, re-indented again since (CAR-319)", () => {
+	const head = Array.from({ length: 8 }, (_, i) => `head ${i + 1}`);
+	const tail = Array.from({ length: 8 }, (_, i) => `tail ${i + 1}`);
+	// notes.txt: PS1 only re-indents two lines (whitespace only against
+	// the base), and nobody marks them; PS2 re-indents them again, still
+	// whitespace only against the base. real.txt: PS1 changes a line for
+	// real (unmarked), PS2 only re-indents it: a real change against the
+	// base. new.txt: PS1 adds two lines (unmarked), PS2 re-indents them.
+	const files = (
+		notes: string[],
+		real: string,
+		added: string[],
+	): Record<string, string> => ({
+		"notes.txt": text([...head, ...notes, ...tail]),
+		"real.txt": text([...head, real, ...tail]),
+		"new.txt": text([...head, ...added, ...tail]),
+	});
+	let r: GitFixture;
+	let a: Snapshot;
+	let b: Snapshot;
+	beforeAll(async () => {
+		r = createGitFixture([
+			{
+				message: "base",
+				files: files(["    count", "    total"], "keep", []),
+			},
+			{
+				message: "ps1",
+				files: files(["  count", "  total"], "kept", ["  one", "  two"]),
+			},
+			{
+				message: "ps2",
+				files: files(["   count", "   total"], "  kept", ["one", "two"]),
+			},
+		]);
+		const [b0, h1, h2] = r.shas as [string, string, string];
+		a = await buildSnapshot(r.path, b0, h1);
+		b = await buildSnapshot(r.path, b0, h2);
+	});
+	afterAll(() => r.cleanup());
+
+	const at = (path: string) => b.files.findIndex((f) => f.path === path);
+	const shape = (hunks: FileHunks) =>
+		(hunks.pieces ?? []).map((p) => [
+			hunks.hunks[p.hunk]?.lines
+				.slice(p.line, p.line + size(p.old) + size(p.new))
+				.map((l) => `${l.kind === "add" ? "+" : "-"}${l.text}`),
+			p.orphan === true,
+			p.whitespaceOnly === true,
+		]);
+
+	it("whitespace only against the base too: nothing to read with the switch on, as in the full diff", async () => {
+		const cluster = b.files[at("notes.txt")]?.clusters[0];
+		expect(cluster?.kind === "lines" && cluster.whitespaceOnly).toBe(true);
+		const view = await sinceView(r.path, a, b, new Map());
+		const hunks = view.hunks(at("notes.txt"));
+		// The re-indent since PS1, and the orphan piece of PS1's own
+		// re-indent of the base (CAR-216, whitespace only as its cluster
+		// is): all left out.
+		const shown = shape(hunks);
+		expect(shown.filter(([, orphan]) => !orphan)).toEqual([
+			[["-  count", "-  total"], false, true],
+			[["+   count", "+   total"], false, true],
+		]);
+		expect(shown.every(([, , ws]) => ws)).toBe(true);
+		expectAgree(hunks, true, "notes.txt");
+		// The answer's pieces are the page's.
+		expect(
+			view.answer.files.find((f) => f.path === "notes.txt")?.pieces,
+		).toEqual(hunks.pieces);
+	});
+
+	it("a real change against the base, never reviewed, still counts when only re-indented since (principle 2)", async () => {
+		const view = await sinceView(r.path, a, b, new Map());
+		for (const path of ["real.txt", "new.txt"]) {
+			const pieces = view.hunks(at(path)).pieces ?? [];
+			expect(pieces.length, path).toBeGreaterThan(0);
+			expect(
+				pieces.filter((p) => p.whitespaceOnly),
+				path,
+			).toEqual([]);
+		}
 	});
 });
 

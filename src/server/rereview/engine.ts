@@ -60,7 +60,7 @@ import {
 import { detectShape, type Shape } from "./shape.js";
 
 /** Bumped when the engine's cached, state-free result could change for the same inputs. */
-const ENGINE_VERSION = 8;
+const ENGINE_VERSION = 9;
 
 /** The patch set a comparison is from, with its snapshot and folded states. */
 export type SincePatchset = PatchsetRecord & {
@@ -1539,7 +1539,7 @@ function sinceFileHunks(
 		shown,
 		targetClusters,
 		() => ({ baseNo: baseOf }),
-		sinceWhitespace(traced, entry.path, file, shown, sources),
+		sinceWhitespace(traced, entry.path, file, shown, sources, targetClusters),
 	);
 	// A removed line's GitHub line on the head (LEFT, in the base): what a
 	// comment on it posts with, never its number here (CAR-217). A
@@ -1603,11 +1603,19 @@ function sinceFileHunks(
  * out. A removed line's counterpart is itself; an added line's, its twin
  * in the matching (a removed or context line; a context twin counts only
  * when marked, never as left alone: an extra copy of a line kept is new).
+ * Also nothing to read (CAR-319): a line whose new side (an added line,
+ * or a removed line's added twin) is in a whitespace-only cluster of the
+ * viewed snapshot (`targetClusters`, Cluster.whitespaceOnly, against the
+ * base): the full diff leaves that re-indent out with "Ignore whitespace"
+ * on, marked at the compared patch set or not, so the since view does
+ * too. A line a real change against the base (its cluster isn't
+ * whitespace-only) is never left out this way: unmarked there, it counts.
  * No counterpart, a changed line unmarked or not traced, one already
  * taken, a conflicted file, or no `sources`: not marked (principle 2: it
- * counts). A file nothing of which was marked there and whose interdiff
- * removes no line left alone skips the matching: no lines, so its pieces
- * aren't cut at whitespace runs either (they all count).
+ * counts). A file nothing of which was marked there, whose interdiff
+ * removes no line left alone and whose viewed clusters have no
+ * whitespace-only one skips the matching: no lines, so its pieces aren't
+ * cut at whitespace runs either (they all count).
  */
 function sinceWhitespace(
 	traced: Traced,
@@ -1615,6 +1623,7 @@ function sinceWhitespace(
 	file: InterdiffFile,
 	hunks: readonly { lines: readonly DiffLine[] }[],
 	sources: ReadonlyMap<string, HumanMarks> | undefined,
+	targetClusters: readonly Cluster[],
 ): { lines: ReadonlySet<DiffLine>; marked: (line: DiffLine) => boolean } {
 	const lines = new Set<DiffLine>();
 	const none = { lines, marked: () => false };
@@ -1641,7 +1650,14 @@ function sinceWhitespace(
 			}
 			return false;
 		});
-	if (!anyMarked && !anyLeftAlone) return none;
+	// The viewed snapshot's lines the full diff reads as whitespace only
+	// (its whitespace-only clusters' added lines, against the base).
+	const quietNew = new Set<number>();
+	for (const c of targetClusters) {
+		if (c.kind !== "lines" || c.whitespaceOnly !== true) continue;
+		for (let i = 0; i < c.newCount; i++) quietNew.add(c.newStart + i);
+	}
+	if (!anyMarked && !anyLeftAlone && quietNew.size === 0) return none;
 	const twins = new Map<DiffLine, DiffLine>();
 	for (const hunk of hunks) {
 		const ws = whitespaceLines(hunk.lines);
@@ -1692,6 +1708,16 @@ function sinceWhitespace(
 	return {
 		lines,
 		marked: (line) => {
+			// Whitespace only against the base too: the full diff has
+			// nothing to read there with the switch on (CAR-319).
+			const young = line.kind === "del" ? twins.get(line) : line;
+			if (
+				young?.kind === "add" &&
+				young.newNo !== undefined &&
+				quietNew.has(young.newNo)
+			) {
+				return true;
+			}
 			const old =
 				line.kind === "del"
 					? line

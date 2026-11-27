@@ -1928,11 +1928,14 @@ export function GoneFile(props: {
 					kind="Reviewed work gone"
 				/>
 				<span data-testid="since-chips" className="flex items-center gap-1">
-					<KindChip
-						kind="gone"
-						count={props.info?.counts.gone}
-						from={props.since}
-					/>
+					{/* A count of zero shows no chip, never "0 gone" (CAR-319). */}
+					{props.info?.counts.gone !== 0 && (
+						<KindChip
+							kind="gone"
+							count={props.info?.counts.gone}
+							from={props.since}
+						/>
+					)}
 				</span>
 				{pieces.length > 0 && (
 					<div className="ml-auto flex shrink-0 items-center gap-1.5">
