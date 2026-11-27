@@ -24,6 +24,18 @@ import { cacheDir } from "./paths.js";
  * copies are never touched; everything happens here.
  */
 export function clonePath(owner: string, repo: string): string {
+	return clonePathIn(resolve(cacheDir(), "repos"), owner, repo);
+}
+
+/**
+ * clonePath under the repos directory `reposRoot` (another cache's): a
+ * GhError for names that aren't a GitHub owner and repo.
+ */
+export function clonePathIn(
+	reposRoot: string,
+	owner: string,
+	repo: string,
+): string {
 	for (const segment of [owner, repo]) {
 		// GitHub's own charset for owners and repos: never a separator, a
 		// drive (`C:`) or a NUL, and never `.` or `..`.
@@ -31,7 +43,7 @@ export function clonePath(owner: string, repo: string): string {
 			throw new GhError(`Not a GitHub owner/repo: ${owner}/${repo}`);
 		}
 	}
-	const root = resolve(cacheDir(), "repos");
+	const root = resolve(reposRoot);
 	const path = resolve(root, owner.toLowerCase(), `${repo.toLowerCase()}.git`);
 	// Under the cache's repos directory, whatever the names held.
 	if (!path.startsWith(root + sep)) {

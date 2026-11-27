@@ -7,7 +7,8 @@ import { describe, expect, it } from "vitest";
  * CLI". crb reads git data only through git processes (for-each-ref,
  * cat-file, log, ...), never git's own files: loose refs, packed-refs,
  * reftable, objects, HEAD and the like. This fails when crb's code names
- * one of them in a string, the way a file read of them would.
+ * one of them in a string, the way a file read of them would: a backstop
+ * to gitFilesSpy.test.ts, which watches crb's real flows' fs calls.
  */
 
 const SRC = join(import.meta.dirname, "..");
@@ -20,6 +21,11 @@ const INTERNAL = [
 	/["'`](refs|objects)["'`]\s*[,)]/,
 	// A path into a git directory.
 	/["'`][^"'`\n]*\.git[/\\]+(refs|objects|HEAD|logs|packed-refs)\b/,
+	// A git file or directory joined onto a path, alone or with more after it.
+	/(join|resolve)\([^)]*["'`](HEAD|config|index|shallow|objects|refs|logs)["'`/]/,
+	// The same in a template: `${repo}/refs/...`.
+	/\}\/(refs|objects|logs|HEAD|packed-refs|config|index|shallow)\b/,
+	/["'`]objects\//,
 ];
 
 function sources(dir: string): string[] {
@@ -48,6 +54,13 @@ describe("no reads of git's files (CAR-326)", () => {
 			`isDir(join(dir, "reftable"))`,
 			`readFile(join(repo, ".git/HEAD"))`,
 			`stat(join(dir, "objects"))`,
+			`readFile(join(repo, "refs/crb/reviews", id, "meta"))`,
+			"readFile(`${repo}/refs/crb/x`)",
+			`readFile(join(repo, "HEAD"))`,
+			`readFile(join(repo, "config"))`,
+			`stat(join(repo, "objects/pack"))`,
+			`join(repo, "refs", "crb")`,
+			`join(repo, "objects", "pack")`,
 		]) {
 			expect(namesGitInternals(bad), bad).toEqual([bad]);
 		}
@@ -56,6 +69,8 @@ describe("no reads of git's files (CAR-326)", () => {
 			`const ref = "refs/crb/inbox/x";`,
 			`// packed-refs, in a comment`,
 			`["rev-parse", "HEAD^{tree}"]`,
+			`join(configDir(), "config.json")`,
+			`runGit(path, ["symbolic-ref", "HEAD", head])`,
 		]) {
 			expect(namesGitInternals(fine), fine).toEqual([]);
 		}

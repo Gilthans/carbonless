@@ -414,6 +414,9 @@ export class RefStore {
 			if (oldOid !== null) checkOid(oldOid);
 			return `update ${ref} ${newOid} ${oldOid ?? zero}\n`;
 		});
+		// Before the update too: crb killed between the update and the
+		// stamp after it still leaves a stamp no earlier listing saw.
+		await refsChanged(this.repo);
 		try {
 			await runGit(this.repo, ["update-ref", "--stdin"], {
 				input: `start\n${lines.join("")}commit\n`,

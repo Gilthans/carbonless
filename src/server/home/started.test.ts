@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { mkdirSync, rmSync } from "node:fs";
+import { chmodSync, mkdirSync, rmSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -9,6 +9,7 @@ import type { Snapshot } from "../../shared/types.js";
 import { ensureClone, ensureRepoInit, fetchPr } from "../clone.js";
 import { buildSnapshot } from "../diff/snapshot.js";
 import { runGit } from "../git.js";
+import { cacheDir } from "../paths.js";
 import { refsChanged } from "../review/refStamp.js";
 import { RefStore } from "../review/refStore.js";
 import { ReviewService } from "../review/reviews.js";
@@ -402,6 +403,34 @@ describe("StartedReviews", () => {
 		expect(after.map((r) => r.number).sort()).toEqual([100, 300]);
 		expect(after.find((r) => r.number === 100)).toEqual(before);
 	});
+
+	it.skipIf(process.platform === "win32" || process.getuid?.() === 0)(
+		"an unmark this server made shows on the next scan even when no stamp file can be written: Home never reads higher than the truth",
+		async () => {
+			const id = await reviews.findOrCreateReview(PR, "octo");
+			const [a, b] = keys();
+			await reviews.recordStates(id, "octo", snap, [
+				{ key: a as string, state: "reviewed" },
+				{ key: b as string, state: "reviewed" },
+			]);
+			const s = scanner();
+			const [both] = await s.list("octo", new Set(["acme/widget"]));
+			const stamps = join(cacheDir(), "ref-stamps");
+			const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+			chmodSync(stamps, 0o555);
+			try {
+				await reviews.recordStates(id, "octo", snap, [
+					{ key: b as string, state: "unreviewed" },
+				]);
+				const [one] = await s.list("octo", new Set(["acme/widget"]));
+				expect(one?.coverage?.done).toBeLessThan(both?.coverage?.done ?? 0);
+				expect(errors).toHaveBeenCalled();
+			} finally {
+				chmodSync(stamps, 0o755);
+				errors.mockRestore();
+			}
+		},
+	);
 
 	it("a ref written past crb (no stamp) shows once TRUST_MS has passed", async () => {
 		await startMany(100, 1);

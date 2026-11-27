@@ -11,6 +11,7 @@ import type {
 	StateChange,
 } from "../../shared/types.js";
 import { readBlob, readRef } from "../catFile.js";
+import { clonePathIn } from "../clone.js";
 import { runGit } from "../git.js";
 import {
 	type CarriedEvent,
@@ -25,6 +26,7 @@ import {
 	type ShapeCode,
 } from "./events.js";
 import { foldProgress, type ProgressState } from "./fold.js";
+import { pruneOlderThan, STAMP_MAX_AGE_MS } from "./refStamp.js";
 import { RefConflictError, RefStore } from "./refStore.js";
 import { splitCarries } from "./splitCarry.js";
 
@@ -913,9 +915,6 @@ export function listReviews(repoDir: string): Promise<StoredReview[]> {
 	return readMetas(repoDir, "refs/crb/reviews/*/meta");
 }
 
-/** A GitHub owner or repository name, as a clone's directory names it. */
-const CLONE_NAME = /^[a-z0-9_-][a-z0-9._-]*$/;
-
 /** `<cacheRoot>/review-clones/<id>`: which clone holds the review (a hint); null for no review id. */
 function hintFile(cacheRoot: string, id: string): string | null {
 	const dir = resolve(cacheRoot, "review-clones");
@@ -923,17 +922,22 @@ function hintFile(cacheRoot: string, id: string): string | null {
 	return REVIEW_ID.test(id) && file.startsWith(dir + sep) ? file : null;
 }
 
-/** `<cacheRoot>/repos/<owner>/<repo>.git`, or null for names that aren't a clone's. */
+/** `<cacheRoot>/repos/<owner>/<repo>.git` (clone.ts's rules), or null for names that aren't a clone's. */
 function cloneDir(
 	cacheRoot: string,
 	owner: string,
 	repo: string,
 ): string | null {
-	if (!CLONE_NAME.test(owner) || !CLONE_NAME.test(repo)) return null;
-	const root = resolve(cacheRoot, "repos");
-	const dir = resolve(root, owner, `${repo}.git`);
-	return dir.startsWith(root + sep) ? dir : null;
+	try {
+		return clonePathIn(resolve(cacheRoot, "repos"), owner, repo);
+	} catch {
+		return null;
+	}
 }
+
+/** Hints untouched this long are dropped (a review's next lookup scans once). */
+const HINT_MAX_AGE_MS = STAMP_MAX_AGE_MS;
+let hintsPruned = false;
 
 /**
  * Notes that clone `<owner>/<repo>` holds review `id`, so findReviewById
@@ -949,8 +953,10 @@ export async function rememberReviewClone(
 ): Promise<void> {
 	const name = `${owner.toLowerCase()}/${repo.toLowerCase()}`;
 	const file = hintFile(cacheRoot, id);
-	if (!file || !cloneDir(cacheRoot, owner.toLowerCase(), repo.toLowerCase())) {
-		return;
+	if (!file || !cloneDir(cacheRoot, owner, repo)) return;
+	if (!hintsPruned) {
+		hintsPruned = true;
+		void pruneOlderThan(join(cacheRoot, "review-clones"), HINT_MAX_AGE_MS);
 	}
 	try {
 		const known = await readFile(file, "utf8").catch(() => null);
@@ -977,10 +983,7 @@ async function findByHint(
 	if (!file) return null;
 	const name = (await readFile(file, "utf8").catch(() => "")).trim();
 	const [owner = "", repo = "", ...rest] = name.split("/");
-	const repoDir =
-		rest.length === 0 && owner !== ".." && repo !== ".."
-			? cloneDir(cacheRoot, owner, repo)
-			: null;
+	const repoDir = rest.length === 0 ? cloneDir(cacheRoot, owner, repo) : null;
 	if (!repoDir) return null;
 	try {
 		const tip = await readRef(repoDir, `refs/crb/reviews/${id}/meta`);

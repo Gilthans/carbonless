@@ -981,6 +981,20 @@ describe("listReviews and findReviewById", () => {
 			expect(shapes).toEqual(["git cat-file --batch"]);
 		});
 
+		it("a repo whose name starts with a dot (owner/.github) gets a hint like any", async () => {
+			const clone = join(cache, "repos", "acme", ".github.git");
+			mkdirSync(join(cache, "repos", "acme"), { recursive: true });
+			execFileSync("git", ["clone", "--quiet", "--bare", repo, clone], {
+				env: testGitEnv(),
+			});
+			await runGit(clone, ["fetch", "--quiet", repo, "refs/crb/*:refs/crb/*"]);
+			await clones(0, 4);
+			await rememberReviewClone(cache, id, "acme", ".github");
+			const { found, shapes } = await lookup();
+			expect(found?.repoDir).toBe(clone);
+			expect(shapes).toEqual(["git cat-file --batch"]);
+		});
+
 		it("a wrong or odd hint costs a scan, never a wrong answer", async () => {
 			const clone = await holder();
 			await clones(0, 1);
