@@ -1,5 +1,5 @@
 import type { Page } from "@playwright/test";
-import { releaseAcp } from "../test/fake-acp/scenario";
+import { holdAcp, releaseAcp } from "../test/fake-acp/scenario";
 import {
 	ask,
 	askReviewByApi,
@@ -8,12 +8,15 @@ import {
 	chip,
 	expect,
 	fixture,
+	inBox,
 	openFile,
 	reviewDrawer,
+	scrollTopTo,
 	selectText,
 	setupDialog,
 	statusDialog,
 	test,
+	topIn,
 } from "./agent-ui";
 import {
 	expectNoPageOverflow,
@@ -848,4 +851,89 @@ test("one-tap questions (CAR-203): a first review's fill the box; PS1 the new PR
 	);
 	// Long past the tap (a reload and a head check later): nothing was sent.
 	expect(asks).toEqual([]);
+});
+
+/** `n` paragraphs, then `end`: an answer taller than the drawer. */
+const tall = (end: string, n = 30) =>
+	[...Array.from({ length: n }, (_, i) => `Paragraph ${i + 1}.`), end].join(
+		"\n\n",
+	);
+
+test("scrolled up, an answer streaming in keeps what you read in place; at the end, the newest stays in sight (CAR-316)", async ({
+	page,
+	pr,
+	agentCrb,
+	acpScenario,
+	isMobile,
+}) => {
+	// Four agent turns, three of them held: past 30 s on a loaded machine.
+	test.slow();
+	await pr(fixture);
+	const s = await agentCrb({
+		scenario: {
+			agent: AGENT,
+			answers: [
+				{ match: "second", text: tall("End two."), chunks: 4 },
+				{ match: "fourth", text: tall("End four."), chunks: 4 },
+				{ match: "third", text: tall("End three.") },
+				{ text: tall("End one.") },
+			],
+			hold: ["prompt"],
+		},
+	});
+	// Answers stay new: no seen write lands while the test measures.
+	await page.route(/\/agent\/threads\/[^/]+\/seen$/, () => {});
+	await page.goto(s.url);
+	await chip(page).click();
+	const drawer = reviewDrawer(page);
+	const scroller = drawer.getByTestId("review-conversation-scroll");
+	const answers = drawer.getByTestId("agent-message-ai");
+	const answering = drawer.getByTestId("agent-answering");
+	await send(page, "A first question", isMobile);
+	await expect(answering).toBeVisible();
+	releaseAcp(acpScenario, "prompt");
+	await expect(answers.first()).toContainText("End one.");
+	await expect(answering).toHaveCount(0);
+
+	// At the end (the first answer's "new" rule may have taken it up): the
+	// answer streams in, the box keeps to its newest line.
+	await scroller.evaluate((el) => {
+		el.scrollTop = el.scrollHeight;
+	});
+	holdAcp(acpScenario, "prompt");
+	await send(page, "A second question", isMobile);
+	await expect(answering).toBeVisible();
+	releaseAcp(acpScenario, "prompt");
+	await expect(answers.nth(1)).toContainText("End two.");
+	await expect(answering).toHaveCount(0);
+	const endTwo = answers.nth(1).getByText("End two.", { exact: true });
+	await expect.poll(() => inBox(endTwo, scroller)).toBe(true);
+
+	// Scrolled up, a question sent: it and its answer land below what is in
+	// sight, which stays put.
+	releaseAcp(acpScenario, "prompt");
+	const p5 = answers.nth(1).getByText("Paragraph 5.", { exact: true });
+	await scrollTopTo(p5, scroller, 40);
+	await expect.poll(() => inBox(p5, scroller)).toBe(true);
+	const sent = await topIn(p5, scroller);
+	await send(page, "A third question", isMobile);
+	await expect(answers.nth(2)).toContainText("End three.");
+	await expect(answering).toHaveCount(0);
+	expect(Math.abs((await topIn(p5, scroller)) - sent)).toBeLessThanOrEqual(2);
+
+	// Scrolled up while it streams: the paragraph in sight stays put as the
+	// rest of the answer lands and the turn ends.
+	holdAcp(acpScenario, "prompt");
+	await send(page, "A fourth question", isMobile);
+	await expect(answering).toBeVisible();
+	const paragraph = answers.nth(1).getByText("Paragraph 10.", { exact: true });
+	await scrollTopTo(paragraph, scroller, 100);
+	await expect.poll(() => inBox(paragraph, scroller)).toBe(true);
+	const before = await topIn(paragraph, scroller);
+	releaseAcp(acpScenario, "prompt");
+	await expect(answers.nth(3)).toContainText("End four.");
+	await expect(answering).toHaveCount(0);
+	const after = await topIn(paragraph, scroller);
+	expect(Math.abs(after - before)).toBeLessThanOrEqual(2);
+	await expectNoPageOverflow(page);
 });

@@ -1,16 +1,19 @@
 import type { Locator, Page, Route } from "@playwright/test";
-import { releaseAcp } from "../test/fake-acp/scenario";
+import { holdAcp, releaseAcp } from "../test/fake-acp/scenario";
 import { reviewThread, threadComment } from "../test/fake-gh/scenario";
 import {
 	ask,
 	CALC,
 	expect,
 	fixture,
+	inBox,
 	openFile,
 	resolveWrites,
 	row,
+	scrollTopTo,
 	storedResolved,
 	test,
+	topIn,
 } from "./agent-ui";
 import { expectNoPageOverflow } from "./files-ui";
 import type { Pr, PrOptions } from "./fixtures";
@@ -932,4 +935,141 @@ test("at 360px a long Show more toggle and a two-digit handle share their row wi
 	expect(Math.abs(t.y + t.height - (h.y + h.height))).toBeLessThanOrEqual(1);
 	expect(h.width).toBeGreaterThanOrEqual(40);
 	await expectNoPageOverflow(page);
+});
+
+/** `n` paragraphs, then `end`: an answer taller than the panel. */
+const tall = (end: string, n = 30) =>
+	[...Array.from({ length: n }, (_, i) => `Paragraph ${i + 1}.`), end].join(
+		"\n\n",
+	);
+
+test("scrolled up, an answer streaming in keeps what you read in place; at the end, the newest stays in sight (CAR-316)", async ({
+	page,
+	pr,
+	agentCrb,
+	acpScenario,
+}) => {
+	// Four agent turns, three of them held: past 30 s on a loaded machine.
+	test.slow();
+	await setup(pr);
+	const s = await agentCrb({
+		scenario: {
+			agent: AGENT,
+			answers: [
+				{ match: "second", text: tall("End two."), chunks: 4 },
+				{ match: "fourth", text: tall("End four."), chunks: 4 },
+				{ match: "third", text: tall("End three.") },
+				{ text: tall("End one.") },
+			],
+			hold: ["prompt"],
+		},
+	});
+	await holdSeen(page);
+	await page.goto(s.url);
+	const card = overviewCard(page);
+	await openPanel(card);
+	const scroller = panel(card).getByTestId("thread-agent-scroll");
+	const answers = panel(card).getByTestId("agent-message-ai");
+	const answering = panel(card).getByTestId("agent-answering");
+	await sendToAgent(card, "A first question");
+	await expect(answering).toBeVisible();
+	releaseAcp(acpScenario, "prompt");
+	await expect(answers.first()).toContainText("End one.");
+	await expect(answering).toHaveCount(0);
+
+	// At the end: the answer streams in, the box keeps to its newest line.
+	await scroller.evaluate((el) => {
+		el.scrollTop = el.scrollHeight;
+	});
+	holdAcp(acpScenario, "prompt");
+	await sendToAgent(card, "A second question");
+	await expect(answering).toBeVisible();
+	releaseAcp(acpScenario, "prompt");
+	await expect(answers.nth(1)).toContainText("End two.");
+	await expect(answering).toHaveCount(0);
+	const endTwo = answers.nth(1).getByText("End two.", { exact: true });
+	await expect.poll(() => inBox(endTwo, scroller)).toBe(true);
+
+	// Scrolled up, a question sent: it and its answer land below what is in
+	// sight, which stays put.
+	releaseAcp(acpScenario, "prompt");
+	const p5 = answers.nth(1).getByText("Paragraph 5.", { exact: true });
+	await scrollTopTo(p5, scroller, 40);
+	await expect.poll(() => inBox(p5, scroller)).toBe(true);
+	const sent = await topIn(p5, scroller);
+	await sendToAgent(card, "A third question");
+	await expect(answers.nth(2)).toContainText("End three.");
+	await expect(answering).toHaveCount(0);
+	expect(Math.abs((await topIn(p5, scroller)) - sent)).toBeLessThanOrEqual(2);
+
+	// Scrolled up while it streams: the paragraph in sight stays put as the
+	// rest of the answer lands and the turn ends.
+	holdAcp(acpScenario, "prompt");
+	await sendToAgent(card, "A fourth question");
+	await expect(answering).toBeVisible();
+	const paragraph = answers.nth(1).getByText("Paragraph 10.", { exact: true });
+	await scrollTopTo(paragraph, scroller, 40);
+	await expect.poll(() => inBox(paragraph, scroller)).toBe(true);
+	const before = await topIn(paragraph, scroller);
+	releaseAcp(acpScenario, "prompt");
+	await expect(answers.nth(3)).toContainText("End four.");
+	await expect(answering).toHaveCount(0);
+	const after = await topIn(paragraph, scroller);
+	expect(Math.abs(after - before)).toBeLessThanOrEqual(2);
+	await expectNoPageOverflow(page);
+});
+
+test("a suggested comment mid-view stays put through Write, typing and Preview (CAR-316)", async ({
+	page,
+	pr,
+	agentCrb,
+}) => {
+	await setup(pr);
+	const comment = Array.from(
+		{ length: 3 },
+		(_, i) => `Suggested line ${i + 1}.`,
+	).join("\n");
+	const s = await agentCrb({
+		scenario: {
+			agent: AGENT,
+			answers: [
+				{
+					text: `${tall("Before.", 20)}\n\n\`\`\`comment\n${comment}\n\`\`\`\n\n${tall("After.", 20)}`,
+				},
+			],
+		},
+	});
+	await holdSeen(page);
+	await page.goto(s.url);
+	const card = overviewCard(page);
+	await openPanel(card);
+	await sendToAgent(card, "What should I ask?");
+	const box = panel(card).getByTestId("agent-comment");
+	const preview = box.getByTestId("comment-preview");
+	await expect(preview).toContainText("Suggested line 3.");
+	await expect(panel(card).getByText("After.", { exact: true })).toBeAttached();
+	const scroller = panel(card).getByTestId("thread-agent-scroll");
+	await scrollTopTo(box, scroller, 10);
+	const top = await topIn(box, scroller);
+	expect(Math.abs(top - 10)).toBeLessThanOrEqual(2);
+	const stays = async () =>
+		expect(Math.abs((await topIn(box, scroller)) - top)).toBeLessThanOrEqual(2);
+	await box.getByRole("button", { name: "Write" }).click();
+	const text = box.getByRole("textbox", { name: "Review comment" });
+	await expect(text).toBeVisible();
+	await stays();
+	await text.click();
+	await page.keyboard.press("ControlOrMeta+End");
+	for (let i = 0; i < 4; i++) {
+		await page.keyboard.press("Enter");
+		await page.keyboard.type(`More ${i + 1}`);
+		await stays();
+	}
+	await expect(text).toHaveValue(/More 4$/);
+	await box.getByRole("button", { name: "Preview" }).click();
+	await expect(preview).toContainText("More 4");
+	await stays();
+	await box.getByRole("button", { name: "Write" }).click();
+	await expect(text).toBeVisible();
+	await stays();
 });

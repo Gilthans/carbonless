@@ -365,3 +365,59 @@ export function storedResolved(p: Pr): boolean | undefined {
 /** The fake gh's resolve mutations so far. */
 export const resolveWrites = (p: Pr) =>
 	(p.ghLog().match(/\bresolveReviewThread\(/g) ?? []).length;
+
+/**
+ * `el`'s top from `scroller`'s top edge, read once the page has drawn two
+ * frames (a ResizeObserver's pin runs in the frame after a change).
+ */
+export async function topIn(el: Locator, scroller: Locator): Promise<number> {
+	return el.evaluate(
+		(e, sc) =>
+			new Promise<number>((done) =>
+				requestAnimationFrame(() =>
+					requestAnimationFrame(() =>
+						done(
+							e.getBoundingClientRect().top -
+								(sc as Element).getBoundingClientRect().top,
+						),
+					),
+				),
+			),
+		await scroller.elementHandle(),
+	);
+}
+
+/** Whether `el` lies wholly inside `scroller`'s box (1px either way). */
+export async function inBox(el: Locator, scroller: Locator): Promise<boolean> {
+	return el.evaluate(
+		(e, sc) => {
+			const r = e.getBoundingClientRect();
+			const b = (sc as Element).getBoundingClientRect();
+			return r.top >= b.top - 1 && r.bottom <= b.bottom + 1;
+		},
+		await scroller.elementHandle(),
+	);
+}
+
+/**
+ * Scrolls `scroller` so `el`'s top sits `at` px below its top edge (by
+ * scrollBy: right in a reversed box too).
+ */
+export async function scrollTopTo(
+	el: Locator,
+	scroller: Locator,
+	at: number,
+): Promise<void> {
+	await el.evaluate(
+		(e, [sc, y]) => {
+			const s = sc as Element;
+			s.scrollBy(
+				0,
+				e.getBoundingClientRect().top -
+					s.getBoundingClientRect().top -
+					(y as number),
+			);
+		},
+		[await scroller.elementHandle(), at] as const,
+	);
+}

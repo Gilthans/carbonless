@@ -14,6 +14,7 @@ import { useThreadWriter, useWritesOn } from "../threads/threadWrites";
 import { AgentMessageItems, agentName, useAnswering } from "./AgentThreadCard";
 import { useAgentWrites } from "./agentWrites";
 import { agentStatusQuery, postAgentCancel } from "./api";
+import { END_PIN, useEndPin } from "./endPin";
 import {
 	standingSuggestion,
 	unseenMessages,
@@ -141,7 +142,11 @@ function ThreadAgentPanel(props: {
 	const { thread, conversation, open, shown } = props;
 	const entered = useEntered(shown && open);
 	const scroller = useRef<HTMLDivElement>(null);
+	const content = useRef<HTMLDivElement>(null);
 	useSeenWriter(conversation, open, scroller);
+	// Opened at the newest message, kept there while the reader is; scrolled
+	// up, nothing in sight moves as an answer lands (CAR-316).
+	const pin = useEndPin(scroller, content, { active: shown });
 	// No conversation before the first answer or after a failed read: a
 	// spinner or the error, never what reads as an empty one (principle 8).
 	const read = useAgentThreadsRead();
@@ -181,60 +186,64 @@ function ThreadAgentPanel(props: {
 					<div
 						ref={scroller}
 						data-testid="thread-agent-scroll"
-						className="flex min-h-0 flex-1 flex-col-reverse overflow-y-auto overscroll-contain p-2.5"
+						onScroll={pin.onScroll}
+						className={`flex min-h-0 flex-1 flex-col overflow-y-auto overscroll-contain p-2.5 ${END_PIN}`}
 					>
-						{/* Reversed: the messages (and any pending write) last in sight. */}
-						<div className="space-y-2">
-							<PanelMessages
-								thread={thread}
-								conversation={conversation}
-								divider={divider}
-							/>
-						</div>
-						{read.state === "loading" && !conversation && (
-							<div
-								data-testid="thread-agent-panel-loading"
-								aria-busy="true"
-								className="flex flex-1 items-center justify-center"
-							>
-								<Spinner label="Loading agent messages" size={24} />
+						{/* Short, it all sits at the bottom, by the composer. */}
+						<div ref={content} className="flex flex-1 flex-col justify-end">
+							{read.state === "loading" && !conversation && (
+								<div
+									data-testid="thread-agent-panel-loading"
+									aria-busy="true"
+									className="flex flex-1 items-center justify-center"
+								>
+									<Spinner label="Loading agent messages" size={24} />
+								</div>
+							)}
+							{read.state === "failed" && !conversation && (
+								<p
+									role="alert"
+									data-testid="thread-agent-panel-failed"
+									aria-busy={read.retrying}
+									className="flex flex-wrap items-center gap-2 text-sm text-bad"
+								>
+									<AlertIcon size={14} aria-hidden />
+									Agent messages couldn't load
+									{/* While it reads again: a spinner in Retry's slot, the
+									    button kept (focus stays) and inert to presses. */}
+									<span className="relative inline-flex">
+										<button
+											type="button"
+											aria-label="Retry"
+											aria-disabled={read.retrying}
+											onClick={() => {
+												if (!read.retrying) read.retry();
+											}}
+											className="flex h-10 items-center rounded-md px-3 font-medium text-link hover:bg-overlay focus-visible:outline-2 focus-visible:outline-accent aria-disabled:cursor-default aria-disabled:hover:bg-transparent"
+										>
+											<span className={read.retrying ? "invisible" : undefined}>
+												Retry
+											</span>
+										</button>
+										{read.retrying && (
+											<Spinner
+												label="Loading agent messages"
+												size={16}
+												className="pointer-events-none absolute inset-0 justify-center"
+											/>
+										)}
+									</span>
+								</p>
+							)}
+							{/* The messages (and any pending write) last, at the bottom. */}
+							<div className="space-y-2">
+								<PanelMessages
+									thread={thread}
+									conversation={conversation}
+									divider={divider}
+								/>
 							</div>
-						)}
-						{read.state === "failed" && !conversation && (
-							<p
-								role="alert"
-								data-testid="thread-agent-panel-failed"
-								aria-busy={read.retrying}
-								className="flex flex-wrap items-center gap-2 text-sm text-bad"
-							>
-								<AlertIcon size={14} aria-hidden />
-								Agent messages couldn't load
-								{/* While it reads again: a spinner in Retry's slot, the
-								    button kept (focus stays) and inert to presses. */}
-								<span className="relative inline-flex">
-									<button
-										type="button"
-										aria-label="Retry"
-										aria-disabled={read.retrying}
-										onClick={() => {
-											if (!read.retrying) read.retry();
-										}}
-										className="flex h-10 items-center rounded-md px-3 font-medium text-link hover:bg-overlay focus-visible:outline-2 focus-visible:outline-accent aria-disabled:cursor-default aria-disabled:hover:bg-transparent"
-									>
-										<span className={read.retrying ? "invisible" : undefined}>
-											Retry
-										</span>
-									</button>
-									{read.retrying && (
-										<Spinner
-											label="Loading agent messages"
-											size={16}
-											className="pointer-events-none absolute inset-0 justify-center"
-										/>
-									)}
-								</span>
-							</p>
-						)}
+						</div>
 					</div>
 				)}
 			</section>

@@ -30,6 +30,7 @@ import {
 	isReviewDrawerOpen,
 	useReviewDrawerOpen,
 } from "./drawerStore";
+import { END_PIN, useEndPin } from "./endPin";
 import { QuickQuestionChips } from "./QuickQuestionChips";
 import {
 	reviewQuestions,
@@ -238,6 +239,10 @@ function Drawer() {
 			client.invalidateQueries({ queryKey: agentStatusQuery.queryKey }),
 	});
 	const scroller = useRef<HTMLDivElement>(null);
+	const content = useRef<HTMLDivElement>(null);
+	// Opened at the newest message, kept there while the reader is; scrolled
+	// up, nothing in sight moves as an answer lands (CAR-316).
+	const pin = useEndPin(scroller, content);
 	const box = useRef<HTMLTextAreaElement>(null);
 	// Under the setup's modal the answers aren't read: none is marked seen.
 	const setupOpen = useAgentSetupOpen();
@@ -250,7 +255,7 @@ function Drawer() {
 	useEffect(() => {
 		if (firstUnseen) setDivider((d) => d ?? firstUnseen);
 	}, [firstUnseen]);
-	// Opened at the rule, once it shows (else at the end: the list is reversed).
+	// Opened at the rule, once it shows (else at the end: useEndPin).
 	const scrolledTo = useRef<string | undefined>(undefined);
 	useLayoutEffect(() => {
 		if (!divider || scrolledTo.current === divider) return;
@@ -385,63 +390,67 @@ function Drawer() {
 					)}
 				</Tooltip>
 			</div>
-			{/* The latest message first in the DOM's reverse: opened at the end. */}
+			{/* Opened at the end, kept there while the reader is (useEndPin). */}
 			{/* biome-ignore lint/a11y/noStaticElementInteractions: a delegated listener for the links inside. */}
 			{/* biome-ignore lint/a11y/useKeyWithClickEvents: the links handle their own keys. */}
 			<div
 				ref={scroller}
 				data-testid="review-conversation-scroll"
 				onClick={onClick}
-				className="flex min-h-0 flex-1 flex-col-reverse overflow-y-auto overscroll-contain px-4 py-3"
+				onScroll={pin.onScroll}
+				className={`flex min-h-0 flex-1 flex-col overflow-y-auto overscroll-contain px-4 py-3 ${END_PIN}`}
 			>
-				{loading ? (
-					<div
-						data-testid="review-conversation-loading"
-						aria-busy="true"
-						className="flex flex-1 items-center justify-center"
-					>
-						<Spinner label="Loading the conversation" size={24} />
-					</div>
-				) : failed ? (
-					<p
-						role="alert"
-						className="flex flex-wrap items-center gap-2 text-sm text-bad"
-					>
-						<AlertIcon size={14} aria-hidden />
-						Couldn't read the conversation
-						<button
-							type="button"
-							onClick={retry}
-							className="flex h-10 items-center rounded-md px-3 font-medium text-link hover:bg-overlay focus-visible:outline-2 focus-visible:outline-accent"
+				{/* Short, it sits at the bottom, by the composer. */}
+				<div ref={content} className="flex flex-1 flex-col justify-end">
+					{loading ? (
+						<div
+							data-testid="review-conversation-loading"
+							aria-busy="true"
+							className="flex flex-1 items-center justify-center"
 						>
-							Retry
-						</button>
-					</p>
-				) : (
-					<div className="space-y-3">
-						<AgentMessageItems
-							thread={thread}
-							status={status}
-							answering={answering}
-							viewer={viewer}
-							name={agentName(thread ?? NONE, status)}
-							pending={pending}
-							divider={divider}
-							stop={
-								<button
-									type="button"
-									data-testid="agent-stop"
-									disabled={stop.isPending}
-									onClick={() => stop.mutate()}
-									className="ml-auto flex h-10 items-center gap-1.5 rounded-md border border-line-strong px-3 text-sm font-medium text-ink-soft hover:bg-overlay hover:text-ink focus-visible:outline-2 focus-visible:outline-accent disabled:text-faint"
-								>
-									<SquareFillIcon size={12} aria-hidden />
-									Stop
-								</button>
-							}
-						/>
-					</div>
-				)}
+							<Spinner label="Loading the conversation" size={24} />
+						</div>
+					) : failed ? (
+						<p
+							role="alert"
+							className="flex flex-wrap items-center gap-2 text-sm text-bad"
+						>
+							<AlertIcon size={14} aria-hidden />
+							Couldn't read the conversation
+							<button
+								type="button"
+								onClick={retry}
+								className="flex h-10 items-center rounded-md px-3 font-medium text-link hover:bg-overlay focus-visible:outline-2 focus-visible:outline-accent"
+							>
+								Retry
+							</button>
+						</p>
+					) : (
+						<div className="space-y-3">
+							<AgentMessageItems
+								thread={thread}
+								status={status}
+								answering={answering}
+								viewer={viewer}
+								name={agentName(thread ?? NONE, status)}
+								pending={pending}
+								divider={divider}
+								stop={
+									<button
+										type="button"
+										data-testid="agent-stop"
+										disabled={stop.isPending}
+										onClick={() => stop.mutate()}
+										className="ml-auto flex h-10 items-center gap-1.5 rounded-md border border-line-strong px-3 text-sm font-medium text-ink-soft hover:bg-overlay hover:text-ink focus-visible:outline-2 focus-visible:outline-accent disabled:text-faint"
+									>
+										<SquareFillIcon size={12} aria-hidden />
+										Stop
+									</button>
+								}
+							/>
+						</div>
+					)}
+				</div>
 			</div>
 			{!loading && !failed && <Composer thread={thread} box={box} />}
 		</aside>

@@ -113,6 +113,17 @@ export function releaseAcp(path: string, op: AcpHoldOp): void {
 	writeFileAtomic(path, JSON.stringify(s, null, "\t"));
 }
 
+/**
+ * Holds `op` calls again after a release(). The fake reads whether to wait
+ * at all from the scenario it started with: only an agent that started
+ * with `op` in `hold` waits for it again.
+ */
+export function holdAcp(path: string, op: AcpHoldOp): void {
+	const s = JSON.parse(readFileSync(path, "utf8")) as AcpScenario;
+	if (!s.hold?.includes(op)) s.hold = [...(s.hold ?? []), op];
+	writeFileAtomic(path, JSON.stringify(s, null, "\t"));
+}
+
 /** One line of CRB_FAKE_ACP_LOG: a request the fake got, or a permission answer it was given. */
 export interface AcpLogEntry {
 	/** The fake process that logged it. */
