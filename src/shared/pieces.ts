@@ -345,7 +345,27 @@ export interface SincePiece {
 	 * reviewed there, nothing carried; it owns exactly them.
 	 */
 	orphan?: true;
+	/**
+	 * A file-level change of the interdiff (a mode, a binary file, a
+	 * submodule pointer: its label, as the full diff labels it) that no
+	 * reworked or new file-level cluster of the viewed snapshot shows
+	 * (CAR-297: the author reverted it since, say). It has no lines and
+	 * no row (`hunk` -1): it is marked on its own, on the since mark's
+	 * old-side line 0, which no line has (fileLevelSides), and counts as one
+	 * unit of no lines.
+	 */
+	file?: string;
 }
+
+/**
+ * The since mark's sides a file-level piece (SincePiece.file) is marked
+ * by: old-side line 0, which no real line has (they start at 1). A fresh
+ * copy each call: nothing shares its arrays.
+ */
+export const fileLevelSides = (): { old: LineRanges; new: LineRanges } => ({
+	old: [[0, 1]],
+	new: [],
+});
 
 /**
  * What sincePieces needs to cut whitespace-only runs (CAR-218): the
@@ -725,8 +745,13 @@ export function sinceUnits(
 		const base = { index: file.index, path: file.path };
 		for (const p of file.pieces ?? []) {
 			// An orphan's removed lines have no number here: its own lines.
+			// A file-level piece has none (its line 0 is the change itself).
 			const lines =
-				p.orphan && p.owns ? size(p.owns) : size(p.old) + size(p.new);
+				p.file !== undefined
+					? 0
+					: p.orphan && p.owns
+						? size(p.owns)
+						: size(p.old) + size(p.new);
 			const cluster = p.key === undefined ? undefined : clusters.get(p.key);
 			if (p.owns && cluster && p.key !== undefined) {
 				owned.set(p.key, union(owned.get(p.key) ?? [], p.owns));

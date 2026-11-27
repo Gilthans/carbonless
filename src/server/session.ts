@@ -1583,12 +1583,26 @@ export class Session {
 						: hunks;
 				}
 				if (context === "none") return hunks;
+				// A gone file no interdiff file is at (a rename PS1 made, undone
+				// since: CAR-297): no lines of its own, only its pieces.
+				if (
+					context === "untouched" &&
+					!snapshot.files.some((f) => f.index === index)
+				) {
+					return hunks;
+				}
 				const newLineCount =
 					context === "untouched"
 						? (await loadNewText(this.repo, snapshot, index)).newLines.length
 						: hunks.newLineCount;
+				// A file-level piece (CAR-297) stays: it has no line to show.
 				return newLineCount > 0
-					? { hunks: [], newLineCount, wholeGap: true }
+					? {
+							hunks: [],
+							newLineCount,
+							wholeGap: true,
+							...(hunks.pieces ? { pieces: hunks.pieces } : {}),
+						}
 					: { ...hunks, newLineCount };
 			},
 		};

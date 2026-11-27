@@ -1,8 +1,10 @@
 import { execFileSync } from "node:child_process";
 import {
+	chmodSync,
 	existsSync,
 	mkdirSync,
 	readFileSync,
+	renameSync,
 	rmSync,
 	writeFileSync,
 } from "node:fs";
@@ -275,11 +277,41 @@ function commitInWorktree(dir: string, commit: FixtureCommit): string {
 	for (const name of commit.delete ?? []) {
 		rmSync(join(dir, name), { force: true });
 	}
+	for (const [from, to] of Object.entries(commit.rename ?? {})) {
+		mkdirSync(dirname(join(dir, to)), { recursive: true });
+		renameSync(join(dir, from), join(dir, to));
+	}
 	for (const [name, content] of Object.entries(commit.files)) {
 		mkdirSync(dirname(join(dir, name)), { recursive: true });
 		writeFileSync(join(dir, name), content);
 	}
+	for (const [name, content] of Object.entries(commit.binary ?? {})) {
+		mkdirSync(dirname(join(dir, name)), { recursive: true });
+		writeFileSync(join(dir, name), content);
+	}
+	for (const [name, mode] of Object.entries(commit.chmod ?? {})) {
+		chmodSync(join(dir, name), mode === "755" ? 0o755 : 0o644);
+	}
 	git("add", "--all");
-	git("commit", "--quiet", "--allow-empty", "-m", commit.message);
+	for (const [name, sha] of Object.entries(commit.submodule ?? {})) {
+		git("update-index", "--add", "--cacheinfo", `160000,${sha},${name}`);
+	}
+	const commitArgs = [
+		"commit",
+		"--quiet",
+		"--allow-empty",
+		"-m",
+		commit.message,
+	];
+	fixtureGit(commitArgs, () =>
+		execFileSync("git", commitArgs, {
+			cwd: dir,
+			env: testGitEnv(
+				commit.date
+					? { GIT_AUTHOR_DATE: commit.date, GIT_COMMITTER_DATE: commit.date }
+					: {},
+			),
+		}),
+	);
 	return git("rev-parse", "HEAD");
 }

@@ -2575,7 +2575,8 @@ export function DiffBody(props: {
 				newCount: 0,
 				removed: [],
 				added: [],
-				lines: size(piece.old) + size(piece.new),
+				// A file-level piece has no lines (its line 0 is the change), as counted.
+				lines: piece.file !== undefined ? 0 : size(piece.old) + size(piece.new),
 				state: sinceOnlyState(props.sinceMarks, since, file.path, piece),
 				...(piece.whitespaceOnly ? { whitespaceOnly: true } : {}),
 			},
@@ -2591,6 +2592,10 @@ export function DiffBody(props: {
 	);
 	const noteId = (cluster: ClusterView) => noteIds.get(cluster.key);
 	const fileClusters = file.clusters.filter((c) => c.kind === "file");
+	const filePieces =
+		props.from === undefined
+			? []
+			: (hunks.data?.pieces ?? []).filter((p) => p.file !== undefined);
 	const root = useRef<HTMLDivElement>(null);
 	const scroller = useRef<HTMLDivElement>(null);
 	const table = useRef<HTMLTableElement>(null);
@@ -3538,6 +3543,47 @@ export function DiffBody(props: {
 			</tbody>
 		);
 	});
+	// The since view's file-level change no cluster of this snapshot shows
+	// (SincePiece.file, CAR-297: a mode or binary reverted since): its label,
+	// its chip, and a box of its own, on its since mark.
+	const filePieceRows = filePieces.map((piece) => {
+		const marked = markOf(piece);
+		if (!marked) return null;
+		const { cluster, marker } = marked;
+		const entry =
+			piece.key === undefined ? undefined : props.kinds?.get(piece.key);
+		const gone = entry?.kind === "gone";
+		const lead = takeLead();
+		return (
+			<tbody
+				key={`file-level:${piece.key ?? ""}`}
+				className="group"
+				data-testid="since-file-level"
+				{...(gone ? { "data-gone": "" } : {})}
+			>
+				<KindRow
+					columns={columns}
+					state={cluster.state}
+					gone={gone && cluster.state === "unreviewed"}
+					entry={gone ? entry : undefined}
+					sinceOnly={gone ? undefined : piece.kind}
+					from={props.from}
+				/>
+				<tr className={cluster.state === "reviewed" ? "text-muted" : ""}>
+					<Rail state={cluster.state} />
+					<ControlsCell className="py-1">
+						{checkbox(cluster, marker)}
+					</ControlsCell>
+					<td colSpan={columns - 2} className="px-2 py-1 font-sans text-sm">
+						<FileLabel bubble={lead?.bubble}>
+							{breakablePath(piece.file ?? "")}
+						</FileLabel>
+					</td>
+				</tr>
+				{lead?.row(columns, RAIL[cluster.state])}
+			</tbody>
+		);
+	});
 	const hunkRows = hunks.data?.hunks.map((hunk, index) => (
 		<Fragment key={hunkHeader(hunk)}>
 			{gapRows(gapAt(index), takeLead)}
@@ -3729,6 +3775,7 @@ export function DiffBody(props: {
 								</tbody>
 							)}
 							{clusterRows}
+							{filePieceRows}
 							{hunkRows}
 							{tailRows}
 						</table>
@@ -3772,6 +3819,7 @@ export function DiffBody(props: {
 						hunks.data &&
 						hunks.data.hunks.length === 0 &&
 						fileClusters.length === 0 &&
+						filePieces.length === 0 &&
 						unshownToRead === 0 && (
 							// The since view of a file the author left alone: say so (never
 							// an empty table that reads as "nothing changed" by mistake).
