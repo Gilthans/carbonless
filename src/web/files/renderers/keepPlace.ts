@@ -125,8 +125,20 @@ function lineBoxes(section: Element): LineBox[] {
 /** What the reader does that ends the hold: theirs wins over a late restore. */
 const INPUTS = ["wheel", "touchstart", "keydown", "pointerdown"] as const;
 
-/** A region still loading (principle 8 puts `aria-busy` on each). */
-const BUSY = '[aria-busy="true"]';
+/**
+ * The view's own regions still loading (principle 8 puts `aria-busy` on
+ * each): Text's lines and changed words, the Rendered document, the
+ * image, the since chips over them. Not a conversation's (an agent
+ * answering in a thread card): those take as long as they take, and
+ * don't move the view's lines.
+ */
+const VIEW_BUSY = [
+	'[data-testid="diff-loading"]',
+	'[data-testid="md-loading"][aria-busy="true"]',
+	'[data-testid="code"][aria-busy="true"]',
+	'[data-testid="image-stage"][aria-busy="true"]',
+	'[data-testid="since-chips"][aria-busy="true"]',
+].join(", ");
 
 /** How the hold waits a frame: the page's, or a test's. */
 export interface Frames {
@@ -147,9 +159,8 @@ const pageFrames: Frames = {
  *
  * The hold puts that place back where it was once the new view shows its
  * lines, and again whenever the section changes, until nothing in the
- * section is busy any more (a pending region's `aria-busy`: lines, words,
- * the Rendered document, since chips, threads being placed) and one more
- * frame has passed. A view with no lines (Image) puts its view bar back
+ * view is busy any more (VIEW_BUSY) and one more frame has passed; at
+ * once, once a view other than the pick's settles in (a fallback). A view with no lines (Image) puts its view bar back
  * where it was pinned instead. Never on a timer: the reader's own input
  * (a wheel, a touch, a key, a pointer) or a scroll the hold didn't make
  * (a scrollbar drag, a link that scrolls) ends it at once. While it holds,
@@ -170,8 +181,8 @@ export function keepPlace(
 		let frame = 0;
 		let stopped = false;
 		// The scroll position the hold last left: a scroll elsewhere is
-		// someone else's. None before its first write: the switch itself
-		// may move the page (a shorter view clamps the scroll).
+		// someone else's. Before its first write, only the switch's own
+		// clamp (a shorter view: the page's last scroll position) isn't.
 		let wrote: number | undefined;
 		// Nothing busy at the last frame: one more, then the hold ends.
 		let quiet = false;
@@ -193,7 +204,11 @@ export function keepPlace(
 						schedule();
 					});
 		const onScroll = () => {
-			if (wrote !== undefined && Math.abs(window.scrollY - wrote) >= 1) stop();
+			const y = window.scrollY;
+			if (wrote === undefined) {
+				const end = root.scrollHeight - window.innerHeight;
+				if (Math.abs(y - Math.max(0, end)) >= 1) stop();
+			} else if (Math.abs(y - wrote) >= 1) stop();
 		};
 		function stop() {
 			if (stopped) return;
@@ -213,8 +228,11 @@ export function keepPlace(
 		function attempt() {
 			frame = 0;
 			if (!section.isConnected) return stop();
-			if (section.getAttribute("data-renderer") !== renderer) return;
-			const busy = section.querySelector(BUSY) !== null;
+			const busy = section.querySelector(VIEW_BUSY) !== null;
+			// Another view than the one picked (Rendered fell back to Text,
+			// a line target's Text): once it's in, nothing to keep.
+			if (section.getAttribute("data-renderer") !== renderer)
+				return busy ? undefined : stop();
 			const y = yOfLine(lineBoxes(section), line);
 			const image = section.querySelector("[data-testid=image-view]");
 			if (y !== null) scrollBy(y - was);

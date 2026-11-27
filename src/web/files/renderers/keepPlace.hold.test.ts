@@ -79,6 +79,7 @@ function text(top: number, busy: boolean) {
 	if (busy) {
 		const pending = document.createElement("div");
 		pending.setAttribute("aria-busy", "true");
+		pending.setAttribute("data-testid", "diff-loading");
 		section.append(pending);
 	}
 	for (let n = 1; n <= 20; n++) {
@@ -92,9 +93,17 @@ function text(top: number, busy: boolean) {
 const lineTop = (n: number) =>
 	section.querySelector(`[data-new-no="${n}"]`)?.getBoundingClientRect().top;
 
+/** The page's last scroll position (its height less the window's). */
+let pageEnd = 10_000;
+
 beforeEach(() => {
 	queue = new Map();
 	scroll = 0;
+	pageEnd = 10_000;
+	Object.defineProperty(document.documentElement, "scrollHeight", {
+		configurable: true,
+		get: () => pageEnd + window.innerHeight,
+	});
 	Object.defineProperty(window, "scrollY", {
 		configurable: true,
 		get: () => scroll,
@@ -110,6 +119,9 @@ beforeEach(() => {
 	scroll = 525;
 });
 afterEach(() => {
+	// A hold a test left running ends here, not in the next test.
+	window.dispatchEvent(new Event("pointerdown"));
+	document.documentElement.style.overflowAnchor = "";
 	section.remove();
 	vi.useRealTimers();
 });
@@ -165,9 +177,11 @@ describe("keepPlace's hold", () => {
 			el.remove();
 		const pending = document.createElement("div");
 		pending.setAttribute("aria-busy", "true");
+		pending.setAttribute("data-testid", "diff-loading");
 		section.append(pending);
 		await frame();
-		// The shorter page clamps the scroll: not the reader's.
+		// The shorter page clamps the scroll to its end: not the reader's.
+		pageEnd = 100;
 		scroll = 100;
 		window.dispatchEvent(new Event("scroll"));
 		text(400, true);
@@ -192,6 +206,50 @@ describe("keepPlace's hold", () => {
 		section.append(document.createElement("span"));
 		await frame();
 		expect(lineTop(11)).toBe(-285);
+	});
+
+	it("yields to a scroll it didn't make before its first write, short of the clamp (an agent's open, a thread link)", async () => {
+		const hold = keepPlace(section, frames);
+		hold?.("text");
+		for (const el of [...section.querySelectorAll("[data-new-lines]")])
+			el.remove();
+		const pending = document.createElement("div");
+		pending.setAttribute("aria-busy", "true");
+		pending.setAttribute("data-testid", "diff-loading");
+		section.append(pending);
+		await frame();
+		expect(document.documentElement.style.overflowAnchor).toBe("none");
+		scroll = 2000;
+		window.dispatchEvent(new Event("scroll"));
+		text(400, false);
+		await frame();
+		expect(lineTop(11)).toBe(-1400);
+		expect(document.documentElement.style.overflowAnchor).toBe("");
+	});
+
+	it("ends once another view than the pick's settles in (Rendered fell back to Text)", async () => {
+		const hold = keepPlace(section, frames);
+		hold?.("markdown");
+		text(400, true);
+		await frame();
+		// Text still loading: held, anchoring off.
+		expect(document.documentElement.style.overflowAnchor).toBe("none");
+		section.querySelector('[aria-busy="true"]')?.remove();
+		await frame();
+		expect(queue.size).toBe(0);
+		expect(document.documentElement.style.overflowAnchor).toBe("");
+	});
+
+	it("isn't held by a conversation busy in the file (an agent answering in a thread card)", async () => {
+		await pickText(false);
+		const answering = document.createElement("div");
+		answering.setAttribute("data-testid", "agent-answering");
+		answering.setAttribute("aria-busy", "true");
+		section.append(answering);
+		await frame();
+		await frame();
+		expect(queue.size).toBe(0);
+		expect(document.documentElement.style.overflowAnchor).toBe("");
 	});
 
 	it("isn't taken at the file's start", () => {

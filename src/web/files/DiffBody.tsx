@@ -3606,7 +3606,11 @@ export function DiffBody(props: {
 					{hunks.isPending && (
 						// A screen tall while loading, so a file picked in the tree can
 						// scroll its header to the top before its lines arrive.
-						<div aria-busy="true" className="min-h-[100dvh] px-3 py-2">
+						<div
+							aria-busy="true"
+							data-testid="diff-loading"
+							className="min-h-[100dvh] px-3 py-2"
+						>
 							<Spinner label="Loading diff" />
 						</div>
 					)}
