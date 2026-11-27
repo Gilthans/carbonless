@@ -19,10 +19,12 @@ import {
 	inHunk,
 	type NoLine,
 	noLineIn,
+	onGithub,
 	spanOfCells,
 	spanOfRange,
 } from "./codeSpan";
 import { getPicks, type Picks, setPicks, usePicks } from "./linePicks";
+import { rowSelector } from "./orphanLeft";
 import {
 	type CodeSpan,
 	type SelectionAction,
@@ -43,6 +45,8 @@ export interface BarTarget {
 	span: CodeSpan;
 	/** Both ends are lines of GitHub's diff. */
 	inDiff: boolean;
+	/** An end is a since-view line GitHub's diff hasn't (CAR-293). */
+	sameAsBase: boolean;
 	/** Why a line of it has no GitHub line (codeSpan.ts noLineIn), or null. */
 	noLine: NoLine | null;
 	/** Viewport rects: the selection's first and last line, and all of it. */
@@ -185,7 +189,7 @@ if (typeof document !== "undefined") {
 }
 
 /** Whether the selection was made by touch (or a pen). */
-export function byTouch(): boolean {
+function byTouch(): boolean {
 	if (lastPointer) return lastPointer !== "mouse";
 	return (
 		typeof window.matchMedia === "function" &&
@@ -314,7 +318,7 @@ const ofPicks = (
 	const rowOf = (line: number, side: string) =>
 		document
 			.querySelector(
-				`[data-path="${CSS.escape(picks.path)}"] tr[data-${side === "LEFT" ? "old" : "new"}-no="${line}"] > [${CODE_CELL}][data-side="${side}"]`,
+				`[data-path="${CSS.escape(picks.path)}"] ${rowSelector(side === "LEFT", line)} > [${CODE_CELL}][data-side="${side}"]`,
 			)
 			?.closest("tr") ?? null;
 	const firstRow = rowOf(head.line, head.side);
@@ -332,7 +336,8 @@ const ofPicks = (
 
 	return {
 		span,
-		inDiff: inHunk(head) && inHunk(tail),
+		inDiff: onGithub(head) && onGithub(tail),
+		sameAsBase: !!(head.offGithub || tail.offGithub),
 		noLine: noLineIn(picks.lines, earlier),
 		first,
 		last,
@@ -604,6 +609,7 @@ export function SelectionBar(props: {
 						submodule: file?.submodule ?? false,
 					},
 					inDiff: target.inDiff,
+					sameAsBase: target.sameAsBase,
 					noLine: target.noLine ?? undefined,
 					headUnsure: props.headSure === false,
 					readOnly: props.readOnly === true,

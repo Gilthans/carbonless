@@ -93,7 +93,7 @@ const cut = (old: string[], young: string[], markdown = false) => {
 		hunks,
 		(cs) => clusterKeys(path, cs, young),
 		{ oldLines: old, newLines: young, noNewlineAtEnd: false },
-		markdown,
+		{ markdown },
 	);
 };
 

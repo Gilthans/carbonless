@@ -214,7 +214,11 @@ describe("ReviewConversationDrawer", () => {
 		await act(async () => held.release({ threads: [review()] }));
 		await waitFor(() => expect(composer()).toBeInTheDocument());
 		expect(within(d).queryByTestId("review-conversation-loading")).toBeNull();
-		expect(within(d).getAllByTestId("agent-message-ai")).toHaveLength(2);
+		const answers = within(d).getAllByTestId("agent-message-ai");
+		expect(answers).toHaveLength(2);
+		// The agent's railed box, as on the card (CAR-270).
+		for (const a of answers)
+			expect(a.className).toContain("border-l-agent-ink");
 	});
 
 	it("a failed threads read: an error with Retry, neither the spinner nor the empty composer", async () => {

@@ -68,7 +68,11 @@ history.
   later check, and a Refresh, asks GitHub.
 - **Thread code** (`src/server/threadCode.ts`). A line comment's code pane is
   the PR's diff of its file at the commit the comment was made on, from the
-  clone (a commit a force-push dropped is fetched by OID): its old side is
+  clone (commits a force-push dropped are fetched by OID, all a read's
+  threads need in one `git fetch`; `ensureCommit`, `src/server/clone.ts`,
+  drops a commit GitHub names as unknown and fetches the rest again, all
+  within one 60 s lock budget per batch, retries included: what's still
+  unfetched then gets GitHub's hunk until a Refresh): its old side is
   `merge-base(commit, snapshot base)`, and that must be the merge base with
   the base branch *as it stood when the comment was made*, or the old-side
   rows could be ones the commenter never saw. "As it stood" is the last
@@ -96,6 +100,23 @@ history.
   differ from ours, so it stays `untraced`. Only the same text places it
   (`docs/product-rules.md`, "A thread with nothing to trace from sits on
   GitHub's line").
+- **A thread's old side** (CAR-8, `#oldSide` in
+  `src/server/rereview/threads.ts`). GitHub keeps no commit for a
+  comment's LEFT side, so a review thread touching the old side is traced
+  from the old side its `diff_hunk` shows: of the merge base of its commit
+  with the base branch as it stood at the comment's time and the one with
+  today's base, the one whose text holds the hunk's old-side rows where
+  the hunk numbers them; else the one holding that run of rows at one
+  place, the line shifted to it; else none, and the thread is unplaced as
+  `base-unknown`, never on a guessed line. An empty hunk is no evidence:
+  the base as it stood then (a base that later absorbed the PR's own
+  commits moves today's merge base, not the commenter's), else, when that
+  can't be told (or the PR's base was retargeted since: GitHub's
+  base-change event), today's merge base; traced from the base then while
+  today's merge base differs, it carries an `unchecked` mark. The matrix
+  places a LEFT thread whose hunk matches, one whose hunk matches nothing
+  and one with an empty hunk (`unchecked` for `base-absorbs` alone) at
+  each update.
 
 ## Test matrix
 
@@ -134,7 +155,7 @@ alone at the updated stage, for `base-absorbs` the first commit → the head
 
 Every permutation proves:
 
-- `test/methodology-matrix.ts`, run by `src/server/methodology-<update>.test.ts` (unit, 10 tests × 28):
+- `test/methodology-matrix.ts`, run by `src/server/methodology-<update>.test.ts` (unit, 12 tests × 28):
   - the snapshot equals the stage's reference (same files, same clusters
     and keys) at the opened and the updated stage, through a refresh and a
     fresh open;
@@ -198,7 +219,10 @@ The shapes the engine tells apart on throwaway repos outside the matrix
 (`src/server/rereview/shape.test.ts`, `interdiff.test.ts`,
 `engine.test.ts`): S5 (squash), S6 (head moved back), S7 (retargeted), a
 reverted commit, unrelated histories and a shallow clone (no virtual
-rebase), a conflicted file the PR deletes. After a retarget each patch set
+rebase), a conflicted file the PR deletes. A since-view line a later
+patch set put back as the base had it is off GitHub's diff (no comment
+there, CAR-293) alike when PS2 was rebased or merged the base in
+(`engine.test.ts`). After a retarget each patch set
 keeps the base branch it was reviewed against (its graph card's "Against";
 only the head's card names the PR's current base; `session.test.ts`, S7).
 

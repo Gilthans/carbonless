@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -7,6 +8,7 @@ import {
 	createGitFixture,
 	GIT_TEST_TIMEOUTS,
 	type GitFixture,
+	testGitEnv,
 } from "../../../test/git-fixture.js";
 import {
 	type AgentAnchor,
@@ -22,19 +24,22 @@ import {
 import type {
 	ClusterView,
 	CodeWindow,
+	DisplayHunk,
 	ReviewThread,
 	ReviewView,
 	Snapshot,
 } from "../../shared/types.js";
-import { buildSnapshot } from "../diff/snapshot.js";
+import { buildSnapshot, fileSnapshot } from "../diff/snapshot.js";
 import { RefStore } from "../review/refStore.js";
 import {
 	AgentConflictError,
+	type AgentGithub,
 	type AgentHost,
 	anchoredFile,
 	anchorHunk,
 	authorOf,
 	BadAnchorError,
+	BadReadError,
 	buildAgentHost,
 	CoverageError,
 	commentPostsOf,
@@ -54,6 +59,7 @@ import type {
 	PromptCodeEnvelope,
 	PromptPatchset,
 } from "./prompt.js";
+import { AgentDiffRequestError } from "./reads.js";
 import type { RunnerFacts } from "./runner.js";
 import { AgentThreadStore } from "./store.js";
 
@@ -173,6 +179,310 @@ describe("anchorHunk", () => {
 	});
 });
 
+/**
+ * CAR-53: a follow-up in a conversation opened on patch set 1 gets patch
+ * set 1's hunk, though patch set 2 since moved the anchored line (5 lines
+ * added on top) and changed it.
+ */
+describe("anchorHunk on an earlier patch set (CAR-53)", () => {
+	let ps: GitFixture;
+	let current: Snapshot;
+	const lines = Array.from({ length: 60 }, (_, i) => `line ${i + 1}`);
+	beforeEach(async () => {
+		const one = [...lines];
+		one[29] = "line 30 changed";
+		const two = [...lines];
+		two[29] = "line 30 changed again";
+		ps = createGitFixture([
+			{ message: "base", files: { "src/x.ts": `${lines.join("\n")}\n` } },
+			{ message: "ps1", files: { "src/x.ts": `${one.join("\n")}\n` } },
+			{
+				message: "ps2",
+				files: {
+					"src/x.ts": `${["top 1", "top 2", "top 3", "top 4", "top 5", ...two].join("\n")}\n`,
+				},
+			},
+		]);
+		current = await buildSnapshot(
+			ps.path,
+			ps.shas[0] as string,
+			ps.shas[2] as string,
+		);
+	});
+	afterEach(() => ps.cleanup());
+	const [BASE, PS1] = [0, 1];
+	const onPs1 = (): Extract<AgentSpanAnchor, { subject: "line" }> => ({
+		subject: "line",
+		path: "src/x.ts",
+		commit: ps.shas[PS1] as string,
+		side: "RIGHT",
+		line: 30,
+		startSide: "RIGHT",
+		startLine: 30,
+	});
+
+	/** A source whose fileSnapshot is the session's (fileSnapshot on the fixture), logging its asks. */
+	const gitSource = () => {
+		const asked: (string | null)[][] = [];
+		return {
+			asked,
+			src: {
+				repo: ps.path,
+				snapshot: () => current,
+				fileSnapshot: async (
+					base: string | null,
+					head: string,
+					path: string,
+				) => {
+					asked.push([base, head, path]);
+					return fileSnapshot(
+						ps.path,
+						base ?? (ps.shas[BASE] as string),
+						head,
+						path,
+					);
+				},
+			},
+		};
+	};
+
+	it("is patch set 1's hunk, from that one file's snapshot, not the current snapshot's", async () => {
+		const { src, asked } = gitSource();
+		const hunk = await anchorHunk(src, onPs1(), ps.shas[BASE] as string);
+		expect(hunk?.split("\n")).toEqual([
+			"@@ -27,7 +27,7 @@",
+			" line 27",
+			" line 28",
+			" line 29",
+			"-line 30",
+			"+line 30 changed",
+			" line 31",
+			" line 32",
+			" line 33",
+		]);
+		expect(asked).toEqual([[ps.shas[BASE], ps.shas[PS1], "src/x.ts"]]);
+		// A head no patch set has: its own merge base, asked as null.
+		await anchorHunk(src, onPs1(), null);
+		expect(asked.at(-1)).toEqual([null, ps.shas[PS1], "src/x.ts"]);
+	});
+
+	it("a line the diff doesn't change is null; a removed line reads on the LEFT", async () => {
+		const { src } = gitSource();
+		expect(
+			await anchorHunk(
+				src,
+				{ ...onPs1(), line: 50, startLine: 50 },
+				ps.shas[BASE] as string,
+			),
+		).toBeNull();
+		const left = await anchorHunk(
+			src,
+			{ ...onPs1(), side: "LEFT", startSide: "LEFT" },
+			ps.shas[BASE] as string,
+		);
+		expect(left).toContain("-line 30\n+line 30 changed");
+	});
+
+	it("the current snapshot when it is the comparison: no other read", async () => {
+		const fileSnapshot = vi.fn();
+		const anchor = {
+			...onPs1(),
+			commit: ps.shas[2] as string,
+			line: 35,
+			startLine: 35,
+		} as AgentAnchor;
+		for (const base of [ps.shas[BASE] as string, null, undefined]) {
+			const hunk = await anchorHunk(
+				{ repo: ps.path, snapshot: () => current, fileSnapshot },
+				anchor,
+				base,
+			);
+			expect(hunk).toContain("+line 30 changed again");
+		}
+		expect(fileSnapshot).not.toHaveBeenCalled();
+	});
+
+	it("throws, never the current snapshot's code, when patch set 1 can't be read", async () => {
+		const gone = {
+			repo: ps.path,
+			snapshot: () => current,
+			fileSnapshot: async () => {
+				throw new Error("commit gone and can't be fetched");
+			},
+		};
+		await expect(
+			anchorHunk(gone, onPs1(), ps.shas[BASE] as string),
+		).rejects.toThrow("commit gone and can't be fetched");
+		// A source that reads only the current snapshot.
+		await expect(
+			anchorHunk(
+				{ repo: ps.path, snapshot: () => current },
+				onPs1(),
+				ps.shas[BASE] as string,
+			),
+		).rejects.toThrow("only the current diff");
+	});
+
+	it("a commit or merge base that isn't an OID (empty, argument-like) throws without a read", async () => {
+		const fileSnapshot = vi.fn();
+		const src = { repo: ps.path, snapshot: () => current, fileSnapshot };
+		gitCalls.length = 0;
+		for (const bad of ["", "--upload-pack=x", "HEAD"]) {
+			await expect(
+				anchorHunk(src, { ...onPs1(), commit: bad }, ps.shas[BASE] as string),
+			).rejects.toThrow("its commit is unknown");
+			await expect(anchorHunk(src, onPs1(), bad)).rejects.toThrow(
+				"its merge base is unknown",
+			);
+		}
+		expect(fileSnapshot).not.toHaveBeenCalled();
+		expect(gitCalls).toEqual([]);
+	});
+});
+
+/**
+ * CAR-53 review: an earlier comparison's hunk is the page's, built with
+ * its diff options and renames, whatever the reviewer's git config says.
+ */
+describe("anchorHunk on an earlier comparison: the page's diff (CAR-53)", () => {
+	let fx: GitFixture;
+	const numbered = (n: number, edit: (l: string[]) => void = () => {}) => {
+		const lines = Array.from({ length: n }, (_, i) => `line ${i + 1}`);
+		edit(lines);
+		return `${lines.join("\n")}\n`;
+	};
+	const SWAP_OLD = `${["a", "b", "c", "d", "e", "f", "g", "a", "b", "c", "x", "y", "z"].join("\n")}\n`;
+	const SWAP_NEW = `${["a", "b", "c", "x", "y", "z", "g", "a", "b", "c", "d", "e", "f"].join("\n")}\n`;
+	beforeEach(() => {
+		fx = createGitFixture([
+			{
+				message: "base",
+				files: { "src/old.ts": numbered(60), "swap.txt": SWAP_OLD },
+			},
+			{
+				// PS1: renamed and edited; swap.txt's halves swapped.
+				message: "ps1",
+				rename: { "src/old.ts": "src/new.ts" },
+				files: {
+					"src/new.ts": numbered(60, (l) => {
+						l[29] = "line 30 changed";
+					}),
+					"swap.txt": SWAP_NEW,
+				},
+			},
+			{
+				// PS2: both files changed again, lines shifted.
+				message: "ps2",
+				files: {
+					"src/new.ts": `top\n${numbered(60, (l) => {
+						l[29] = "line 30 changed again";
+					})}`,
+					"swap.txt": `top\n${SWAP_NEW}`,
+				},
+			},
+		]);
+		// The reviewer's own config: the page's diff must not follow it.
+		execFileSync("git", ["config", "diff.algorithm", "histogram"], {
+			cwd: fx.path,
+			env: testGitEnv(),
+		});
+	});
+	afterEach(() => fx.cleanup());
+	const [B, P1, P2] = [0, 1, 2];
+	const src = async () => {
+		const current = await buildSnapshot(
+			fx.path,
+			fx.shas[B] as string,
+			fx.shas[P2] as string,
+		);
+		return {
+			repo: fx.path,
+			snapshot: () => current,
+			fileSnapshot: (base: string | null, head: string, path: string) =>
+				fileSnapshot(fx.path, base ?? (fx.shas[B] as string), head, path),
+		};
+	};
+	/** The hunk PS1's own page (its snapshot, current then) gave the anchor. */
+	const pageHunk = async (anchor: AgentAnchor) => {
+		const ps1 = await buildSnapshot(
+			fx.path,
+			fx.shas[B] as string,
+			fx.shas[P1] as string,
+		);
+		return anchorHunk({ repo: fx.path, snapshot: () => ps1 }, anchor);
+	};
+	const on = (
+		path: string,
+		side: "LEFT" | "RIGHT",
+		line: number,
+	): AgentAnchor => ({
+		subject: "line",
+		path,
+		commit: fx.shas[P1] as string,
+		side,
+		line,
+		startSide: side,
+		startLine: line,
+	});
+
+	it("a file renamed and edited in PS1: a RIGHT line (new path) and a LEFT line (old path) get the rename's hunk, as PS1's page had it", async () => {
+		const s = await src();
+		const right = on("src/new.ts", "RIGHT", 30);
+		const left = on("src/old.ts", "LEFT", 30);
+		const expected = [
+			"@@ -27,7 +27,7 @@",
+			" line 27",
+			" line 28",
+			" line 29",
+			"-line 30",
+			"+line 30 changed",
+			" line 31",
+			" line 32",
+			" line 33",
+		];
+		for (const a of [right, left]) {
+			const hunk = await anchorHunk(s, a, fx.shas[B] as string);
+			expect(hunk?.split("\n")).toEqual(expected);
+			expect(hunk).toBe(await pageHunk(a));
+		}
+		// A LEFT line by the new path, as the page stores it on a rename.
+		expect(
+			await anchorHunk(s, on("src/new.ts", "LEFT", 30), fx.shas[B] as string),
+		).toBe(expected.join("\n"));
+	});
+
+	it("with diff.algorithm=histogram in the repo's config, the hunk is the page's myers one", async () => {
+		const s = await src();
+		const anchor = on("swap.txt", "RIGHT", 4);
+		const hunk = await anchorHunk(s, anchor, fx.shas[B] as string);
+		expect(hunk).toBe(await pageHunk(anchor));
+		expect(hunk?.split("\n").slice(0, 8)).toEqual([
+			"@@ -1,13 +1,13 @@",
+			" a",
+			" b",
+			" c",
+			"-d",
+			"-e",
+			"-f",
+			"+x",
+		]);
+		// Plain git, as the config has it, diffs it otherwise.
+		const plain = execFileSync(
+			"git",
+			["diff", fx.shas[B] as string, fx.shas[P1] as string, "--", "swap.txt"],
+			{ cwd: fx.path, encoding: "utf8", env: testGitEnv() },
+		);
+		expect(plain).toContain("\n-g\n");
+	});
+
+	it("a file the comparison doesn't change is null", async () => {
+		const s = await src();
+		expect(
+			await anchorHunk(s, on("nope.txt", "RIGHT", 1), fx.shas[B] as string),
+		).toBeNull();
+	});
+});
+
 describe("AgentHost with a session joined through MCP", () => {
 	const WHO = {
 		name: "carbonless · main",
@@ -258,6 +568,10 @@ describe("AgentHost with a session joined through MCP", () => {
 		| undefined;
 	/** The reviewer's coverage as the stub session reads it; unset: none. */
 	let coverage: SessionFacts["coverage"];
+	/** More of the stub session's facts (the agent's reads, CAR-182). */
+	let sessionExtra: Partial<SessionFacts>;
+	/** More of the stub GitHub side (threadsAt, placedAtHead). */
+	let githubExtra: Partial<AgentGithub>;
 	/** Runs (once) in place of the next single-thread read: a race's other side. */
 	let onThread: ((id: string) => Promise<ReviewThread | null>) | undefined;
 
@@ -288,8 +602,10 @@ describe("AgentHost with a session joined through MCP", () => {
 					if (!ghComments) throw new Error("gh: comments unreadable");
 					return ghComments(ids);
 				},
+				...githubExtra,
 			},
 			session: {
+				...sessionExtra,
 				facts,
 				viewer: "dan",
 				coverage: (target) => {
@@ -346,6 +662,8 @@ describe("AgentHost with a session joined through MCP", () => {
 		ghThread = null;
 		ghThreads = [];
 		coverage = undefined;
+		sessionExtra = {};
+		githubExtra = {};
 		host = make();
 	});
 	afterEach(async () => {
@@ -442,6 +760,166 @@ describe("AgentHost with a session joined through MCP", () => {
 			expect(opened?.messages[0]?.origin).toEqual({
 				thread: t.id,
 				message: t.messages[0]?.id,
+			});
+		});
+
+		describe("agent reads (CAR-182)", () => {
+			const rebuild = async () => {
+				await host.close();
+				host = make();
+			};
+			const hunk = (n: number, text: string): DisplayHunk => ({
+				oldStart: 0,
+				oldCount: 0,
+				newStart: 1,
+				newCount: n,
+				lines: Array.from({ length: n }, (_, i) => ({
+					kind: "add" as const,
+					newNo: i + 1,
+					text,
+				})),
+			});
+
+			it("diff: once the budget is spent, the remaining files are named without being read", async () => {
+				const read: number[] = [];
+				const files = Array.from({ length: 50 }, (_, i) => ({
+					index: i,
+					path: `f${String(i).padStart(2, "0")}.txt`,
+					status: "added" as const,
+				}));
+				sessionExtra = {
+					diff: async () => ({
+						base: "c".repeat(40),
+						head: "d".repeat(40),
+						from: null,
+						to: null,
+						files,
+						hunks: async (index) => {
+							read.push(index);
+							// About 60k characters each: four fit the budget at most.
+							return {
+								hunks: [hunk(1500, "x".repeat(38))],
+								newLineCount: 1500,
+							};
+						},
+					}),
+				};
+				await rebuild();
+				const token = await approve();
+				const d = await host.sessionDiff(token, {});
+				// Every file is listed; the ones past the budget are named.
+				expect(d.files.map((f) => f.path)).toEqual(files.map((f) => f.path));
+				expect(d.omitted?.length).toBeGreaterThan(40);
+				// What wasn't read claims no hunks or analysis.
+				for (const f of d.files.filter((x) => x.unread)) {
+					expect(f.hunks).toBeUndefined();
+					expect(f.pairs).toBeUndefined();
+				}
+				// Only what could fit was read, plus the one that didn't.
+				expect(read.length).toBeLessThanOrEqual(5);
+				expect(d.files.filter((f) => f.diff !== "").length).toBe(
+					50 - (d.omitted?.length ?? 0),
+				);
+			});
+
+			it("diff: only the request's own faults are invalid; an internal error is unavailable", async () => {
+				let fail: Error = new AgentDiffRequestError("No patch set 9");
+				sessionExtra = {
+					diff: async () => {
+						throw fail;
+					},
+				};
+				await rebuild();
+				const token = await approve();
+				await expect(host.sessionDiff(token, { from: 9 })).rejects.toThrow(
+					BadReadError,
+				);
+				fail = new RangeError("No file 3 in this snapshot");
+				await expect(host.sessionDiff(token, {})).rejects.toThrow(
+					CoverageError,
+				);
+				await expect(host.sessionDiff(token, {})).rejects.not.toBeInstanceOf(
+					BadReadError,
+				);
+			});
+
+			it("review: a thread the placing didn't cover, or a resolved one whose placing failed, says so; never silently without atHead", async () => {
+				ghThreads = [
+					{
+						id: "PRRT_1",
+						path: "a.txt",
+						resolved: false,
+						line: 2,
+						author: "rev",
+						body: "a",
+					},
+					{
+						id: "PRRT_2",
+						path: "a.txt",
+						resolved: true,
+						line: 5,
+						author: "rev",
+						body: "b",
+					},
+					{
+						id: "PRRT_3",
+						path: "b.txt",
+						resolved: false,
+						line: 1,
+						author: "rev",
+						body: "c",
+					},
+				] as unknown as ReviewThread[];
+				ghComments = async () => new Map();
+				githubExtra = {
+					threadsAt: async () => ({
+						threads: ghThreads,
+						at: "2026-11-23T00:00:00Z",
+						readId: "r1",
+					}),
+					placedAtHead: async () => ({
+						placed: new Map([
+							[
+								"PRRT_1",
+								{
+									kind: "placed",
+									anchor: {
+										path: "a.txt",
+										side: "RIGHT",
+										startSide: "RIGHT",
+										startLine: 2,
+										line: 2,
+									},
+									changed: false,
+								},
+							],
+						]),
+						resolvedFailed: "git: boom",
+					}),
+				};
+				await rebuild();
+				const token = await approve();
+				const r = await host.sessionReview(token, true, true);
+				const by = (id: string) => r.threads?.find((t) => t.id === id)?.atHead;
+				expect(by("PRRT_1")).toMatchObject({ kind: "placed", line: 2 });
+				expect(by("PRRT_2")).toEqual({
+					kind: "unknown",
+					why: "resolved threads couldn't be placed (git: boom)",
+				});
+				expect(by("PRRT_3")).toEqual({
+					kind: "unknown",
+					why: "crb didn't place this thread",
+				});
+				// The placing failing outright: every thread says why.
+				githubExtra.placedAtHead = async () => {
+					throw new Error("placing failed");
+				};
+				await rebuild();
+				const again = await host.sessionReview(await approve(), true, true);
+				expect(again.placementsError).toBe("placing failed");
+				for (const t of again.threads ?? []) {
+					expect(t.atHead).toEqual({ kind: "unknown", why: "placing failed" });
+				}
 			});
 		});
 
@@ -1320,6 +1798,101 @@ describe("AgentHost with a session joined through MCP", () => {
 			text: "",
 			activity: [],
 			asked: q?.replyTo,
+		});
+	});
+
+	describe("a follow-up in a conversation opened on patch set 1, after patch set 2 was pushed (CAR-53)", () => {
+		const M1 = "1".repeat(40);
+		const H1 = "2".repeat(40);
+		const H2 = "4".repeat(40);
+		const M2 = "3".repeat(40);
+		const ps = (number: number, h: string, mb: string): PromptPatchset => ({
+			number,
+			head: h,
+			mergeBase: mb,
+			startedAt: `2026-11-0${number}T00:00:00Z`,
+		});
+		const onLine30 = (commit: string): AgentSpanAnchor => ({
+			subject: "line",
+			path: "src/x.ts",
+			commit,
+			side: "RIGHT",
+			line: 30,
+			startSide: "RIGHT",
+			startLine: 30,
+		});
+		let realHunk: RunnerFacts["hunk"];
+		beforeEach(() => {
+			realHunk = facts.hunk;
+			patchsets = [ps(1, H1, M1), ps(2, H2, M2)];
+			mergeBase = M2;
+			head = H2;
+		});
+		afterEach(() => {
+			facts.hunk = realHunk;
+		});
+
+		/** The first question answered, a follow-up asked: its question. */
+		async function followUp(): Promise<SessionQuestion | null> {
+			const x = await host.open({
+				clientId: "c1",
+				text: "Why?",
+				span: onLine30(H1),
+			});
+			const token = await approve();
+			const q1 = await host.sessionNext(token);
+			expect(q1?.thread).toBe(x.id);
+			await host.sessionReply(token, {
+				thread: x.id,
+				replyTo: q1?.replyTo as string,
+				text: "Because.",
+			});
+			await host.message(x.id, { clientId: "c2", text: "And now?" });
+			return host.sessionNext(token);
+		}
+
+		it("asks for patch set 1's hunk (its head and its merge base), not the current comparison's", async () => {
+			const asked: [AgentAnchor, string | null][] = [];
+			facts.hunk = async (a, base) => {
+				asked.push([a, base]);
+				return a.subject === "line" && a.commit === H1 && base === M1
+					? "@@ -30 +30 @@\n-line 30\n+line 30 changed"
+					: "@@ the current snapshot's hunk @@";
+			};
+			const q = await followUp();
+			expect(q?.hunk).toBe("@@ -30 +30 @@\n-line 30\n+line 30 changed");
+			expect(
+				asked.map(([a, base]) => [a.subject === "line" && a.commit, base]),
+			).toEqual([
+				[H1, M1],
+				[H1, M1],
+			]);
+			expect(codeOf(q)?.notice ?? "").not.toContain("can't be read");
+		});
+
+		it("a head no patch set has asks for that head's own merge base (null), not the review's", async () => {
+			const H9 = "9".repeat(40);
+			const asked: (string | null)[] = [];
+			facts.hunk = async (_a, base) => {
+				asked.push(base);
+				return "@@ -1 +1 @@\n-a\n+b";
+			};
+			await host.open({ clientId: "c1", text: "Why?", span: onLine30(H9) });
+			const token = await approve();
+			const q = await host.sessionNext(token);
+			expect(q?.hunk).toBe("@@ -1 +1 @@\n-a\n+b");
+			expect(asked).toEqual([null]);
+		});
+
+		it("patch set 1's code can't be read: the envelope says so, and no hunk is sent", async () => {
+			facts.hunk = async () => {
+				throw new Error("commit gone and can't be fetched");
+			};
+			const q = await followUp();
+			expect(q?.hunk).toBeNull();
+			expect(codeOf(q)?.notice).toContain(
+				`The diff this conversation was opened on (src/x.ts, ${M1}..${H1}) can't be read now (commit gone and can't be fetched)`,
+			);
 		});
 	});
 
@@ -2519,6 +3092,109 @@ describe("AgentHost with a session joined through MCP", () => {
 			await expect(
 				host.sessionOpen(token, { code: { path: "a.txt" }, text: "  " }),
 			).rejects.toThrow(/empty/);
+		});
+
+		describe("a final [suggest-resolve] line (CAR-265)", () => {
+			const marked = `Fixed in the viewed head.\n\n${SUGGEST_RESOLVE}\n`;
+
+			it("on a new GitHub thread conversation: stored as the suggestion, not as text", async () => {
+				ghThreads = [ghOn("PRRT_9")];
+				const { token, origin } = await holding();
+				const r = await host.sessionOpen(token, {
+					thread: "PRRT_9",
+					text: marked,
+				});
+				expect(r.created).toBe(true);
+				const t = (await store.read()).find((x) => x.id === r.thread);
+				expect(t?.messages).toEqual([
+					expect.objectContaining({
+						by: "ai",
+						text: "Fixed in the viewed head.",
+						suggests: "resolve",
+						origin,
+					}),
+				]);
+			});
+
+			it("on a GitHub thread's existing conversation: the added message carries it", async () => {
+				ghThreads = [ghOn("PRRT_9")];
+				ghThread = ghFacts(false);
+				const { token } = await holding();
+				const conv = await host.open({
+					clientId: "q1",
+					text: "Is this fixed?",
+					thread: "PRRT_9",
+				});
+				await host.sessionOpen(token, { thread: "PRRT_9", text: marked });
+				const t = (await store.read()).find((x) => x.id === conv.id);
+				expect(t?.messages[1]).toMatchObject({
+					by: "ai",
+					text: "Fixed in the viewed head.",
+					suggests: "resolve",
+				});
+				// Still waits: a suggestion answers nothing.
+				expect(t?.waiting).toBe(true);
+			});
+
+			it("joining a conversation the reviewer started meanwhile: the message there carries it", async () => {
+				ghThreads = [ghOn("PRRT_9")];
+				ghThread = ghFacts(false);
+				const { token, origin } = await holding();
+				let conv: Awaited<ReturnType<typeof host.open>> | undefined;
+				// The reviewer asks on the thread while open reads GitHub.
+				onThread = async (id) => {
+					conv = await host.open({
+						clientId: "q1",
+						text: "Is this fixed?",
+						thread: "PRRT_9",
+					});
+					return ghThreads.find((t) => t.id === id) ?? null;
+				};
+				const r = await host.sessionOpen(token, {
+					thread: "PRRT_9",
+					text: marked,
+				});
+				expect(conv).toBeDefined();
+				expect(r).toMatchObject({ thread: conv?.id, created: false });
+				const t = (await store.read()).find((x) => x.id === conv?.id);
+				expect(t?.messages.map((m) => [m.by, m.text, m.suggests])).toEqual([
+					["human", "Is this fixed?", undefined],
+					["ai", "Fixed in the viewed head.", "resolve"],
+				]);
+				expect(t?.messages[1]?.origin).toEqual(origin);
+			});
+
+			it("without the line, or with it mid-text, nothing is suggested", async () => {
+				ghThreads = [ghOn("PRRT_9")];
+				const { token } = await holding();
+				const mid = `Not ${SUGGEST_RESOLVE} yet.\n${SUGGEST_RESOLVE}\nStill open.`;
+				const r = await host.sessionOpen(token, {
+					thread: "PRRT_9",
+					text: mid,
+				});
+				const t = (await store.read()).find((x) => x.id === r.thread);
+				expect(t?.messages[0]?.text).toBe(mid);
+				expect(t?.messages[0]?.suggests).toBeUndefined();
+			});
+
+			it("on code: refused, naming the reason, and nothing is written", async () => {
+				const { token } = await holding();
+				const before = (await store.read()).length;
+				for (const code of [{ path: "a.txt" }, { path: "a.txt", line: 2 }]) {
+					await expect(
+						host.sessionOpen(token, { code, text: marked }),
+					).rejects.toThrow(/suggest-resolve.*GitHub thread/);
+				}
+				expect(await store.read()).toHaveLength(before);
+			});
+
+			it("the line alone is an empty text", async () => {
+				ghThreads = [ghOn("PRRT_9")];
+				const { token } = await holding();
+				await expect(
+					host.sessionOpen(token, { thread: "PRRT_9", text: SUGGEST_RESOLVE }),
+				).rejects.toThrow(/empty/);
+			});
 		});
 
 		it("reply afterwards still answers the request", async () => {

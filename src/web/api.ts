@@ -160,12 +160,12 @@ const post = <T>(path: string, body?: unknown) =>
 		body: body === undefined ? undefined : JSON.stringify(body),
 	});
 
-export const fetchSession = () => request<SessionInfo>("/api/session");
+const fetchSession = () => request<SessionInfo>("/api/session");
 /**
  * The server's last overview read, or with `maxAge` (ms) one read from
  * GitHub at most that long ago.
  */
-export const fetchOverview = (maxAge?: number, signal?: AbortSignal) =>
+const fetchOverview = (maxAge?: number, signal?: AbortSignal) =>
 	request<PrOverview>(
 		maxAge === undefined
 			? "/api/overview"
@@ -193,11 +193,11 @@ const reviewPath = (target: ReviewTarget) =>
 					: { head: target.oid },
 			)}`;
 
-export const fetchReview = (target: ReviewTarget = CURRENT_REVIEW) =>
+const fetchReview = (target: ReviewTarget = CURRENT_REVIEW) =>
 	request<ReviewView>(reviewPath(target));
 
 /** With `from`, the since view's hunks: the interdiff from patch set `from`. */
-export const fetchHunks = (revision: string, index: number, from?: number) =>
+const fetchHunks = (revision: string, index: number, from?: number) =>
 	request<FileHunks>(
 		`/api/files/${index}/hunks?${new URLSearchParams({
 			revision,
@@ -227,7 +227,7 @@ export const blobUrl = (
 	);
 
 /** The engine's answer for patch set `from` to a patch set or a head (RereviewAnswer). */
-export const fetchRereview = (from: number, to: RereviewTo) =>
+const fetchRereview = (from: number, to: RereviewTo) =>
 	request<RereviewAnswer | { pending: true }>(
 		`/api/rereview?${new URLSearchParams({
 			from: String(from),
@@ -254,7 +254,7 @@ export const fetchHunksBatch = (
 export const HUNKS_KEPT_MS = 60 * 60_000;
 
 /** Every unresolved thread of read `readId` placed into a patch set or a head. */
-export const fetchPlacements = (readId: string, to: RereviewTo) =>
+const fetchPlacements = (readId: string, to: RereviewTo) =>
 	request<PlacementsAnswer | { pending: true }>(
 		`/api/placements?${new URLSearchParams({
 			read: readId,
@@ -279,7 +279,7 @@ export const deleteMove = (id: string, to: RereviewTo) =>
  * Unchanged lines `from..to` of a file; with `since`, the since view's (the
  * interdiff's from that patch set, numbered as its hunks are).
  */
-export const fetchContext = (
+const fetchContext = (
 	revision: string,
 	index: number,
 	from: number,
@@ -348,10 +348,10 @@ export const deleteComment = (threadId: string, commentId: string) =>
 export const postVerdict = (req: VerdictRequest) =>
 	post<VerdictAnswer>("/api/verdict", req);
 
-export const fetchVerdict = () => request<VerdictFacts>("/api/verdict");
+const fetchVerdict = () => request<VerdictFacts>("/api/verdict");
 
 export const postRefresh = () => post<SessionInfo>("/api/refresh");
-export const fetchHead = () => request<SessionInfo>("/api/head");
+const fetchHead = () => request<SessionInfo>("/api/head");
 
 /**
  * Session and overview change only through Refresh (and the head check,
@@ -449,7 +449,7 @@ export const THREAD_STAGES: ThreadsStage[] = [
 	"full",
 ];
 
-export const fetchThreads = (
+const fetchThreads = (
 	readId: string,
 	stage: ThreadsStage,
 	signal?: AbortSignal,
@@ -480,7 +480,7 @@ export const threadsQuery = (readId: string, stage: ThreadsStage) =>
 		staleTime: Number.POSITIVE_INFINITY,
 	});
 
-export const fetchComments = (readId: string, ids: string[]) =>
+const fetchComments = (readId: string, ids: string[]) =>
 	request<CommentsView>(
 		`/api/comments?${new URLSearchParams({ read: readId, ids: ids.join(",") })}`,
 	);
@@ -529,7 +529,7 @@ class CommentsBatcher {
 	): Promise<ThreadComments> {
 		if (this.#gone.has(readId)) return Promise.reject(this.#gone.get(readId));
 		const sent = this.#sent.get(keyOf(readId, threadId));
-		if (sent) return sent;
+		if (sent !== undefined) return sent;
 		const queued = this.#queue.find(
 			(w) => w.readId === readId && w.threadId === threadId,
 		);
@@ -742,7 +742,7 @@ export const commentsQuery = (
 		gcTime: COMMENTS_KEPT_MS,
 	});
 
-export const fetchTimeline = (readId: string, signal?: AbortSignal) =>
+const fetchTimeline = (readId: string, signal?: AbortSignal) =>
 	request<TimelineView>(
 		`/api/timeline?${new URLSearchParams({ read: readId })}`,
 		{ signal },
@@ -909,9 +909,74 @@ export const rereviewQuery = (from: number, to: RereviewTo) =>
 	});
 
 /**
+ * Failed asks in a row before the placements read as failed (CAR-271),
+ * counted across the server's job restarts (each starts `pending`).
+ */
+export const PLACEMENTS_TRIES = 3;
+/** The longest wait between two asks after placements failures. */
+export const PLACEMENTS_BACKOFF_MAX_MS = 30_000;
+
+/**
+ * The wait before asking for the placements again after `failures`
+ * failures in a row: 1 s, 2 s, 4 s … up to PLACEMENTS_BACKOFF_MAX_MS.
+ */
+export const placementsBackoff = (failures: number) =>
+	Math.min(PLACEMENTS_BACKOFF_MAX_MS, 1000 * 2 ** Math.max(0, failures - 1));
+
+/** A failed placements ask, with the failures in a row it ends (placementsQuery). */
+type PlacementsFailure = Error & { inARow?: number };
+
+/** The failures in a row a failed ask ends; `fallback` for one that doesn't say. */
+const inARow = (error: unknown, fallback = 1) =>
+	(error as PlacementsFailure | null)?.inARow ?? fallback;
+
+/**
+ * Whether a failed placements ask is tried again at once: until
+ * PLACEMENTS_TRIES failures in a row (a pending answer between them, a job
+ * the server started anew, doesn't end the run: only an answer does). A
+ * server or network failure is; a refusal (a 4xx: a bad ask, a read gone)
+ * never.
+ */
+export const retryPlacements = (failureCount: number, error: Error) =>
+	inARow(error, failureCount + 1) < PLACEMENTS_TRIES && !refusal(error);
+
+/** A 4xx: asking again the same way gets the same answer. */
+const refusal = (error: unknown) =>
+	error instanceof ApiError && error.status >= 400 && error.status < 500;
+
+/**
+ * When to ask for the placements again by itself: every REREVIEW_POLL_MS
+ * while pending or still completing; after a failure, with backoff by the
+ * failures in a row (the third: 4 s, then 8 s, 16 s, then every 30 s),
+ * until an answer lands; never after a refusal (a 4xx), nor once in.
+ */
+export function placementsPoll(state: {
+	status: "pending" | "error" | "success";
+	error: unknown;
+	data: PlacementsAnswer | { pending: true } | undefined;
+}): number | false {
+	if (state.status === "error")
+		return refusal(state.error)
+			? false
+			: placementsBackoff(Math.max(PLACEMENTS_TRIES, inARow(state.error)));
+	return state.data &&
+		("pending" in state.data || state.data.complete === false)
+		? REREVIEW_POLL_MS
+		: false;
+}
+
+/** Each placements query's failures in a row (by its key), until an answer. */
+const failuresInARow = new Map<string, number>();
+
+/**
  * The threads' placements in a snapshot for one read: polled every
  * REREVIEW_POLL_MS while `pending`, then kept (a placement write updates
- * it; a new read is another key).
+ * it; a new read is another key). A failure is tried again, and reads as
+ * failed after PLACEMENTS_TRIES in a row (pending answers between them
+ * included: the server answers a failed job's error for a while, then
+ * starts it anew); it is then asked again by itself with backoff, and on
+ * window focus or reconnect, so a passing failure clears without a Retry
+ * (CAR-271).
  */
 export const placementsQuery = (readId: string, to: RereviewTo) =>
 	queryOptions({
@@ -921,7 +986,18 @@ export const placementsQuery = (readId: string, to: RereviewTo) =>
 			...("patchset" in to ? ["ps", to.patchset] : ["head", to.head]),
 		],
 		queryFn: async ({ client, queryKey }) => {
-			const next = await fetchPlacements(readId, to);
+			const id = JSON.stringify(queryKey);
+			let next: PlacementsAnswer | { pending: true };
+			try {
+				next = await fetchPlacements(readId, to);
+			} catch (error) {
+				const n = (failuresInARow.get(id) ?? 0) + 1;
+				failuresInARow.set(id, n);
+				if (error instanceof Error) (error as PlacementsFailure).inARow = n;
+				throw error;
+			}
+			// Only an answer ends a run of failures, never "still placing".
+			if (!("pending" in next)) failuresInARow.delete(id);
 			// Placements once shown never go back to spinners (a job the
 			// server started again answers pending for a while).
 			if ("pending" in next) {
@@ -936,14 +1012,23 @@ export const placementsQuery = (readId: string, to: RereviewTo) =>
 			return next;
 		},
 		staleTime: Number.POSITIVE_INFINITY,
-		// Asked again while pending, and while the resolved threads are
-		// still joining (the unresolved ones are in already).
-		// Never after an error: the last data would keep it going.
+		retry: retryPlacements,
+		retryDelay: (failureCount, error) =>
+			placementsBackoff(inARow(error, failureCount + 1)),
 		refetchInterval: (query) =>
-			query.state.status !== "error" &&
-			query.state.data &&
-			("pending" in query.state.data || query.state.data.complete === false)
-				? REREVIEW_POLL_MS
+			placementsPoll({
+				status: query.state.status,
+				error: query.state.error,
+				data: query.state.data,
+			}),
+		// Only after a failure: an answer in is kept (staleTime).
+		refetchOnWindowFocus: (query) =>
+			query.state.status === "error" && !refusal(query.state.error)
+				? "always"
+				: false,
+		refetchOnReconnect: (query) =>
+			query.state.status === "error" && !refusal(query.state.error)
+				? "always"
 				: false,
 	});
 

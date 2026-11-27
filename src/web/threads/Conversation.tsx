@@ -9,6 +9,7 @@ import {
 	useThreadAgentContext,
 } from "../agent/threadAgent";
 import { ApiError, sessionQuery } from "../api";
+import { useMessageCopy } from "../messageCopy";
 import { BotIcon, LabeledIcon, plural } from "../overview/parts";
 import { RelativeTime } from "../RelativeTime";
 import { Spinner } from "../Spinner";
@@ -343,6 +344,8 @@ function CommentItem(props: {
 	const author = c.author || "ghost";
 	const { tint } = usePerson(author, c.avatarUrl);
 	const write = useCommentWrite(thread.id, c);
+	// A long press on a phone: Copy message (its Markdown, as written).
+	const copy = useMessageCopy(c.body || c.text);
 	if (write.deleting) {
 		return (
 			<li data-testid="thread-comment" data-author={author} className="min-w-0">
@@ -406,6 +409,7 @@ function CommentItem(props: {
 					data-testid="thread-comment-body"
 					data-tint={tint}
 					className={`${commentSurface(tint)} break-words`}
+					{...(saving ? {} : copy.press)}
 				>
 					{saving ? (
 						<SavingText text={write.saving ?? ""} />
@@ -424,6 +428,7 @@ function CommentItem(props: {
 					)}
 				</div>
 			)}
+			{copy.menu}
 		</li>
 	);
 }

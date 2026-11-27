@@ -177,11 +177,11 @@ export function mayTry(line, slots) {
 }
 
 /** More test files than this make a Vitest run full (of ~290). */
-export const MANY_UNIT_FILES = 40;
+const MANY_UNIT_FILES = 40;
 /** More specs than this make a Playwright run full (of ~50). */
-export const MANY_SPECS = 10;
+const MANY_SPECS = 10;
 /** flake-check: more test files × runs than this make it full. */
-export const MANY_FLAKE_RUNS = 10;
+const MANY_FLAKE_RUNS = 10;
 
 /**
  * Whether `cmd args` runs a whole suite, or near enough to load the

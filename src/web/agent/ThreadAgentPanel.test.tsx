@@ -7,9 +7,11 @@ import {
 	render,
 	renderHook,
 	screen,
+	waitFor,
 	within,
 } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import type { ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AgentMessage, AgentThread } from "../../shared/agent";
 import type { PrOverview, ReviewThread, SessionInfo } from "../../shared/types";
@@ -29,6 +31,7 @@ import {
 	type SendView,
 	SendViewProvider,
 	ThreadAgentContext,
+	useAgentThreadsRead,
 	useThreadAgent,
 } from "./threadAgent";
 import {
@@ -43,16 +46,19 @@ const json = (body: unknown, status = 200) =>
 let calls: { method: string; path: string; body: unknown }[];
 /** Answers a POST; never answered unless a test says. */
 let answer: (path: string, body: unknown) => Promise<Response>;
+/** Answers a GET; never answered unless a test says. */
+let read: (path: string) => Promise<Response>;
 
 beforeEach(() => {
 	calls = [];
 	answer = () => new Promise(() => {});
+	read = () => new Promise(() => {});
 	vi.stubGlobal(
 		"fetch",
 		vi.fn(async (input: string, init?: RequestInit) => {
 			const url = new URL(input, "http://crb");
 			const method = init?.method ?? "GET";
-			if (method === "GET") return new Promise<Response>(() => {});
+			if (method === "GET") return read(url.pathname);
 			const body: unknown = JSON.parse(String(init?.body ?? "null"));
 			calls.push({ method, path: url.pathname, body });
 			return answer(url.pathname, body);
@@ -95,7 +101,8 @@ function Card(props: { thread: ReviewThread }) {
 
 function show(
 	thread: ReviewThread,
-	threads: AgentThread[],
+	/** null: not read yet (agentThreadsQuery asks). */
+	threads: AgentThread[] | null,
 	opts: { view?: SendView } = {},
 ) {
 	const client = new QueryClient({
@@ -115,7 +122,7 @@ function show(
 			{ number: 2, head: "h2" },
 		],
 	} as unknown as SessionInfo);
-	client.setQueryData(agentThreadsQuery.queryKey, { threads });
+	if (threads) client.setQueryData(agentThreadsQuery.queryKey, { threads });
 	client.setQueryData(agentStatusQuery.queryKey, {
 		state: "ready",
 		configured: true,
@@ -158,6 +165,98 @@ describe("ThreadAgentPanel", () => {
 		expect(within(panel()).getByText("Only here.")).toBeInTheDocument();
 		// The composer takes the focus.
 		expect(screen.getByRole("textbox", { name: "Ask agent" })).toHaveFocus();
+	});
+
+	it("a failed read: the error stays while it reads again, Send waits for the answer, the handle retries without closing (CAR-124)", async () => {
+		const reads: ((r: Response) => void)[] = [];
+		read = (path) =>
+			path.endsWith("/agent/threads")
+				? new Promise<Response>((r) => {
+						reads.push(r);
+					})
+				: new Promise(() => {});
+		/** Answers the next threads read, once it is asked. */
+		const release = async (r: Response) => {
+			await waitFor(() => expect(reads.length).toBeGreaterThan(0));
+			await act(async () => reads.shift()?.(r));
+		};
+		const boom = () => json({ error: "boom" }, 500);
+		show(reviewThread(), null);
+		await release(boom());
+		const handle = await screen.findByRole("button", {
+			name: "Agent messages couldn't load",
+		});
+		// Pressed, it opens the panel and reads again (held): the error
+		// stays, a spinner in Retry's slot, Retry kept but inert.
+		await userEvent.click(handle);
+		expect(isOpen()).toBe(true);
+		const failed = within(panel()).getByRole("alert");
+		expect(failed).toHaveTextContent("Agent messages couldn't load");
+		expect(failed).toHaveAttribute("aria-busy", "true");
+		expect(
+			within(failed).getByRole("status", { name: "Loading agent messages" }),
+		).toBeInTheDocument();
+		const retry = within(failed).getByRole("button", { name: "Retry" });
+		expect(retry).toHaveAttribute("aria-disabled", "true");
+		expect(
+			within(panel()).queryByTestId("thread-agent-panel-loading"),
+		).toBeNull();
+		// No conversation known: a draft is taken, nothing is sent.
+		const box = screen.getByRole("textbox", { name: "Ask agent" });
+		const send = screen.getByRole("button", { name: "Send to agent" });
+		await userEvent.type(box, "Anything?");
+		expect(send).toBeDisabled();
+		await userEvent.keyboard("{Control>}{Enter}{/Control}");
+		expect(box).toHaveValue("Anything?");
+		expect(calls).toEqual([]);
+		// It fails again: the same alert, Retry live, no spinner.
+		await release(boom());
+		await waitFor(() => expect(failed).toHaveAttribute("aria-busy", "false"));
+		expect(retry).toHaveAttribute("aria-disabled", "false");
+		expect(within(failed).queryByRole("status")).toBeNull();
+		// The red handle, pressed from the keyboard while open: reads again,
+		// the panel stays, and the handle stays a focused button (a spinner
+		// in its icon's place) while that read is out; a press then waits.
+		const red = screen.getByRole("button", {
+			name: "Agent messages couldn't load",
+		});
+		red.focus();
+		await userEvent.keyboard("{Enter}");
+		expect(isOpen()).toBe(true);
+		await waitFor(() => expect(failed).toHaveAttribute("aria-busy", "true"));
+		expect(red).toBeInTheDocument();
+		expect(red).toHaveFocus();
+		expect(red).toHaveAttribute("aria-busy", "true");
+		await waitFor(() => expect(reads).toHaveLength(1));
+		await userEvent.keyboard("{Enter}");
+		expect(reads).toHaveLength(1);
+		expect(isOpen()).toBe(true);
+		await release(boom());
+		await waitFor(() => expect(failed).toHaveAttribute("aria-busy", "false"));
+		expect(red).toHaveFocus();
+		expect(red).toHaveAttribute("aria-busy", "false");
+		// Retry: the spinner in its slot, then the conversation; Send works.
+		await userEvent.click(retry);
+		expect(failed).toHaveAttribute("aria-busy", "true");
+		expect(send).toBeDisabled();
+		await release(json({ threads: [conversation()] }));
+		expect(await within(panel()).findByText("Only here.")).toBeInTheDocument();
+		expect(within(panel()).queryByRole("alert")).toBeNull();
+		expect(send).toBeEnabled();
+		box.focus();
+		await userEvent.keyboard("{Control>}{Enter}{/Control}");
+		await waitFor(() => expect(calls).toHaveLength(1));
+		expect(calls[0]?.method).toBe("POST");
+	});
+
+	it("an answer with no conversation for the thread: the empty panel, no spinner or error", async () => {
+		show(reviewThread(), []);
+		await userEvent.click(agentButton());
+		expect(isOpen()).toBe(true);
+		expect(
+			within(panel()).queryByTestId("thread-agent-panel-loading"),
+		).toBeNull();
+		expect(within(panel()).queryByRole("alert")).toBeNull();
 	});
 
 	it("the strip, the comment counter and the agent button each close it", async () => {
@@ -335,6 +434,9 @@ describe("ThreadAgentPanel", () => {
 		expect(inside).toHaveLength(1);
 		expect(replies.length).toBeGreaterThan(1);
 		expect(inside[0]).toBe(replies[replies.length - 1]);
+		// The agent's railed box, as on the card (CAR-270).
+		for (const r of replies)
+			expect(r.className).toContain("border-l-agent-ink");
 		// Nothing is written until a human presses it.
 		expect(calls).toEqual([]);
 		await userEvent.click(buttons[0] as HTMLElement);
@@ -552,6 +654,50 @@ describe("ThreadAgentPanel", () => {
 		).toBeInTheDocument();
 		expect(within(panel()).getByText("Still?")).toBeInTheDocument();
 		expect(calls).toHaveLength(1);
+	});
+
+	it("the threads read's last error is the query's: a card mounted during a retry agrees, a 404 never reads as failed (CAR-124)", async () => {
+		const reads: ((r: Response) => void)[] = [];
+		read = (path) =>
+			path.endsWith("/agent/threads")
+				? new Promise<Response>((r) => {
+						reads.push(r);
+					})
+				: new Promise(() => {});
+		const answer = async (r: Response) => {
+			await waitFor(() => expect(reads.length).toBeGreaterThan(0));
+			await act(async () => reads.shift()?.(r));
+		};
+		for (const [status, after] of [
+			[404, "in"],
+			[500, "failed"],
+		] as const) {
+			const client = new QueryClient({
+				defaultOptions: { queries: { retry: false } },
+			});
+			clients.push(client);
+			client.setQueryData(overviewQuery.queryKey, {
+				writes: "on",
+			} as PrOverview);
+			const wrapper = ({ children }: { children: ReactNode }) => (
+				<QueryClientProvider client={client}>{children}</QueryClientProvider>
+			);
+			const first = renderHook(() => useAgentThreadsRead(), { wrapper });
+			expect(first.result.current.state).toBe("loading");
+			await answer(json({ error: "x" }, status));
+			await waitFor(() => expect(first.result.current.state).toBe(after));
+			// Read again (held), and a second card mounts meanwhile.
+			act(() => first.result.current.retry());
+			await waitFor(() => expect(reads.length).toBe(1));
+			const second = renderHook(() => useAgentThreadsRead(), { wrapper });
+			expect(second.result.current.state).toBe(after);
+			expect(first.result.current.state).toBe(after);
+			expect(second.result.current.retrying).toBe(after === "failed");
+			await answer(json({ threads: [] }));
+			await waitFor(() => expect(second.result.current.state).toBe("in"));
+			first.unmount();
+			second.unmount();
+		}
 	});
 
 	it("the card's context value is stable while nothing it holds changes", () => {

@@ -73,6 +73,56 @@ const hueGap = (a: string, b: string) => {
 	return Math.min(d, 360 - d);
 };
 
+/** OKLab (L, a, b): a perceptual space, where distance is how different two colours look. */
+function oklab(hex: string): [number, number, number] {
+	const [r = 0, g = 0, b = 0] = rgb(hex).map((v) => {
+		const c = v / 255;
+		return c <= 0.04045 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4;
+	});
+	const l = Math.cbrt(0.4122214708 * r + 0.5363325363 * g + 0.0514459929 * b);
+	const m = Math.cbrt(0.2119034982 * r + 0.6806995451 * g + 0.1073969566 * b);
+	const s = Math.cbrt(0.0883024619 * r + 0.2817188376 * g + 0.6299787005 * b);
+	return [
+		0.2104542553 * l + 0.793617785 * m - 0.0040720468 * s,
+		1.9779984951 * l - 2.428592205 * m + 0.4505937099 * s,
+		0.0259040371 * l + 0.7827717662 * m - 0.808675766 * s,
+	];
+}
+/** How different two colours look: OKLab distance, ×100 (about 1 is just noticeable). */
+const deltaE = (x: string, y: string) => {
+	const [a, b] = [oklab(x), oklab(y)];
+	return Math.hypot(a[0] - b[0], a[1] - b[1], a[2] - b[2]) * 100;
+};
+/** OKLCH chroma and hue (degrees). */
+const oklch = (hex: string) => {
+	const [, a, b] = oklab(hex);
+	return {
+		c: Math.hypot(a, b),
+		h: ((Math.atan2(b, a) * 180) / Math.PI + 360) % 360,
+	};
+};
+const GREY_MAX = 0.026;
+const HUED_MIN = 0.051;
+/**
+ * Why a person tint (wash or edge) could pass for the agent's, or null:
+ * neither plainly grey nor plainly hued; hued within 40° of OKLCH hue of
+ * the agent's teal; or, grey or not, within 4 (OKLab ×100) of the agent's
+ * wash or edge.
+ */
+function agentClash(
+	person: string,
+	agent: { wash: string; edge: string },
+): string | null {
+	const { c, h } = oklch(person);
+	if (c > GREY_MAX && c < HUED_MIN) return `chroma ${c.toFixed(3)}`;
+	if (c >= HUED_MIN) {
+		const d = Math.abs(h - oklch(agent.wash).h);
+		if (Math.min(d, 360 - d) < 40) return `hue ${h.toFixed(0)}°`;
+	}
+	const near = Math.min(deltaE(person, agent.wash), deltaE(person, agent.edge));
+	return near < 4 ? `ΔE ${near.toFixed(1)}` : null;
+}
+
 describe("color tokens", () => {
 	it("text reads at 4.5:1 on every surface", () => {
 		for (const text of ["ink", "ink-soft", "muted", "faint", "label", "link"]) {
@@ -481,15 +531,65 @@ describe("color tokens", () => {
 				).toBeGreaterThanOrEqual(floor);
 			}
 		}
-		// Not anyone's tint either.
+		// Its own colour, not anyone's (CAR-270): no person tint, grey or
+		// hued, wash or edge, could pass for the agent's (agentClash).
+		const agent = { wash: token("agent"), edge: token("agent-edge") };
 		for (const p of Object.keys(TOKENS).filter((n) =>
 			/^person-\d+(-edge)?$/.test(n),
 		)) {
-			expect(token(p), p).not.toBe(token("agent"));
-			expect(token(p), p).not.toBe(token("agent-edge"));
+			expect(agentClash(token(p), agent), p).toBeNull();
 		}
 	});
 
+	it("the agent-clash guard catches a near-teal, dark or grey-ish, and lets the people's kinds through", () => {
+		const agent = { wash: token("agent"), edge: token("agent-edge") };
+		// A dark near-teal: low chroma, yet 1 ΔE from the agent's wash.
+		expect(agentClash("#1a3332", agent)).not.toBeNull();
+		// The old person-2 (teal-blue, 30° of OKLCH hue away) and its edge.
+		expect(agentClash("#18353f", agent)).not.toBeNull();
+		expect(agentClash("#266b82", agent)).not.toBeNull();
+		// The agent's own; a slate grey too near its wash (ΔE 3.5); a
+		// greyish indigo, neither plainly grey nor plainly hued.
+		expect(agentClash(agent.wash, agent)).not.toBeNull();
+		expect(agentClash(agent.edge, agent)).not.toBeNull();
+		expect(agentClash("#26303a", agent)).toMatch(/^ΔE/);
+		expect(agentClash("#2c2a44", agent)).toMatch(/^chroma/);
+		// A navy, a purple, a plain grey: fine.
+		expect(agentClash("#1f2947", agent)).toBeNull();
+		expect(agentClash("#6e3781", agent)).toBeNull();
+		expect(agentClash("#302f2c", agent)).toBeNull();
+	});
+
+	it("people's tints look apart: neighbouring slots most of all (the first speakers are the commonest pair)", () => {
+		const n = Object.keys(TOKENS).filter((k) => /^person-\d+$/.test(k)).length;
+		for (const suffix of ["", "-edge"]) {
+			const tints = Array.from({ length: n }, (_, i) =>
+				token(`person-${i + 1}${suffix}`),
+			);
+			// Every two at least as far apart as the closest pair kept from
+			// before CAR-270 (washes 2.0, edges 4.0)...
+			const all = suffix ? 3.99 : 2;
+			for (const [i, a] of tints.entries()) {
+				for (const [j, b] of tints.entries()) {
+					if (j <= i) continue;
+					expect(
+						deltaE(a, b),
+						`person-${i + 1}${suffix} vs person-${j + 1}${suffix}`,
+					).toBeGreaterThanOrEqual(all);
+				}
+			}
+			// ...and slots in a row (the eighth speaker gets slot 1 again,
+			// after slot 7) of other families, well apart.
+			const next = suffix ? 9 : 4;
+			for (const [i, a] of tints.entries()) {
+				const j = (i + 1) % n;
+				expect(
+					deltaE(a, tints[j] as string),
+					`person-${i + 1}${suffix} vs person-${j + 1}${suffix}`,
+				).toBeGreaterThanOrEqual(next);
+			}
+		}
+	});
 	it("Home's rows, popovers and open box keep their text and icons readable", () => {
 		// The open box's list and the row popovers: overlay, the highlighted
 		// option pressed; marked title words (link), state icons, hints
@@ -722,13 +822,93 @@ describe("diff colors", () => {
 		}
 	});
 
-	it("invisible-character markers read at 4.5:1 on every code line", () => {
-		// Muted markers and escapes (src/web/code); bidi controls on a warn tint.
-		for (const bg of CODE_BGS) {
+	it("hidden-character marks are quieter than code and apart from comments, yet show on every line", () => {
+		// The owner (2026-11-22): "the hidden characters have the same design
+		// as comments. I'd like them to be more subtle, and distinct from code
+		// comments"; then (2026-11-23) "Make the color a little more muted and
+		// subtle", and after that round "Make the whitespace marks even dimmer".
+		// Whitespace marks (spaces, tabs, line endings;
+		// src/web/code/Invisibles.tsx) take `invisible`; an escape's label
+		// takes `invisible-strong`, a notch up, on an invisible/10 chip.
+		const mark = token("invisible");
+		const strong = token("invisible-strong");
+		/** Every background a mark can sit on, under no wash, a thread's and a pick's. */
+		const PLAIN = [...CODE_BGS, "span", "find"];
+		const WORD = ["add-word", "del-word", "add-word-done", "del-word-done"];
+		const backs = (names: string[]) =>
+			names.flatMap((bg) =>
+				WASHES.map((wash) => ({
+					name: `${bg} under accent/${wash * 100}`,
+					wash,
+					color: washed(token(bg), wash),
+				})),
+			);
+		// Floors: still visible. A whitespace mark 2:1 on every row, span and
+		// find, under every wash; inside a word tint (which itself says
+		// "changed") 1.4:1, 1.2:1 under a wash.
+		for (const back of backs(PLAIN))
 			expect(
-				contrast(token("faint"), token(bg)),
-				`faint on ${bg}`,
-			).toBeGreaterThanOrEqual(4.5);
+				contrast(mark, back.color),
+				`invisible on ${back.name}`,
+			).toBeGreaterThanOrEqual(2);
+		for (const back of backs(WORD))
+			expect(
+				contrast(mark, back.color),
+				`invisible on ${back.name}`,
+			).toBeGreaterThanOrEqual(back.wash ? 1.2 : 1.4);
+		// An escape (a character that prints as nothing: principle 2) stays
+		// legible: its label on its chip 3:1 on every row, span and find under
+		// every wash, 2:1 inside a word tint; and above the whitespace marks.
+		for (const back of backs([...PLAIN, ...WORD])) {
+			const chip = over(mark, 0.1, back.color);
+			expect(
+				contrast(strong, chip),
+				`escape on its chip over ${back.name}`,
+			).toBeGreaterThanOrEqual(
+				PLAIN.some((b) => back.name.startsWith(`${b} `)) ? 3 : 2,
+			);
+			expect(contrast(strong, chip)).toBeGreaterThan(
+				contrast(mark, back.color),
+			);
+		}
+		// Ceilings: subtle. On each code row a whitespace mark has at most 55%
+		// (about half) of the comment color's contrast, an escape's label at
+		// most 85%; both under `faint` and code-ink.
+		for (const bg of CODE_BGS) {
+			const comment = contrast(SYNTAX.comment, token(bg));
+			expect(
+				contrast(mark, token(bg)),
+				`invisible on ${bg}`,
+			).toBeLessThanOrEqual(0.55 * comment);
+			const chip = over(mark, 0.1, token(bg));
+			expect(contrast(strong, chip), `escape on ${bg}`).toBeLessThanOrEqual(
+				0.85 * comment,
+			);
+			for (const louder of [token("faint"), token("code-ink")])
+				expect(
+					contrast(strong, chip),
+					`escape quieter than ${louder} on ${bg}`,
+				).toBeLessThan(contrast(louder, token(bg)));
+		}
+		// Not the comment's (or faint's) blue-grey: near-neutral stones of
+		// another hue, so a mark never reads as commented code.
+		for (const own of [mark, strong])
+			for (const other of [SYNTAX.comment, token("faint")]) {
+				expect(chroma(own)).toBeLessThan(chroma(other) / 3);
+				expect(
+					hueGap(own, other),
+					`${own} apart from ${other}`,
+				).toBeGreaterThan(90);
+			}
+		// Comments are italic in the syntax theme; marks stay upright (not-italic).
+		const comment = syntaxTheme.settings?.find((s) =>
+			[s.scope ?? []].flat().includes("comment"),
+		);
+		expect(comment?.settings.fontStyle).toBe("italic");
+	});
+
+	it("bidi controls read at 4.5:1 on their warn tint on every code line", () => {
+		for (const bg of CODE_BGS) {
 			const tint = over(token("warn"), 0.15, token(bg));
 			expect(
 				contrast(token("warn"), tint),

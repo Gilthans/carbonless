@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { Readable, Writable } from "node:stream";
@@ -83,6 +83,21 @@ async function fakeAgent(
 
 const kickoff = (request: string) =>
 	`Attach to the review with crb's attach tool:\n${JSON.stringify({ review: "http://127.0.0.1:1/r/x", request })}`;
+
+describe("acpLog", () => {
+	it("reads whole lines only: a line whose append is under way isn't logged yet (CAR-305)", () => {
+		const first = JSON.stringify({ pid: 1, method: "spawn", params: {} });
+		const second = JSON.stringify({ pid: 1, method: "initialize", params: {} });
+		// A read in the middle of the second append: part of its line is there.
+		writeFileSync(logPath, `${first}\n${second.slice(0, 20)}`);
+		expect(acpLog(logPath).map((e) => e.method)).toEqual(["spawn"]);
+		writeFileSync(logPath, `${first}\n${second}\n`);
+		expect(acpLog(logPath).map((e) => e.method)).toEqual([
+			"spawn",
+			"initialize",
+		]);
+	});
+});
 
 describe("the fake ACP agent with a crb MCP server", () => {
 	it("over http: advertises http, attaches with the kickoff's request, then next → reply with the scenario's answer; headers reach the server", async () => {

@@ -9,7 +9,7 @@ import { INVISIBLE } from "../../../code/invisibleChars";
  * (`pre`), blanks keep their run, only trailing ones before a line end go.
  * The same sets the line view draws as markers (invisibleChars.ts).
  */
-export function visibleText(text: string, pre = false): string {
+function visibleText(text: string, pre = false): string {
 	let out = "";
 	for (const c of text) {
 		if (c === "\n") out += "\n";

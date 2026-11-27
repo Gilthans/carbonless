@@ -15,14 +15,18 @@ import type { Fate } from "../../shared/rereview/placement";
 import type { PrOverview, ReviewThread } from "../../shared/types";
 import { agentThreadsQuery } from "../agent/api";
 import { overviewQuery } from "../api";
+import { fullDiffSearch } from "./FullDiffLink";
 import { NotInComparison } from "./NotInComparison";
 import {
 	ChangedSince,
+	NotHereNote,
+	notHereText,
 	PlacementChip,
 	type PlacementInfo,
 	PlacementProvider,
 	UnplacedRow,
 	UnplacedThreads,
+	WaitingThreads,
 } from "./ThreadFate";
 
 vi.mock("./highlight", () => ({
@@ -267,9 +271,94 @@ describe("when the placements fail", () => {
 		);
 		expect(screen.queryByRole("status")).toBeNull();
 	});
+
+	it("a thread made on the viewed head, shown at its own line, never reads 'place unknown' (CAR-271)", () => {
+		const onHead = thread();
+		const { rerender } = render(
+			wrap(
+				info({ error: new Error("git failed"), viewedHead: onHead.commit }),
+				<PlacementChip thread={onHead} />,
+			),
+		);
+		expect(screen.queryByTestId("placement-error")).toBeNull();
+		expect(screen.queryByRole("status")).toBeNull();
+		// One made on another commit still says so: its place is unknown.
+		rerender(
+			wrap(
+				info({ error: new Error("git failed"), viewedHead: "b".repeat(40) }),
+				<PlacementChip thread={onHead} />,
+			),
+		);
+		expect(screen.getByTestId("placement-error").textContent).toContain(
+			"place unknown",
+		);
+		// Shown on the head but made on an earlier patch set's (the since
+		// view's earlierPending copy): its place is unknown.
+		rerender(
+			wrap(
+				info({ error: new Error("git failed"), viewedHead: onHead.commit }),
+				<PlacementChip thread={{ ...onHead, madeOn: "c".repeat(40) }} />,
+			),
+		);
+		expect(screen.getByTestId("placement-error").textContent).toContain(
+			"place unknown",
+		);
+	});
 });
 
 describe("PlacementChip", () => {
+	it("a pending one whose answer failed to complete says so, never spinning for good (CAR-8)", () => {
+		const t = thread();
+		render(
+			wrap(
+				info({
+					placements: new Map([[t.id, { kind: "pending", path: "a.ts" }]]),
+					stalled: new Error("git failed"),
+				}),
+				<PlacementChip thread={t} />,
+			),
+		);
+		expect(screen.getByTestId("placement-error")).toBeTruthy();
+		expect(screen.queryByRole("status")).toBeNull();
+	});
+
+	it("an old-side thread still waiting for its hunk spins though the answer is in; an unchecked one is flagged (CAR-8)", () => {
+		const t = thread();
+		const { rerender } = render(
+			wrap(
+				info({
+					pending: false,
+					placements: new Map([[t.id, { kind: "pending", path: "a.ts" }]]),
+				}),
+				<PlacementChip thread={t} />,
+			),
+		);
+		expect(
+			screen.getByRole("status", { name: "Placing threads" }),
+		).toBeTruthy();
+		const anchor = {
+			path: "a.ts",
+			startSide: "LEFT" as const,
+			startLine: 3,
+			side: "LEFT" as const,
+			line: 3,
+		};
+		rerender(
+			wrap(
+				info({
+					placements: new Map([
+						[t.id, { kind: "placed", anchor, changed: false, unchecked: true }],
+					]),
+				}),
+				<PlacementChip thread={t} />,
+			),
+		);
+		expect(screen.queryByRole("status")).toBeNull();
+		expect(screen.getByTestId("placement-unchecked").textContent).toContain(
+			"unchecked",
+		);
+	});
+
 	it("spins in its slot while pending, says changed since, a fate, or nothing", () => {
 		const t = thread();
 		const { rerender } = render(
@@ -390,6 +479,8 @@ const SENTENCES: [Fate | null, string][] = [
 		"The base changed under the commented line since the review",
 	],
 	["file-gone", "Commented file has been deleted since the review"],
+	["base-unknown", "Couldn't find the base the commented old line was on"],
+	["check-failed", "Couldn't check the commented old line against GitHub"],
 	[null, "Couldn't work out where this thread is now"],
 ];
 
@@ -934,5 +1025,106 @@ describe("the per-file unplaced list", () => {
 			/unplaced/,
 		);
 		expect(screen.getByTestId("unplaced-collapsed")).toBeTruthy();
+	});
+});
+
+describe("NotHereNote (the since view, CAR-255)", () => {
+	it("says why the line has no row, apart from the tracer's fates, by the compared patch set", () => {
+		expect(notHereText("deleted-before", 2).label).toBe("deleted before PS2");
+		// The file unchanged since is a stronger proof of the same: the line
+		// was deleted before; only the tooltip adds the file's fact.
+		expect(notHereText("unchanged", 2).label).toBe("deleted before PS2");
+		expect(notHereText("unchanged", 2).tip).toContain("unchanged since PS2");
+		expect(notHereText("unknown", 2).label).toBe("not in this comparison");
+		// Never a tracer fate's word.
+		for (const why of ["deleted-before", "unchanged", "unknown"] as const) {
+			const { label } = notHereText(why, 2);
+			expect(label).not.toBe("deleted");
+			expect(label).not.toBe("rewritten");
+		}
+	});
+
+	it("links to the full diff on its base line, the path kept as text", async () => {
+		const path = `src/${HOSTILE}.ts`;
+		render(
+			wrap(
+				info(),
+				inRouter(() => (
+					<NotHereNote
+						notHere={{ why: "deleted-before", side: "LEFT", line: 30 }}
+						path={path}
+						since={1}
+						open={{ thread: "PRRT_kwDOtest" }}
+					/>
+				)),
+			),
+		);
+		const why = await screen.findByTestId("not-here-why");
+		expect(why.textContent).toBe("deleted before PS1");
+		const link = screen.getByRole("link", { name: "Open in the full diff" });
+		const url = new URL(link.getAttribute("href") ?? "", "http://x");
+		expect(url.pathname).toBe("/r/01testreview0000000000000a/files");
+		expect(url.searchParams.get("from")).toBe("branch");
+		expect(url.searchParams.get("side")).toBe("LEFT");
+		expect(url.searchParams.get("line")).toBe("30");
+		expect(url.searchParams.get("path")).toContain(path);
+		// Its card opens there.
+		expect(url.searchParams.get("thread")).toBe("PRRT_kwDOtest");
+		expect(document.querySelector("img[src='x']")).toBeNull();
+	});
+});
+
+describe("fullDiffSearch", () => {
+	it("keeps the viewed dot only, the base on the branch, and adds the landing", () => {
+		expect(
+			fullDiffSearch(
+				{ ps: 3, from: 2, path: "old.ts", conversation: "x" } as never,
+				{ path: "a.ts", line: 30, side: "LEFT", open: { thread: "T" } },
+			),
+		).toEqual({
+			ps: 3,
+			from: "branch",
+			path: "a.ts",
+			line: 30,
+			side: "LEFT",
+			thread: "T",
+		});
+		expect(
+			fullDiffSearch(
+				{ head: "a".repeat(40) },
+				{ path: "a.ts", line: 4, side: "RIGHT" },
+			),
+		).toEqual({
+			head: "a".repeat(40),
+			from: "branch",
+			path: "a.ts",
+			line: 4,
+			side: "RIGHT",
+		});
+	});
+});
+
+describe("WaitingThreads (CAR-8)", () => {
+	it("a spinner each, laid over (no height of its own); an error mark instead once asking again failed", () => {
+		const t = thread({ excerpt: "Why line 20?" });
+		const { container, rerender } = render(
+			wrap(info(), <WaitingThreads waiting={[t]} />),
+		);
+		expect(screen.getByRole("status", { name: "Placing thread" })).toBeTruthy();
+		// In flow it takes no room: showing or hiding it moves nothing.
+		expect((container.firstElementChild as HTMLElement).className).toContain(
+			"h-0",
+		);
+		expect(screen.getByTestId("placing-threads").className).toContain(
+			"absolute",
+		);
+		rerender(
+			wrap(
+				info({ stalled: new Error("git failed") }),
+				<WaitingThreads waiting={[t]} />,
+			),
+		);
+		expect(screen.queryByRole("status")).toBeNull();
+		expect(screen.getByTestId("placing-thread-error")).toBeTruthy();
 	});
 });

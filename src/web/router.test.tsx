@@ -2,9 +2,10 @@
 
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { RouterProvider } from "@tanstack/react-router";
-import { cleanup, render, screen } from "@testing-library/react";
+import { act, cleanup, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { bindReview, reviewApiPath } from "./api";
+import { threadFocus } from "./files/threadFocus";
 import { createAppRouter, notFoundReason } from "./router";
 
 describe("review routes", () => {
@@ -92,5 +93,32 @@ describe("review routes", () => {
 		expect(await screen.findByTestId("not-found")).toHaveTextContent(
 			"No such page.",
 		);
+	});
+
+	it("the app's root follows its router: a request waiting unread ends on a move to another page and back; unmounting stops", async () => {
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async () => new Response("{}", { status: 404 })),
+		);
+		const router = createAppRouter({ initialPath: "/nope" });
+		const before = router.history.subscribers.size;
+		const { unmount } = render(
+			<QueryClientProvider client={new QueryClient()}>
+				<RouterProvider router={router} />
+			</QueryClientProvider>,
+		);
+		try {
+			await screen.findByTestId("not-found");
+			threadFocus.request({ id: "T1" });
+			await act(async () => {
+				router.history.push("/nope/else");
+				router.history.push("/nope");
+			});
+			expect(threadFocus.get()).toBeNull();
+		} finally {
+			unmount();
+			threadFocus.reset();
+		}
+		expect(router.history.subscribers.size).toBe(before);
 	});
 });

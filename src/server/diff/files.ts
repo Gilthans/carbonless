@@ -109,6 +109,35 @@ function parseNumstat(output: string): NumstatEntry[] {
 }
 
 /**
+ * The paths of `base`..`head`'s changed file whose path or old path is
+ * `path`, renames paired as the page's listing pairs them (the whole
+ * comparison's `--raw`, DIFF_ARGS: no blob content read beyond rename
+ * scoring); null when the comparison doesn't change it.
+ */
+export async function changedPathsOf(
+	repo: string,
+	base: string,
+	head: string,
+	path: string,
+): Promise<{ path: string; oldPath?: string } | null> {
+	const raw = await runGit(repo, [
+		...DIFF_ARGS,
+		"--raw",
+		"-z",
+		"--no-abbrev",
+		base,
+		head,
+	]);
+	const entry = parseRaw(raw).find(
+		(e) => e.path === path || e.oldPath === path,
+	);
+	if (!entry) return null;
+	return entry.oldPath === undefined
+		? { path: entry.path }
+		: { path: entry.path, oldPath: entry.oldPath };
+}
+
+/**
  * The files changed between `base` and `head` (commits or trees), in raw
  * diff order; `paths` limits the diff to those paths (a pathspec after
  * `--`: renames are detected among them only).

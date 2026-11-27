@@ -399,7 +399,7 @@ only in the reviews where it was spawned.
 
 **How does a spawned agent answer?** Like a session you invite: through
 crb's MCP tools (`attach`, `next`, `reply`, `open`, `threads`, `review`,
-`detach`). Spawn hands it crb's `/mcp` when its session starts (over HTTP
+`progress`, `diff`, `file`, `detach`). Spawn hands it crb's `/mcp` when its session starts (over HTTP
 when the agent supports it, else through `crb mcp-bridge` over stdio) and
 a join that pressing Spawn already approved: there is no Approve bar, and
 that join works only for the process Spawn started (a secret only it was
@@ -491,6 +491,8 @@ and carbonless strips every `…TOKEN` variable from the agent's
 environment. Put it in the agent's own `env` in `config.json`
 (`"env": { "CLAUDE_CODE_OAUTH_TOKEN": "…" }`), which is passed as written,
 or log in with `claude` interactively (the login under `HOME` is used).
+The page never sees those values: carbonless sends it the names only, and
+a Save in the setup modal keeps them.
 
 **The agent is "not found on PATH" under the service.** A systemd service
 gets the `PATH` of its unit, which may lack nvm's global bin where

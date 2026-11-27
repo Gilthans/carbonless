@@ -1,5 +1,6 @@
 import {
 	AlertIcon,
+	ArrowUpIcon,
 	CheckCircleIcon,
 	ChevronDownIcon,
 	ChevronUpIcon,
@@ -38,6 +39,7 @@ import {
 	useFocusCard,
 	useOutlinedMessage,
 } from "../files/threadFocus";
+import { useMessageCopy } from "../messageCopy";
 import { Badge, LabeledIcon } from "../overview/parts";
 import { RelativeTime } from "../RelativeTime";
 import { Spinner } from "../Spinner";
@@ -50,7 +52,7 @@ import {
 	newThreadItems,
 	useComposers,
 } from "../threads/newThreads";
-import { Avatar, usePerson } from "../threads/people";
+import { Avatar, tintSurface, usePerson } from "../threads/people";
 import { AgentMarkdown } from "./AgentMarkdown";
 import {
 	type AgentWrite,
@@ -68,6 +70,7 @@ import {
 	postAgentResolved,
 	withThread,
 } from "./api";
+import { spanOfAnchor } from "./askAgentAction";
 import {
 	type CommentScope,
 	useAgentComment,
@@ -180,9 +183,257 @@ export function ActivityLine(props: { activity: readonly AgentActivity[] }) {
 	);
 }
 
-/** The agent's box: its tint, the text as GitHub-flavored Markdown. */
+/**
+ * The agent's box, the text as GitHub-flavored Markdown: a neutral raised
+ * box inside the agent's edge with a teal rail on its left (CAR-270). Told
+ * apart from a person's message by its shape, not only its hue: theirs is
+ * a filled wash of their tint, never railed.
+ */
 const AGENT_SURFACE =
-	"min-w-0 rounded-md border border-agent-edge bg-agent px-3 py-2";
+	"min-w-0 rounded-md border border-agent-edge border-l-3 border-l-agent-ink bg-raised px-3 py-2";
+
+/**
+ * The card's messages in their own capped box with its own scroll bar,
+ * opened at its end (the latest message next to the reply box). While
+ * the reader is at its end, what grows in it (a new message, a streamed
+ * answer) keeps it there; scrolled up, it stays put. A short conversation
+ * takes its own height. Its padding (out into the body's) keeps focus and
+ * landing outlines unclipped; `mb-1!` (over the body's space-y-2, which
+ * would win otherwise) keeps the gap to the reply row at 8px as it was.
+ * A swipe at its end hands on to the page (no overscroll containment):
+ * on a phone it is most of the screen.
+ *
+ * Not the thread agent panel's flex-col-reverse: in a reversed box,
+ * Chromium's scroll anchoring let a reader scrolled up jump when a reply
+ * landed (measured 70px, e2e "CAR-246"). Here new content lands below
+ * what is in sight, so nothing moves unless pinned to the end. Scroll
+ * anchoring is off in it: its adjustments (a stored reply taking the
+ * streamed one's place) fired scroll events that read as the reader
+ * leaving the end, and the pin let go (seen on the phone).
+ */
+function AgentScroll(props: {
+	children: ReactNode;
+	/** Who asked: the floating question's avatar. */
+	viewer: string;
+}) {
+	const box = useRef<HTMLDivElement>(null);
+	const content = useRef<HTMLDivElement>(null);
+	const atEnd = useRef(true);
+	// Where the last pin left scrollTop: its scroll event comes a frame
+	// later, maybe after the content grew again, and must not read as the
+	// reader leaving the end.
+	const pinned = useRef<number | null>(null);
+	// Its scrollTop and scrollHeight as last seen (a pin or a scroll
+	// event): moved since by someone else while the content didn't shrink
+	// (a landing's scrollIntoView, in the same frame as the content grew),
+	// the pin lets go rather than undo it. Content that shrank moves it by
+	// a clamp, maybe one restored later (React puts back the scrollTop it
+	// read mid-commit when it refocuses, as Preview hides the comment's
+	// box): that pins again.
+	const seen = useRef({ top: 0, height: 0 });
+	const [turn, setTurn] = useState<Turn | null>(null);
+	// A jump under way (its end handler): the pin stays off until it ends.
+	const jumping = useRef<(() => void) | null>(null);
+	useEffect(() => () => jumping.current?.(), []);
+	const float = () => {
+		const el = box.current;
+		if (!el) return;
+		const next = floatingQuestion(el);
+		setTurn((t) =>
+			t?.id === next?.id && t?.text === next?.text && t?.top === next?.top
+				? t
+				: next,
+		);
+	};
+	// biome-ignore lint/correctness/useExhaustiveDependencies: float reads refs and sets state only.
+	useLayoutEffect(() => {
+		const el = box.current;
+		const inner = content.current;
+		if (!el || !inner) return;
+		const toEnd = () => {
+			el.scrollTop = el.scrollHeight;
+			pinned.current = el.scrollTop;
+			seen.current = { top: el.scrollTop, height: el.scrollHeight };
+		};
+		toEnd();
+		if (typeof ResizeObserver === "undefined") return;
+		const pin = new ResizeObserver(() => {
+			float();
+			if (!atEnd.current) return;
+			const moved = Math.abs(el.scrollTop - seen.current.top) >= 1;
+			const shrank = el.scrollHeight < seen.current.height;
+			const end = el.scrollTop + el.clientHeight >= el.scrollHeight - 2;
+			if (moved && !shrank && !end) {
+				atEnd.current = false;
+				pinned.current = null;
+				seen.current = { top: el.scrollTop, height: el.scrollHeight };
+				return;
+			}
+			toEnd();
+			float();
+		});
+		pin.observe(inner);
+		pin.observe(el);
+		return () => pin.disconnect();
+	}, []);
+	return (
+		<div
+			ref={box}
+			data-testid="agent-thread-scroll"
+			onScroll={(e) => {
+				const el = e.currentTarget;
+				seen.current = { top: el.scrollTop, height: el.scrollHeight };
+				float();
+				if (
+					pinned.current !== null &&
+					Math.abs(el.scrollTop - pinned.current) < 1
+				)
+					return;
+				pinned.current = null;
+				atEnd.current =
+					!jumping.current &&
+					el.scrollTop + el.clientHeight >= el.scrollHeight - 2;
+			}}
+			className={AGENT_SCROLL}
+		>
+			{/* Over the box's top, taking no room: showing it moves nothing.
+			    -top-1 and -mx-1: from the box's edges, not its padding (a
+			    sticky top counts from the padding edge). */}
+			<div className="sticky -top-1 z-10 -mx-1 h-0">
+				{turn && (
+					<QuestionBar
+						turn={turn}
+						viewer={props.viewer}
+						onJump={() => {
+							const el = box.current;
+							if (!el) return;
+							// Leaves the end: the pin lets go, and stays off until the
+							// scroll ends (its first frames may still be near the end).
+							atEnd.current = false;
+							pinned.current = null;
+							jumping.current?.();
+							const done = () => {
+								el.removeEventListener("scrollend", done);
+								clearTimeout(timer);
+								jumping.current = null;
+							};
+							// scrollend may never come (nothing to scroll): let go anyway.
+							const timer = setTimeout(done, 2000);
+							el.addEventListener("scrollend", done);
+							jumping.current = done;
+							// The question takes the focus (the bar may go mid-scroll).
+							el.querySelector<HTMLElement>(
+								`[data-by=human][data-message-id="${CSS.escape(turn.id)}"]`,
+							)?.focus({ preventScroll: true });
+							const reduce =
+								typeof window.matchMedia === "function" &&
+								window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+							el.scrollTo({
+								top: Math.max(0, turn.top - QUESTION_BAR),
+								behavior: reduce ? "auto" : "smooth",
+							});
+						}}
+					/>
+				)}
+			</div>
+			<div ref={content} className="min-w-0 space-y-2">
+				{props.children}
+			</div>
+		</div>
+	);
+}
+
+/** The floating question's height (a 40px target): a turn under it isn't in view. */
+const QUESTION_BAR = 40;
+
+/** A reviewer's question in an agent conversation, where it starts in its scroll box. */
+interface Turn {
+	id: string;
+	text: string;
+	/** Its top in the box's content (scrollTop that puts it at the box's top). */
+	top: number;
+}
+
+/**
+ * Which question floats over a box scrolled to `scrollTop`: of the turns'
+ * tops (in order), the last one above the box's top; none while one sits
+ * in the band the bar would cover (it is reaching the top itself), or
+ * when none is above. -1 for none.
+ */
+export function floatingTurn(
+	tops: readonly number[],
+	scrollTop: number,
+	bar = QUESTION_BAR,
+): number {
+	let pick = -1;
+	for (const [i, top] of tops.entries()) {
+		if (top < scrollTop - 1) pick = i;
+		else if (top < scrollTop + bar) return -1;
+		else break;
+	}
+	return pick;
+}
+
+/** The question that floats over the box now (its human turns, measured). */
+function floatingQuestion(el: HTMLElement): Turn | null {
+	const origin = el.getBoundingClientRect().top - el.scrollTop;
+	const turns = [...el.querySelectorAll<HTMLElement>("[data-by=human]")].map(
+		(t) => ({
+			id: t.dataset.messageId ?? "",
+			text:
+				t.querySelector("[data-testid=agent-message-human]")?.textContent ?? "",
+			top: Math.round(t.getBoundingClientRect().top - origin),
+		}),
+	);
+	const i = floatingTurn(
+		turns.map((t) => t.top),
+		el.scrollTop,
+	);
+	return turns[i] ?? null;
+}
+
+/** The question above what is in sight: one line, tap to go to it. */
+function QuestionBar(props: {
+	turn: Turn;
+	viewer: string;
+	onJump: () => void;
+}) {
+	const me = usePerson(props.viewer);
+	const first = props.turn.text.replace(/\s+/g, " ").trim();
+	return (
+		<button
+			type="button"
+			data-testid="agent-question-bar"
+			aria-label={`Jump to question: ${first.length > 100 ? `${first.slice(0, 100)}…` : first}`}
+			onClick={props.onJump}
+			// The box's scroll-pt-10 keeps focused content clear of the bar;
+			// the bar itself, inside that band, counts as in view (focusing or
+			// revealing it doesn't scroll the box).
+			className="group absolute inset-x-0 top-0 isolate flex h-10 cursor-pointer scroll-mt-[-2.5rem] min-w-0 items-center gap-2 bg-surface px-2.5 text-left text-sm text-ink shadow-control focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-accent"
+		>
+			{/* The reviewer's tint, as on their messages, over an opaque ground. */}
+			<span
+				aria-hidden
+				className={`absolute inset-0 -z-10 border-b ${tintSurface(me.tint)}`}
+			/>
+			<Avatar login={props.viewer} url="" size={16} />
+			<span
+				data-testid="agent-question-text"
+				className="min-w-0 flex-1 truncate"
+			>
+				{first}
+			</span>
+			<ArrowUpIcon
+				size={16}
+				aria-hidden
+				className="shrink-0 text-muted group-hover:text-ink"
+			/>
+		</button>
+	);
+}
+
+const AGENT_SCROLL =
+	"-mx-1 -mt-1 mb-1! max-h-[min(28rem,60vh)] overflow-y-auto scroll-pt-10 p-1 [overflow-anchor:none]";
 
 function Who(props: { children: React.ReactNode }) {
 	return (
@@ -194,6 +445,8 @@ function Who(props: { children: React.ReactNode }) {
 
 function HumanMessage(props: { message: AgentMessage; viewer: string }) {
 	const me = usePerson(props.viewer);
+	// A long press on a phone: Copy message.
+	const copy = useMessageCopy(props.message.text);
 	return (
 		<div className="min-w-0 space-y-1">
 			<Who>
@@ -205,9 +458,11 @@ function HumanMessage(props: { message: AgentMessage; viewer: string }) {
 			<p
 				data-testid="agent-message-human"
 				className={`${commentSurface(me.tint)} text-sm whitespace-pre-wrap break-words`}
+				{...copy.press}
 			>
 				{props.message.text}
 			</p>
+			{copy.menu}
 			{props.message.truncated && <TruncatedChip />}
 		</div>
 	);
@@ -280,6 +535,8 @@ function AiMessage(props: {
 			? { ...known, tip: `${known.tip}: ${message.error}` }
 			: known;
 	const reason = message.stop === "error" ? message.error : undefined;
+	// A long press on a phone: Copy message (its Markdown, as written).
+	const copy = useMessageCopy(message.text || reason || "");
 	return (
 		<div className="min-w-0 space-y-1">
 			<Who>
@@ -311,6 +568,7 @@ function AiMessage(props: {
 			<div
 				data-testid="agent-message-ai"
 				className={`${AGENT_SURFACE} text-sm`}
+				{...copy.press}
 			>
 				{message.text || !reason ? (
 					<AgentMarkdown
@@ -339,6 +597,7 @@ function AiMessage(props: {
 				)}
 			</div>
 			{message.activity && <ActivityLine activity={message.activity} />}
+			{copy.menu}
 		</div>
 	);
 }
@@ -346,7 +605,7 @@ function AiMessage(props: {
 type Answering = NonNullable<AgentStatus["answering"]>;
 
 /** A thread's state, as its name says it; `answering` is what useAnswering shows. */
-export function agentThreadState(
+function agentThreadState(
 	thread: AgentThread,
 	answering: Answering | undefined,
 ): "waiting" | "answering" | "answered" | "resolved" {
@@ -479,6 +738,8 @@ interface AgentCardProps {
 	status: AgentStatus | undefined;
 	/** Its line isn't in this diff: shown in the file's header instead. */
 	unplaced?: boolean;
+	/** What says why, in place of the plain flag (the since view's NotHereNote, CAR-255). */
+	unplacedNote?: ReactNode;
 	/** Asked on this earlier head (its commit): marked outdated. */
 	outdated?: string;
 	/** The move handle, first in the header (Files changed; threadMove.tsx). */
@@ -499,13 +760,23 @@ function usePendingComment(props: AgentCardProps): ReactNode | null {
 	const { thread } = props;
 	const scope = useCommentScope();
 	const diff = usePendingComposers();
+	// On lines only the since view's compared patch set had: its comment
+	// is on that patch set's commit, shown here all the same (CAR-264).
+	const early =
+		scope?.earlier !== undefined &&
+		isSpanThread(thread) &&
+		thread.anchor.subject !== "thread"
+			? scope.earlier(spanOfAnchor(thread.anchor))
+			: null;
+	// Null is "not on such lines" (typeof null is "object").
+	const earlier = early !== null && typeof early === "object";
 	const here =
 		scope !== null &&
 		diff !== null &&
 		diff.head !== undefined &&
 		isSpanThread(thread) &&
 		thread.anchor.subject !== "thread" &&
-		thread.anchor.commit === diff.head &&
+		(thread.anchor.commit === diff.head || earlier) &&
 		!thread.orphaned &&
 		!props.unplaced &&
 		!props.outdated;
@@ -514,7 +785,9 @@ function usePendingComment(props: AgentCardProps): ReactNode | null {
 	const composers = useComposers();
 	if (!here || !diff) return null;
 	const item = newThreadItems(drafts, composers).find(
-		(i) => i.agentThread === thread.id && i.span.commit === diff.head,
+		(i) =>
+			i.agentThread === thread.id &&
+			(i.span.commit === diff.head || (earlier && i.span.earlier === true)),
 	);
 	if (!item) return null;
 	return (
@@ -696,13 +969,14 @@ function AgentCard(props: AgentCardProps) {
 						/>
 					</span>
 				)}
-				{props.unplaced && (
-					<LabeledIcon
-						icon={AlertIcon}
-						label="Line not in this diff"
-						className="text-warn"
-					/>
-				)}
+				{props.unplaced &&
+					(props.unplacedNote ?? (
+						<LabeledIcon
+							icon={AlertIcon}
+							label="Line not in this diff"
+							className="text-warn"
+						/>
+					))}
 				{props.moved}
 				<div className="ml-auto flex items-center gap-x-2">
 					{answering && (
@@ -722,14 +996,16 @@ function AgentCard(props: AgentCardProps) {
 			</div>
 			<LinkProblem thread={thread.id} />
 			<div id={bodyId} className="space-y-2 p-2.5">
-				<AgentMessageItems
-					thread={shown}
-					status={status}
-					answering={answering}
-					viewer={viewer}
-					name={name}
-					pending={replies}
-				/>
+				<AgentScroll viewer={viewer}>
+					<AgentMessageItems
+						thread={shown}
+						status={status}
+						answering={answering}
+						viewer={viewer}
+						name={name}
+						pending={replies}
+					/>
+				</AgentScroll>
 				{resolve.error && (
 					<p
 						role="alert"
@@ -808,7 +1084,9 @@ export function AgentMessageItems(props: {
 	const all =
 		useQuery({ ...agentThreadsQuery, enabled: false }).data?.threads ?? [];
 	const started = startedBy(all);
-	const lit = useOutlinedMessage(thread?.messages);
+	// The message a link landed on: only this copy of it scrolls in.
+	const landed = useRef<HTMLDivElement>(null);
+	const lit = useOutlinedMessage(thread?.messages, landed);
 	return (
 		<>
 			{thread?.messages.map((m) => {
@@ -819,9 +1097,14 @@ export function AgentMessageItems(props: {
 					<Fragment key={m.id}>
 						{m.id === props.divider && <NewDivider />}
 						<div
+							ref={m.id === lit ? landed : undefined}
 							data-message-id={m.id}
+							data-by={m.by}
+							// A question takes the focus when its floating bar is
+							// pressed (AgentScroll).
+							tabIndex={m.by === "human" ? -1 : undefined}
 							data-landed={m.id === lit || undefined}
-							className={`min-w-0 space-y-1 rounded-md outline-offset-2 transition-[outline-color] duration-1000 motion-reduce:transition-none ${
+							className={`min-w-0 space-y-1 rounded-md outline-offset-2 transition-[outline-color] duration-1000 focus-visible:outline-accent motion-reduce:transition-none ${
 								m.id === lit
 									? "outline-2 outline-accent"
 									: "outline-2 outline-transparent"

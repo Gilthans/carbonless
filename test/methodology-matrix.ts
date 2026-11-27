@@ -18,6 +18,14 @@ import { computeRereview } from "../src/server/rereview/engine";
 import { RefStore } from "../src/server/review/refStore";
 import { ReviewService } from "../src/server/review/reviews";
 import { Session } from "../src/server/session";
+import {
+	pieceState,
+	sinceOnlyPieces,
+	sinceOnlyState,
+	sinceToggleChange,
+	sinceUnits,
+	toggleChange,
+} from "../src/shared/pieces";
 import type { FileSummary, Snapshot } from "../src/shared/types";
 import {
 	fakeGhEnv,
@@ -581,6 +589,84 @@ function matrix(m: (typeof METHODOLOGIES)[number]) {
 		expect(await placed(await open())).toEqual([want, want]);
 	});
 
+	it("a LEFT thread on the opened head is placed by GitHub's hunk on the updated stage: on its base line, never on a line the hunk contradicts (CAR-8)", async () => {
+		const left = (text: string, diffHunk: string) =>
+			reviewThread({ path: "a.txt", line: 30, diffSide: "LEFT" }, [
+				threadComment({
+					login: "rev1",
+					text,
+					commit: repo.heads.opened,
+					createdAt: TIMES.review,
+					diffHunk,
+				}),
+			]);
+		const threads = [
+			left("Seen", "@@ -28,3 +28,3 @@\n line 28\n line 29\n-line 30"),
+			left("Other", "@@ -28,3 +28,3 @@\n other 28\n other 29\n-other 30"),
+			// No hunk: traced from the base as it stood at the review.
+			left("Empty", ""),
+		];
+		repo.setStage("updated");
+		const entry = repo.prEntry("updated");
+		process.env.CRB_FAKE_GH = writeScenario(tmp, {
+			repoPath: repo.path,
+			user: { login: "Octo_Cat" },
+			nameWithOwner: "acme/widget",
+			prs: {
+				[NUMBER]: {
+					...entry,
+					graphql: { ...entry.graphql, reviewThreads: threads },
+				},
+			},
+		});
+		const s = await open();
+		const readId = (await s.overview(0)).readId;
+		const listed = (await s.threads(readId, "summary")).threads;
+		const to = { head: repo.heads.updated };
+		let answer = await s.placements(to, readId);
+		// The old-side threads join once their hunks are in (complete).
+		while ("pending" in answer || !answer.complete) {
+			await new Promise((r) => setTimeout(r, 20));
+			answer = await s.placements(to, readId);
+		}
+		// The summary lists them in GitHub's order (its text comes later).
+		const ids: Record<string, string | undefined> = {
+			Seen: listed[0]?.id,
+			Other: listed[1]?.id,
+			Empty: listed[2]?.id,
+		};
+		expect(listed).toHaveLength(3);
+		const of = (text: string) =>
+			answer.threads.find((t) => t.id === ids[text])?.placement;
+		// The base changed line 30 itself only where it conflicted.
+		expect(of("Seen")).toMatchObject(
+			m.update === "merge-base-in-conflict"
+				? { kind: "unplaced", fate: "base-changed" }
+				: {
+						kind: "placed",
+						anchor: { path: "a.txt", side: "LEFT", line: 30 },
+					},
+		);
+		expect(of("Other")).toMatchObject({
+			kind: "unplaced",
+			fate: "base-unknown",
+		});
+		// The empty hunk: the same line, from the base at the review's
+		// time. Where today's merge base isn't that one (the base absorbed
+		// the PR's first commit), it says so: unchecked.
+		expect(of("Empty")).toMatchObject(
+			m.update === "merge-base-in-conflict"
+				? { kind: "unplaced", fate: "base-changed" }
+				: {
+						kind: "placed",
+						anchor: { path: "a.txt", side: "LEFT", line: 30 },
+					},
+		);
+		const unchecked = (of("Empty") as { unchecked?: true } | undefined)
+			?.unchecked;
+		expect(unchecked === true).toBe(m.update === "base-absorbs");
+	});
+
 	it("orders the timeline by GitHub's facts: a rebase's commits by their new times, then its force-push; the merge, not the close", async () => {
 		const shape = async (s: Session) =>
 			(await s.timeline((await s.overview(0)).readId)).events.map((e) =>
@@ -681,6 +767,82 @@ function matrix(m: (typeof METHODOLOGIES)[number]) {
 			based: removed.filter((r) => r.baseNo !== null).length,
 			earlier: removed.filter((r) => r.baseNo === null).length,
 		}).toEqual(SINCE_REMOVED[m.update] ?? { based: 0, earlier: 0 });
+	});
+
+	it("the since view: ticking every box finishes the review, whatever the methodology (CAR-216)", async () => {
+		const s = await open();
+		const ps1 = s.snapshot();
+		await s.setStates(
+			ps1.revision,
+			ps1.files.flatMap((f) =>
+				f.clusters.map((c) => ({ key: c.key, state: "reviewed" as const })),
+			),
+		);
+		stage("updated");
+		await s.refresh();
+		if (m.update === "none") return;
+		let answer = await s.rereview(1, { head: repo.heads.updated });
+		while ("pending" in answer) {
+			await new Promise((r) => setTimeout(r, 20));
+			answer = await s.rereview(1, { head: repo.heads.updated });
+		}
+		let view = await s.viewHead(repo.heads.updated);
+		for (const f of answer.files) {
+			const { hunks, pieces = [] } = await s.interdiffHunks(
+				1,
+				view.revision,
+				f.index,
+			);
+			// The engine's answer and the page's hunks agree on the pieces.
+			expect(pieces).toEqual(f.pieces ?? []);
+			// No removed line shows twice: a shown row and an orphan of the
+			// same cluster, base line and text (CAR-277). A guard rail: no
+			// update here edits a line the base changed, so this never
+			// reaches the githubLeft fallback (engine.test.ts covers that
+			// per method: rebase, merge-base-in, squash).
+			const removed = hunks
+				.flatMap((h) => h.lines)
+				.filter((l) => l.kind === "del" && l.clusterKey !== undefined);
+			const rowOf = (l: (typeof removed)[number]) =>
+				`${l.clusterKey}:${l.baseNo}:${l.text}`;
+			const shown = new Set(removed.filter((l) => !l.orphan).map(rowOf));
+			expect(
+				removed.filter((l) => l.orphan && shown.has(rowOf(l))).map(rowOf),
+				f.path,
+			).toEqual([]);
+			const clusterOf = (key: string | undefined) =>
+				view.files
+					.find((v) => v.index === f.index)
+					?.clusters.find((c) => c.key === key);
+			for (const p of pieces) {
+				const cluster = clusterOf(p.key);
+				if (!cluster || !p.owns) continue;
+				if (pieceState(cluster, p.owns) !== "unreviewed") continue;
+				view = await s.setStates(view.revision, [
+					toggleChange(cluster, p.owns),
+				]);
+			}
+			const keys = new Set(
+				view.files.find((v) => v.index === f.index)?.clusters.map((c) => c.key),
+			);
+			for (const p of sinceOnlyPieces(pieces, keys)) {
+				if (sinceOnlyState(view.sinceMarks, 1, f.path, p) !== "unreviewed") {
+					continue;
+				}
+				view = await s.setStates(view.revision, [
+					sinceToggleChange(view.sinceMarks, 1, f.path, p),
+				]);
+			}
+		}
+		// Every unit the since view counts is marked, and so is the review.
+		const left = sinceUnits(
+			answer.files,
+			1,
+			(i) => view.files.find((v) => v.index === i)?.clusters ?? [],
+			view.sinceMarks,
+		).filter((u) => u.open > 0);
+		expect(left).toEqual([]);
+		expect(view.progress.lines.reviewed).toBe(view.progress.lines.total);
 	});
 
 	it("re-review from the opened head to the updated one: the shape, the interdiff and the carry; the first action on the viewed head starts PS2 with them", async () => {

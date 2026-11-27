@@ -217,7 +217,8 @@ loading never looking empty, interdiffs first-class, checking against a real PR)
   wait" (a timeout of 0, a hold), never as wall-clock time. CPU time is
   checked against a reference measured in the same test (a ratio to a
   reference workload, or a scaling check: the input 4x as large against
-  four runs of the quarter; `test/cpu.ts`), never against an absolute
+  four runs of the quarter, or 8x against eight eighths where linear
+  itself reads well above 1x; `test/cpu.ts`), never against an absolute
   budget measured on the devbox alone, because CI runners' CPUs are slower
   and contended. The exception: a cost the ratio can't see (such as a
   fixed per-run cost both sides pay) may get one generous absolute
@@ -236,6 +237,9 @@ loading never looking empty, interdiffs first-class, checking against a real PR)
   only to label it flaky or consistent; that rerun never turns a job
   green (`docs/ci-flakes.md`). Playwright's expects wait
   10 s (a reload's chained reads); a test that needs longer says why.
+  Lint enforces these rules (`biome-plugins/`: no `waitForTimeout`, no
+  retries, no wall-clock asserts, no fixed sleeps but `test/sleep.ts`'s;
+  `docs/ci-flakes.md`, "Lint rules").
 - A runner killed mid-test (a Playwright worker past its teardown timeout,
   an interrupted run) never runs its cleanup. What a test starts carries
   `$CRB_OWNER` (`test/setup.ts`, `crbEnv` in `e2e/pr-setup.ts`): `crb serve`,
@@ -491,6 +495,11 @@ After the first release (0.1.0) the owner adds the trusted publisher
   https://github.com/Gilthans/carbonless-gallery (one PR per case study,
   regular and edge cases, to look at in carbonless). Clean up probes so
   the cases stay readable. Nowhere else.
+- Exception to the merge and comment rules above: only the daily
+  Dependabot sweep (`scripts/dependabot-sweep.mjs`) may comment on, push
+  fixes to and `--admin`-merge PRs authored by `dependabot[bot]`, under
+  the conditions in `docs/agents/dependabot-sweep.md` (CAR-273). Other
+  sessions still need the owner's word.
 - Every edge case we find or fix gets a gallery PR (its own `base/<case>`
   and `case/<case>` branches, a description of what to look at, a row in
   the gallery README).

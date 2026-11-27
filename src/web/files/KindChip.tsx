@@ -2,7 +2,12 @@ import type { ClusterKind } from "../../shared/types";
 import { Tooltip } from "../Tooltip";
 
 /** A chip's colors by what happened to the cluster (the design tokens). */
-type ChipKind = ClusterKind | "conflict" | "reverted" | "removed";
+type ChipKind =
+	| ClusterKind
+	| "conflict"
+	| "reverted"
+	| "removed"
+	| "unreviewed";
 
 const TONE: Record<ChipKind, string> = {
 	reworked: "border-warn text-warn",
@@ -12,10 +17,17 @@ const TONE: Record<ChipKind, string> = {
 	conflict: "border-bad text-bad",
 	reverted: "border-bad text-bad",
 	removed: "border-bad text-bad",
+	unreviewed: "border-warn text-warn",
 };
 
+/** A chip's word: the kind's own, but an orphan run's (CAR-216) names the patch set. */
+const wordOf = (kind: ChipKind, from?: number) =>
+	kind === "unreviewed"
+		? `not reviewed in ${from === undefined ? "the compared patch set" : `PS${from}`}`
+		: kind;
+
 /** What each chip means, in its tooltip. */
-export function kindTip(
+function kindTip(
 	kind: ChipKind,
 	from?: number,
 	rule?: "exact" | "rename",
@@ -38,6 +50,8 @@ export function kindTip(
 			return `Back to the base's version since ${ps}`;
 		case "removed":
 			return `Removed since ${ps}`;
+		case "unreviewed":
+			return `Unchanged since ${ps}, not reviewed there`;
 	}
 }
 
@@ -58,8 +72,8 @@ export function KindChip(props: {
 	/** Its test id and data-kind, in place of the kind chip's own (a chip of lines). */
 	testId?: string;
 }) {
-	const text =
-		props.count === undefined ? props.kind : `${props.count} ${props.kind}`;
+	const word = wordOf(props.kind, props.from);
+	const text = props.count === undefined ? word : `${props.count} ${word}`;
 	return (
 		<Tooltip content={props.tip ?? kindTip(props.kind, props.from, props.rule)}>
 			{(trigger) => (

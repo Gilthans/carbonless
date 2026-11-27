@@ -181,7 +181,7 @@ function latestReviews(
  * latest of any kind: the opinion, unless it was dismissed and they
  * commented after it (then the comment).
  */
-export function standingOf<T extends { state: string; submittedAt: string }>(
+function standingOf<T extends { state: string; submittedAt: string }>(
 	opinion: T | undefined,
 	latest: T,
 ): T {
@@ -342,11 +342,21 @@ export function sinceOf(
 		};
 	}
 	const count = { reworked: 0, new: 0, gone: 0 };
+	// Without the whitespace-only clusters ("Ignore whitespace" on).
+	const counted = { reworked: 0, new: 0 };
 	for (const file of answer.files) {
 		for (const c of file.clusters) {
-			if (c.kind !== "carried") count[c.kind] += 1;
+			if (c.kind === "carried") continue;
+			count[c.kind] += 1;
+			if (c.kind !== "gone" && !c.whitespaceOnly) counted[c.kind] += 1;
 		}
 	}
+	const files =
+		answer.toRead.withoutWhitespaceOnly?.files ?? answer.toRead.files;
+	const same =
+		files === answer.toRead.files &&
+		counted.reworked === count.reworked &&
+		counted.new === count.new;
 	return {
 		...target,
 		changes: {
@@ -356,6 +366,7 @@ export function sinceOf(
 			files: answer.toRead.files,
 			...count,
 			identical: answer.shape.identical,
+			...(same ? {} : { withoutWhitespaceOnly: { files, ...counted } }),
 		},
 	};
 }
@@ -465,7 +476,7 @@ export function verdictBody(req: VerdictRequest): string | undefined {
  * How far GitHub's `submitted_at` (whole seconds, GitHub's clock) may read
  * before this server's first attempt and still be that attempt's.
  */
-export const CLOCK_SLACK_MS = 10_000;
+const CLOCK_SLACK_MS = 10_000;
 /** Without a first attempt of this server's: the client's `attemptedAt` less this. */
 export const ATTEMPT_SLACK_MS = 2 * 60_000;
 

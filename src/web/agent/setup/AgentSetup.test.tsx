@@ -11,12 +11,13 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { inRouter } from "../../../../test/in-router";
 import { expectLoadingThen, heldJson } from "../../../../test/loading";
-import type {
-	AgentCheck,
-	AgentConfig,
-	AgentSetupDone,
-	AgentStatus,
-	AgentThread,
+import {
+	AGENT_ENV_MASK,
+	type AgentCheck,
+	type AgentConfig,
+	type AgentSetupDone,
+	type AgentStatus,
+	type AgentThread,
 } from "../../../shared/agent";
 import { mcpLine } from "../api";
 import { closeReviewDrawer, isReviewDrawerOpen } from "../drawerStore";
@@ -426,7 +427,8 @@ describe("AgentSetup: Spawn", () => {
 			agent: {
 				command: "claude-agent-acp",
 				args: [],
-				env: { CLAUDE_CODE_EXECUTABLE: "/opt/claude" },
+				// As GET gives it: the name, a mask for the value (CAR-59).
+				env: { CLAUDE_CODE_EXECUTABLE: AGENT_ENV_MASK },
 				leash: "open",
 			},
 			problems: [],
@@ -536,7 +538,8 @@ describe("AgentSetup: Spawn", () => {
 			agent: {
 				command: abs,
 				args: [],
-				env: { CLAUDE_CODE_EXECUTABLE: "/opt/claude" },
+				// As GET gives it: the name, a mask for the value (CAR-59).
+				env: { CLAUDE_CODE_EXECUTABLE: AGENT_ENV_MASK },
 				leash: "open",
 			},
 			problems: [],

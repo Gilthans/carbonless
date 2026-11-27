@@ -7,7 +7,11 @@
  * only by retryAgentWrite. Kept apart from threadWrites.ts: those are
  * GitHub's writes and their unions stay closed.
  */
-import { type QueryClient, useQuery } from "@tanstack/react-query";
+import {
+	notifyManager,
+	type QueryClient,
+	useQuery,
+} from "@tanstack/react-query";
 import { useCallback, useSyncExternalStore } from "react";
 import type { AgentThread, AgentView } from "../../shared/agent";
 import { ApiError } from "../api";
@@ -103,11 +107,6 @@ export function agentAsking(clientId: string): boolean {
 export function useUnaskedQuestion(): boolean {
 	const composers = useAgentComposers();
 	const { pending } = useAgentWrites();
-	const replies = useSyncExternalStore(
-		subscribeReplies,
-		getRepliesTyped,
-		getRepliesTyped,
-	);
 	// A card's kept follow-up, while its box can show it again: its
 	// conversation still a span one, not resolved (Resolve drops it).
 	const kept = useSyncExternalStore(
@@ -131,7 +130,6 @@ export function useUnaskedQuestion(): boolean {
 		(id) => (agentDrafts.get(id) ?? "").trim() !== "",
 	);
 	return (
-		replies > 0 ||
 		cardTyped ||
 		movedTyped ||
 		composers.some((c) => {
@@ -144,9 +142,7 @@ export function useUnaskedQuestion(): boolean {
 // --- Follow-ups typed in a conversation's reply box --------------------------
 // Kept in the box only (no draft): the boxes holding text, so leaving asks.
 
-let typedReplies: ReadonlySet<string> = new Set();
 const replyListeners = new Set<() => void>();
-const getRepliesTyped = () => typedReplies.size;
 const subscribeReplies = (l: () => void) => {
 	replyListeners.add(l);
 	return () => {
@@ -154,19 +150,8 @@ const subscribeReplies = (l: () => void) => {
 	};
 };
 
-/** Reply box `box` holds a follow-up not yet sent (`typed`), or not. */
-export function setReplyTyped(box: string, typed: boolean): void {
-	if (typedReplies.has(box) === typed) return;
-	const next = new Set(typedReplies);
-	if (typed) next.add(box);
-	else next.delete(box);
-	typedReplies = next;
-	for (const l of replyListeners) l();
-}
-
 /** Forgets every typed reply (tests). */
 export function resetRepliesTyped(): void {
-	typedReplies = new Set();
 	cardReplies = new Map();
 	movedToThread = new Set();
 	for (const l of replyListeners) l();
@@ -259,11 +244,23 @@ function send(client: QueryClient, clientId: string): void {
 		(thread) => {
 			// Dropped meanwhile: the answer still lands in the list.
 			attempts.delete(clientId);
-			client.setQueryData(agentThreadsQuery.queryKey, (list) =>
-				withThread(list, thread),
-			);
+			// The pending row goes in the same notify as the list that shows
+			// the stored message: one render swaps the one for the other.
+			// Apart, the card (its thread a prop from the list's reader, which
+			// hears the list a task later) rendered without either: its box
+			// shrank by the row for a moment, and the clamp's scroll event,
+			// read once the message was back, looked like the reader leaving
+			// the end. The pin let go and the answer landed out of sight
+			// (CAR-301).
+			notifyManager.batch(() => {
+				client.setQueryData(agentThreadsQuery.queryKey, (list) =>
+					withThread(list, thread),
+				);
+				notifyManager.schedule(() => {
+					if (state.pending.get(clientId) === item) set(clientId, null);
+				});
+			});
 			void client.invalidateQueries({ queryKey: agentStatusQuery.queryKey });
-			if (state.pending.get(clientId) === item) set(clientId, null);
 			settle(clientId, (w) => w.resolve(thread));
 			if (item.span) {
 				justAsked.add(thread.id);

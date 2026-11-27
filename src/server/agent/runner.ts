@@ -46,7 +46,15 @@ export interface RunnerFacts {
 	prFacts(): Promise<{ title: string; body: string; files: string[] }>;
 	/** The file at the anchor's commit: pass the anchor as the agent is told it (anchorFor). */
 	anchored(anchor: AgentAnchor): Promise<{ text: string } | null>;
-	hunk(anchor: AgentAnchor): Promise<string | null>;
+	/**
+	 * The diff hunk around a stored (head) anchor, from the comparison it
+	 * was opened on: `mergeBase`..`anchor.commit` (its patch set's merge
+	 * base: patchsetOpened), `mergeBase` null for a head no patch set has
+	 * (that head's own merge base with the base branch); null when that
+	 * diff has no hunk there. Throws when that comparison's code can't be
+	 * read: never another comparison's code in its place (CAR-53).
+	 */
+	hunk(anchor: AgentAnchor, mergeBase: string | null): Promise<string | null>;
 	authorOf(login: string): Promise<CommentRole>;
 	/**
 	 * The folds joined with GitHub's threads (githubJoin.ts): a live
@@ -134,7 +142,7 @@ const MAX_LIVE_ACTIVITY = 200;
  * waits: then the handed-out question fails, and an agent that ignores
  * the wake-up isn't prompted again until a human asks.
  */
-export const MAX_DRY_TURNS = 2;
+const MAX_DRY_TURNS = 2;
 /** How long a broken connection's process gets to exit before it counts as lingering. */
 const LINGER_MS = 2_000;
 const ACTIVITY_KINDS: readonly string[] = [
@@ -208,7 +216,7 @@ export const WAKE_LINE =
 	"A question waits for you in the review: call crb's next tool, answer it with reply, and call next again until none waits.";
 
 /** The checkout, relative to the agent's working directory (the checkout's dir). */
-export const CHECKOUT_PATH = "tree";
+const CHECKOUT_PATH = "tree";
 
 /** The re-prompt when a turn ends with a question still handed out. */
 export const holdLine = (thread: string): string =>
@@ -513,7 +521,7 @@ export class AgentRunner {
 
 	/** After a human open or message: spawns if needed, then wakes it if a question waits. Never throws. */
 	poke(): void {
-		if (this.#closed) return;
+		if (this.#closed !== null) return;
 		if (this.#off()) {
 			// The flag cleared elsewhere: what still runs here goes.
 			this.#windDown();
@@ -521,16 +529,16 @@ export class AgentRunner {
 		}
 		// A detach under way finishes first; its end pokes again. Not
 		// #again: the pump it waits for would take that as a new round.
-		if (this.#detaching) return;
+		if (this.#detaching !== null) return;
 		this.#again = true;
-		if (this.#pump) return;
+		if (this.#pump !== null) return;
 		this.#pump = this.#run()
 			.catch((error: unknown) => {
 				this.#set("error", { error: (error as Error).message });
 			})
 			.finally(() => {
 				this.#pump = null;
-				if (this.#closed) return;
+				if (this.#closed !== null) return;
 				// Turned off while it ran (a poke then found it busy): wind down now.
 				if (this.#off()) this.#windDown();
 				else if (this.#again) this.poke();
@@ -599,7 +607,7 @@ export class AgentRunner {
 	 * Unlike close(), the runner stays usable: the next Spawn starts afresh.
 	 */
 	detach(): Promise<void> {
-		if (this.#closed) return this.#closed;
+		if (this.#closed !== null) return this.#closed;
 		return this.#startDetach({ keepCheckout: false });
 	}
 
@@ -662,7 +670,7 @@ export class AgentRunner {
 		this.#crashes = 0;
 		this.#dry = 0;
 		this.#seen = undefined;
-		if (this.#closed) return;
+		if (this.#closed !== null) return;
 		// Spawn pressed again while this ran: #startDetach pokes once it ends.
 		this.#set("off");
 	}
@@ -890,7 +898,7 @@ export class AgentRunner {
 	/** The running agent, spawned (and admitted) if it should run; null when it can't or shouldn't. */
 	async #ensure(): Promise<AcpAgent | null> {
 		await this.#readConfig();
-		if (this.#closed) return null;
+		if (this.#closed !== null) return null;
 		if (this.#off()) {
 			await this.#stopProc();
 			this.#identity = undefined;
@@ -928,7 +936,7 @@ export class AgentRunner {
 				this.#set("elsewhere", { elsewhere: claim.holder.port });
 				return null;
 			}
-			if (this.#closed) {
+			if (this.#closed !== null) {
 				await claim.release();
 				return null;
 			}
@@ -971,7 +979,7 @@ export class AgentRunner {
 		// Closed while the checkout was made: close() found no process to
 		// stop and waits for this pump, so a start now would hold it until
 		// the start times out (close removes the checkout after).
-		if (this.#closed) return null;
+		if (this.#closed !== null) return null;
 		// ACP went off while the checkout was made: nothing spawns.
 		if (this.#off()) {
 			this.#set("off");
@@ -993,6 +1001,7 @@ export class AgentRunner {
 				command: config.command,
 				args: config.args,
 				env: agentEnv(config.env),
+				secrets: Object.values(config.env),
 				// The tree's parent, as before: a PR's own harness config (hooks,
 				// MCP servers, allow rules) in the tree is never the agent's.
 				cwd: this.#checkout.dir,
@@ -1081,7 +1090,7 @@ export class AgentRunner {
 	}
 
 	#onExit(proc: Proc, code: number | null, signal: string | null): void {
-		if (proc.stopping || this.#closed) return;
+		if (proc.stopping || this.#closed !== null) return;
 		if (this.#proc === proc) this.#proc = null;
 		proc.stopping = true;
 		this.#crashes++;

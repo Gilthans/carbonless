@@ -18,13 +18,15 @@ uses is checked for WCAG AA in `src/web/theme.test.ts`; add new pairs there.
 | `line` / `line-strong` / `edge` | decorative dividers / outlines of controls (3:1) / floating layers, scrollbars. The file tree's resize handle is a `line` rule, `line-strong` under the pointer and `accent` (2px) while focused or dragged |
 | `ink` `ink-soft` `muted` `faint` | text, strongest to weakest (all 4.5:1 on every surface) |
 | `label` | letter-spaced violet capitals for section labels |
+| `invisible` `invisible-strong` | hidden characters in code, nothing else: near-neutral stone greys, apart from the comment color and `faint`; not for text. `invisible`: whitespace marks (spaces, tabs, line endings) and the 10% chip behind an escape; `invisible-strong`: the escape's label, a notch up |
 | `accent` `link` | focus rings, the pointed-at cluster rail, selected segment, current file; links. `accent` is also unread: the dot on an agent pill, handle or bubble (and in the file tree) for an agent message not seen yet, and the "new" rule above it; never a state |
 | `add-done` `del-done` | reviewed lines: quieter add/del tints, text at full contrast |
 | `ok-wash` | a finished file's header: an opaque green wash on `raised` (it sticks over the diff) |
 | `mark-tint` (utility) | `accent` at 8% as an inset shadow over every cell of a row: a thread's commented lines, and a line landed on from a thread link (it fades, instantly with reduced motion). Over add/del/context it keeps all code text at 4.5:1 and green/red apart |
-| `person-1`…`person-7`, `person-N-edge` | a person's comments in threads: an opaque wash in place of `raised` inside a border of the same hue (the edge is also their avatar fallback). Blues to violets and a stone grey: at least 40° of hue from the deleted/failing reds and 25° from the add/ok green and warn yellow (no warm hue clears both red and yellow, hence seven); all text at 4.5:1 |
-| `agent` `agent-edge` `agent-ink` | the reviewer's own agent (review buddy) and nothing else: the agent's messages (`agent` wash inside an `agent-edge` border), the agent card's border, its bubble, the sparkle and the tree's second dot. Teal: at least 40° of hue from the deleted/failing reds and 25° from the add/ok green ink, warn yellow, `done` and violet; text and the ink at 4.5:1 (theme.test.ts). The `add` wash is 17° away: the agent bubble, which sits on added rows too, is told apart by its `agent-edge` border and its `agent-ink` sparkle and count, not by its wash. Never a state colour: an agent thing that is waiting, failing or done takes `warn`, `bad` or `ok` like anything else |
+| `person-1`…`person-7`, `person-N-edge` | a person's comments in threads: an opaque wash in place of `raised` inside a border of the same hue (the edge is also their avatar fallback). Blues to violets and two greys (warm stone, cool slate): at least 40° of hue from the deleted/failing reds and 25° from the add/ok green and warn yellow (no warm hue clears both red and yellow, hence seven); never the agent's (40° of OKLCH hue from its teal, and at least 4 OKLab ×100 from its wash and edge even for a grey); in slot order neighbours take another family (navy, purple, azure, indigo, stone, violet, slate, then navy again), so the first two speakers, the commonest pair, never share a kind (theme.test.ts: OKLab distance between every two, more between neighbours); all text at 4.5:1 |
+| `agent` `agent-edge` `agent-ink` | the reviewer's own agent (review buddy) and nothing else: the agent's messages (a `raised` box inside `agent-edge` with an `agent-ink` rail on the left), the agent card's border, its bubble, the sparkle and the tree's second dot. Teal, its own colour: at least 40° of hue from the deleted/failing reds and 25° from the add/ok green ink, warn yellow, `done`, violet and every hued person tint, 40° of OKLCH hue and apart in OKLab from every person tint, greys included (so nobody's messages pass for the agent's); text and the ink at 4.5:1 (theme.test.ts). The `add` wash is 17° away: the agent bubble, which sits on added rows too, is told apart by its `agent-edge` border and its `agent-ink` sparkle and count, not by its wash. Never a state colour: an agent thing that is waiting, failing or done takes `warn`, `bad` or `ok` like anything else |
 | `span` (`span-mark` utility) | a thread's exact characters (a span comment): an opaque navy of the accent's hue behind them and a 2px `accent` underline, on top of `thread-mark`'s lines. Opaque so every code and syntax color keeps 4.5:1 on any row kind (theme.test.ts) |
+| `cluster-seam` (utility) | where a cluster starts right under another of the same colour (same state, same row kind; e.g. two blocks of an added file, both unreviewed): a 1px hairline at the top of its first row, `canvas` at 45% over the row's own colour, so each cell reads a shade darker of itself. A background image: no height, under the text and the marks' washes, not on the rail. Never between clusters of different colours (their colours already part them), nor where a kind row, a thread, a cross-off note or a collapsed whitespace row sits between (owner, 2026-11-24) |
 | `line-picked` (utility) | lines picked by their numbers in Files changed: the numbers in `ink` on `accent` at 35%, the row under a 10% accent wash; Escape clears |
 | `shade`, `shadow-*` | the one shadow color and the shadows built from it |
 | `magenta` `orange` `yellow` `teal` `violet` | brand: logo, gradients (`brand-rule`, `cta`), never meaning |
@@ -67,10 +69,17 @@ a line's only change still shows), tabs as `\t` padded to the next tab stop (the
 `.editorconfig` `tab_width`, else a numeric `indent_size`, else 4; a
 config over 64 KB is ignored; wide
 characters and emoji count two columns), line endings as `\n` / `\r\n`,
-all in `faint`. Characters that would print as nothing or as a lookalike
+all in `invisible`: a dim stone grey, upright, at about half the contrast
+of the syntax's italic blue-grey comments, so a mark never reads as code or
+as a comment (owner, 2026-11-22 and 2026-11-23: "a little more muted and
+subtle", then "even dimmer"; at most 55% of a comment's contrast, at least
+2:1 on every row, span and find, 1.4:1 inside a word mark, `theme.test.ts`). Characters that would print as nothing or as a lookalike
 blank (controls, zero widths, BOM, soft hyphen, tags, unusual spaces,
-separators, stray variation selectors) show as `\uXXXX`, named in a
-tooltip (hover or tap); bidi controls also get a `warn` tint. Settings' "Show
+separators, stray variation selectors) show as `\uXXXX` in
+`invisible-strong` on an `invisible` chip (10%), a notch above the
+whitespace marks and legible on every background (principle 2: 3:1 on
+rows, span and find, 2:1 inside a word mark), named in a tooltip (hover or tap); bidi controls get a `warn`
+tint and text instead. Settings' "Show
 hidden characters" switch hides only spaces, tabs, line endings and a
 file's byte order mark (a U+FEFF that starts its first line: encoding, not
 content; owner, 2026-11-08): other escapes always show (principle 2), and
@@ -602,8 +611,11 @@ states keep their convention colours.
   an earlier version (<short sha>)"; about a file no longer in the diff,
   as a card under the Overview's Agent threads band.
 - **The card** (`AgentThreadCard`): an `agent-edge` card, a `band` header
-  with the sparkle and the agent's name. The reviewer's messages on their
-  person tint, the agent's on `agent` inside `agent-edge`, as GitHub-flavored
+  with the sparkle and the agent's name, on `surface`. The reviewer's
+  messages on their person tint (a filled wash); the agent's apart by shape,
+  not only hue: a `raised` box inside `agent-edge` with a 3px `agent-ink`
+  rail on its left (the same in the thread agent panel and the review
+  conversation drawer), as GitHub-flavored
   Markdown through the GitHub comment sanitiser (code fences in a known
   language drawn as the diff's code rows). Waiting: a `warn` dot and
   "waiting for an agent"; with none spawned or joined, a button that opens

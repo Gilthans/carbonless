@@ -4,10 +4,11 @@ import type {
 	FileHunks,
 	FileView,
 } from "../../../shared/types";
+import { leftNo } from "../orphanLeft";
 import { hunkView } from "../whitespace";
 
 /** Where a hit is: a path, an old path, or a line on one side. */
-export type HitSide = "path" | "oldPath" | DiffSide;
+type HitSide = "path" | "oldPath" | DiffSide;
 
 /** A hit's place: file index, side, line number (0 for a path), UTF-16 column. */
 export interface HitPos {
@@ -204,7 +205,7 @@ export function fileLines(
 		for (const l of h.lines) {
 			const at: SourceLine =
 				l.kind === "del"
-					? { side: "LEFT", line: l.oldNo as number, text: l.text }
+					? { side: "LEFT", line: leftNo(l) as number, text: l.text }
 					: { side: "RIGHT", line: l.newNo as number, text: l.text };
 			if (pairs) {
 				at.hunk = h.lines;

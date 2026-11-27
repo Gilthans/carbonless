@@ -1,7 +1,18 @@
 import type { Locator, Page } from "@playwright/test";
 import { acpLog } from "../test/fake-acp/scenario";
 import { reviewThread, threadComment } from "../test/fake-gh/scenario";
-import { ask, CALC, expect, fixture, openFile, test } from "./agent-ui";
+import {
+	ask,
+	CALC,
+	chip,
+	expect,
+	fixture,
+	openFile,
+	resolveWrites,
+	reviewDrawer,
+	storedResolved,
+	test,
+} from "./agent-ui";
 import { expectNoPageOverflow } from "./files-ui";
 import { installClock, type Pr, type PrOptions } from "./fixtures";
 
@@ -296,4 +307,76 @@ test("a reply in a conversation the agent opened is a question it gets, with the
 		text: "This is such a case: v5 and v6.",
 		re: REQUEST,
 	});
+});
+
+test("from the review conversation the agent opens on a thread suggesting to resolve it: the thread shows Resolve By Agent Suggestion, the Re row names the request, and only the reviewer's press resolves (CAR-265)", async ({
+	page,
+	pr,
+	agentCrb,
+}) => {
+	// An agent turn and a page move: past 30 s on a loaded machine.
+	test.slow();
+	const p = await setup(pr);
+	const ASKED = "Which threads are fixed?";
+	const s = await agentCrb({
+		scenario: {
+			agent: AGENT,
+			answers: [
+				{
+					text: "One: {{cite:0}}.",
+					open: [{ ghThread: 0, text: "Fixed in PS 1.\n[suggest-resolve]" }],
+				},
+			],
+		},
+	});
+	await page.goto(s.url);
+	await chip(page).click();
+	const box = reviewDrawer(page).getByRole("textbox", { name: "Ask agent" });
+	await box.fill(ASKED);
+	await reviewDrawer(page)
+		.getByRole("button", { name: "Send to agent" })
+		.click();
+	const cite = reviewDrawer(page).getByTestId("agent-conversation-link");
+	await expect(cite).toHaveText(/^Thread · /);
+	await expect(cite).toHaveAttribute("data-state", "ready");
+	await cite.click();
+	const card = overviewCard(page);
+	const panel = card.getByTestId("thread-agent-panel");
+	await expect(panel).toHaveAttribute("data-open", "true");
+	// The Re row still names the request.
+	await expect(panel.getByTestId("agent-re-text")).toHaveText(`“${ASKED}”`);
+	// The opened message's text, then its own button; the marker is data.
+	await expect(panel.getByTestId("agent-message-ai")).toHaveText(
+		/^Fixed in PS 1\.\s*Resolve By Agent Suggestion$/,
+	);
+	await expect(panel).not.toContainText("[suggest-resolve]");
+	// The agent resolved nothing.
+	expect(storedResolved(p)).toBe(false);
+	expect(resolveWrites(p)).toBe(0);
+	const resolve = card.getByRole("button", { name: "Resolve", exact: true });
+	await expect(resolve).toHaveClass(/ring-ok/);
+	// Stored, not just on screen: loaded afresh (the Overview without the
+	// cite's link, so the panel starts closed), the suggestion still stands.
+	await page.goto(s.url);
+	const handle = card.getByTestId("thread-agent-button");
+	await expect(handle).toHaveAttribute("aria-pressed", "false");
+	// Opening marks it seen and slides the panel in: both settle before the
+	// press, so the button isn't moving under the click.
+	const seen = page.waitForResponse(/\/agent\/threads\/[^/]+\/seen$/);
+	await handle.click();
+	await expect(panel).toHaveAttribute("data-open", "true");
+	await seen;
+	await page.waitForFunction(() => document.getAnimations().length === 0);
+	await expect(panel.getByTestId("agent-message-ai")).toHaveText(
+		/^Fixed in PS 1\.\s*Resolve By Agent Suggestion$/,
+	);
+	await expect(resolve).toHaveClass(/ring-ok/);
+	await panel
+		.getByRole("button", { name: "Resolve By Agent Suggestion" })
+		.click();
+	await expect.poll(() => storedResolved(p)).toBe(true);
+	expect(resolveWrites(p)).toBe(1);
+	await expect(card.getByTestId("thread-head")).toContainText(
+		"Resolved thread",
+	);
 });

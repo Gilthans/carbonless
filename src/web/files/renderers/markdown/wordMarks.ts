@@ -26,12 +26,12 @@ export const INS_OPEN = "\uE002";
 export const INS_CLOSE = "\uE003";
 
 /** Any of the four marks (global: for `replace`). */
-export const SENTINELS = /[\uE000-\uE003]/g;
+const SENTINELS = /[\uE000-\uE003]/g;
 /** Any of the four marks (for `test` and `search`). */
 export const SENTINEL = /[\uE000-\uE003]/;
 
 /** Content's own sentinel code points, made harmless. */
-export const scrub = (s: string): string => s.replace(SENTINELS, "\uFFFD");
+const scrub = (s: string): string => s.replace(SENTINELS, "\uFFFD");
 
 /**
  * The longest side a block takes marks on. The line view cuts at
@@ -254,7 +254,7 @@ function emailEnd(s: Spans, text: string, i: number): number {
  * else the line view's token (a word run, or one code point). Linear over
  * the text: the spans are found once, up front.
  */
-export function mdTokenizer(text: string): (i: number) => number {
+function mdTokenizer(text: string): (i: number) => number {
 	const s = spansOf(text);
 	return (i) => {
 		const c = text[i] as string;

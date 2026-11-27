@@ -17,6 +17,8 @@ export interface AcpScenario {
 	agent: { name: string; version: string };
 	/** Print to stderr and exit 1 instead of answering initialize. */
 	initializeError?: string;
+	/** Writes `NAME=<value>` of this env variable to stderr at start (a leaky agent, CAR-59). */
+	stderrEnv?: string;
 	/**
 	 * Answers to prompts: the first whose `match` is a substring of the
 	 * latest message's text, else the last; by default one "ok". `chunks`
@@ -70,7 +72,8 @@ export interface AcpScenario {
 	mcp?: {
 		attach?: boolean;
 		replies?: "answer" | "none";
-		tools?: string[];
+		/** A tool by name (called with the token alone), or with its arguments. */
+		tools?: (string | { name: string; args?: Record<string, unknown> })[];
 		detach?: boolean;
 		strayReply?: string;
 		/** false: attaches but never calls next (an agent that ignores crb). */
@@ -81,7 +84,7 @@ export interface AcpScenario {
 }
 
 /** One `open` call of the fake agent (AcpScenario.answers[].open). */
-export interface AcpOpenStep {
+interface AcpOpenStep {
 	text: string;
 	key?: string;
 	code?: {
@@ -120,10 +123,17 @@ export interface AcpLogEntry {
 	response?: unknown;
 }
 
-/** The log at `path` (CRB_FAKE_ACP_LOG), oldest first; [] before anything was logged. */
+/**
+ * The log at `path` (CRB_FAKE_ACP_LOG), oldest first; [] before anything was
+ * logged. Only whole lines: a read while the fake's append is under way can
+ * see part of its line (one write() isn't atomic to a reader; CAR-305), and
+ * that entry isn't logged until its newline is.
+ */
 export function acpLog(path: string): AcpLogEntry[] {
 	if (!existsSync(path)) return [];
-	return readFileSync(path, "utf8")
+	const text = readFileSync(path, "utf8");
+	return text
+		.slice(0, text.lastIndexOf("\n") + 1)
 		.split("\n")
 		.filter(Boolean)
 		.map((line) => JSON.parse(line) as AcpLogEntry);

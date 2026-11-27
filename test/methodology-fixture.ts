@@ -43,13 +43,8 @@ export const mergesBase = (update: Update): boolean =>
 	update === "merge-base-in" || update === "merge-base-in-conflict";
 
 /** How the PR is landed (or not). */
-export const LANDINGS = [
-	"open",
-	"merge-commit",
-	"squash",
-	"rebase-merge",
-] as const;
-export type Landing = (typeof LANDINGS)[number];
+const LANDINGS = ["open", "merge-commit", "squash", "rebase-merge"] as const;
+type Landing = (typeof LANDINGS)[number];
 
 export interface Methodology {
 	update: Update;
@@ -103,7 +98,7 @@ export const BEFORE_LANDING = "2026-01-05T12:00:00Z";
 export type Stage = "opened" | "updated" | "landed";
 
 /** The PR's intended change as one comparison in the repo, and its paths in diff order. */
-export interface Reference {
+interface Reference {
 	base: string;
 	head: string;
 	paths: string[];

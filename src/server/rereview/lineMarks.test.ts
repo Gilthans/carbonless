@@ -47,6 +47,24 @@ describe("sinceLineSources (CAR-195)", () => {
 		]);
 	});
 
+	it("an added line's index counts past its cluster's removed lines; a removed line's is its rank", () => {
+		// R replaced two lines with two: its added lines are its lines 2 and 3.
+		const lines = sinceLineSources(
+			new Map([then("R", ["new a", "new b"], ["old a", "old b"])]),
+			keyed("R", 7, 9),
+			keyed("R", 20, 22),
+			["", "", "", "", "", "", "new a", "new b"],
+		);
+		expect([7, 8].map(lines.added)).toEqual([
+			{ key: "R", index: 2 },
+			{ key: "R", index: 3 },
+		]);
+		expect([20, 21].map(lines.removed)).toEqual([
+			{ key: "R", index: 0 },
+			{ key: "R", index: 1 },
+		]);
+	});
+
 	it("a slider twin above the run stands for the run's last line; nothing slides past a different line", () => {
 		const lines = () =>
 			sinceLineSources(new Map([then("K", K)]), keyed("K", 3, 6), {}, old);

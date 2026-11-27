@@ -30,7 +30,7 @@ import {
 } from "./placement.js";
 
 /** Where a thread comes from: an agent thread, or a GitHub review thread. */
-export type ThreadSource = "agent" | "github";
+type ThreadSource = "agent" | "github";
 
 /** A thread named by its source and id (a lowercase ULID, or GitHub's node id). */
 export interface ThreadRef {

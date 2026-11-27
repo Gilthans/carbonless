@@ -29,6 +29,7 @@ import {
 	stopChild,
 } from "./crb-process";
 import {
+	crbEnv,
 	createPr,
 	OWNER_REPO,
 	PR_NUMBER,
@@ -43,7 +44,6 @@ import {
 
 export { type CrbClient, clientRequest, NeedsCliError } from "./crb-open";
 export {
-	type CrbExit,
 	CrbExitError,
 	CrbStartTimeout,
 	runCli,
@@ -51,12 +51,7 @@ export {
 	startServe,
 	stopChild,
 } from "./crb-process";
-export type {
-	Pr,
-	PrOptions,
-	ThreadJson,
-	ViewJson,
-} from "./pr-setup";
+export type { Pr, PrOptions } from "./pr-setup";
 export { OWNER_REPO, PR_NUMBER, SharedServer };
 
 /**
@@ -115,6 +110,37 @@ export async function installClock(page: Page): Promise<void> {
 }
 
 /**
+ * With the page's clock paused (`pauseAt`), moves it `stepMs` at a time
+ * until `target` shows, giving the page real time between moves (its
+ * fetches answer in real time; what follows them may wait on a timer, as
+ * TanStack Query's notifications do). Fails once `maxMs` of page time has
+ * passed: a test that must stay short of an app timer (CAR-296's step
+ * line) bounds the page time it spends here. Each move first gives the
+ * page up to 150 ms of real time (a short expect, not a sleep), so the
+ * real time spent is at most `maxMs / stepMs × 150 ms` (15 s at the
+ * defaults) before it throws.
+ */
+export async function advanceUntilVisible(
+	page: Page,
+	target: Locator,
+	{ stepMs = 10, maxMs = 1_000 } = {},
+): Promise<void> {
+	for (let spent = 0; ; spent += stepMs) {
+		const shown = await expect(target.first())
+			.toBeVisible({ timeout: 150 })
+			.then(
+				() => true,
+				() => false,
+			);
+		if (shown) return;
+		if (spent >= maxMs) {
+			throw new Error(`Not visible after ${maxMs} ms of page time: ${target}`);
+		}
+		await page.clock.runFor(stepMs);
+	}
+}
+
+/**
  * Runs a test's setup step (a fixture repo, starting crb) and gives the test
  * back the time it took: on a loaded machine these take seconds, and the
  * test's own timeout is for its own steps. START_TIMEOUT_MS
@@ -162,6 +188,11 @@ export const test = base.extend<
 		crbClient: CrbClient;
 		/** Which crb serve startCrb uses (CrbServer); serve flags always get the test's own. */
 		crbServer: CrbServer;
+		/**
+		 * The test's own crb serve traces into `<workdir>/trace` with the
+		 * page's spans on (browser-trace.spec.ts); needs crbServer "own".
+		 */
+		browserTrace: boolean;
 		/** The test's PR on the fake GitHub: its own on a shared server, else acme/widget#7. */
 		ownerRepo: string;
 		prNumber: number;
@@ -191,6 +222,7 @@ export const test = base.extend<
 	}
 >({
 	crbClient: ["http", { option: true }],
+	browserTrace: [false, { option: true }],
 	crbServer: ["shared", { option: true }],
 
 	sharedCrb: [
@@ -275,6 +307,7 @@ export const test = base.extend<
 			context,
 			crbClient,
 			crbServer,
+			browserTrace,
 			sharedCrb,
 			ownerRepo,
 			prNumber,
@@ -283,6 +316,11 @@ export const test = base.extend<
 		use,
 		info,
 	) => {
+		if (browserTrace && crbServer !== "own") {
+			throw new Error(
+				'browserTrace needs its own crb serve: test.use({ crbServer: "own", browserTrace: true })',
+			);
+		}
 		// Page requests nest under the test in its trace, also on a server
 		// another test started.
 		const parent = process.env.TRACEPARENT;
@@ -311,7 +349,18 @@ export const test = base.extend<
 			if (!current || !live) {
 				current = await base.step(
 					"setup: crb serve",
-					() => startServe(workdir, serve),
+					() =>
+						startServe(
+							workdir,
+							serve,
+							browserTrace
+								? {
+										...crbEnv(workdir),
+										CRB_TRACE_DIR: join(workdir, "trace"),
+										CRB_TRACE_BROWSER: "1",
+									}
+								: undefined,
+						),
 					{ box: true },
 				);
 				currentFlags = serve.join(" ");
@@ -650,7 +699,7 @@ export async function expectEveryUnitMarkable(
  * animation frames, so it isn't meant for a page with a paused clock
  * (`installClock` + `pauseAt`).
  */
-export async function clickPlaced(control: Locator): Promise<void> {
+async function clickPlaced(control: Locator): Promise<void> {
 	await placedBox(control);
 	await control.click();
 }

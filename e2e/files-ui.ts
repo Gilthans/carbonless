@@ -54,6 +54,42 @@ export const fileSection = (page: Page, path: string) =>
 const narrow = (page: Page) => (page.viewportSize()?.width ?? 1280) < 768;
 
 /**
+ * Taps the phone's floating Files button. It makes way while a card's
+ * control (a composer's, a thread's) is under it (CAR-248): then, and only
+ * then (`data-fab-hidden="card"`, checked, so a button hidden for any other
+ * reason still fails), the page scrolls to its end, where the diff's
+ * bottom room keeps every card clear of it. Tried again until the tap
+ * lands: it can hide just after a look found it shown (a jump's scroll
+ * settling a card under it). A try whose tap landed just as its timeout ran
+ * out (a loaded machine) still opened the sheet: the next try sees it open
+ * and stops, rather than tapping a button the sheet now covers (CAR-239).
+ * Only after a tap of its own: a sheet an earlier step left open still fails.
+ */
+export async function tapFilesButton(page: Page) {
+	const button = page.getByRole("button", { name: "Files", exact: true });
+	const any = page.locator(
+		'button[aria-label="Files"][aria-haspopup="dialog"]',
+	);
+	const sheet = page.getByRole("dialog", { name: "Files" });
+	let tapped = false;
+	await expect(async () => {
+		if (tapped && (await sheet.isVisible())) return;
+		const why = await any.getAttribute("data-fab-hidden", { timeout: 1000 });
+		if (why !== null) {
+			expect(why, "the Files button is hidden only by a card under it").toBe(
+				"card",
+			);
+			await page.evaluate(() =>
+				window.scrollTo(0, document.documentElement.scrollHeight),
+			);
+		}
+		// Set before the tap: one that times out may still have landed.
+		tapped = true;
+		await button.click({ timeout: 1000 });
+	}).toPass({ timeout: 10_000 });
+}
+
+/**
  * Runs `use` with the file tree: the sidebar on desktop, the sheet behind the
  * floating Files button on a phone (closed again afterwards).
  */
@@ -61,9 +97,8 @@ export async function withTree(
 	page: Page,
 	use: (tree: Locator) => Promise<void>,
 ) {
-	const button = page.getByRole("button", { name: "Files", exact: true });
 	const sheet = narrow(page);
-	if (sheet) await button.click();
+	if (sheet) await tapFilesButton(page);
 	const tree = page.getByTestId("file-tree");
 	await expect(tree).toBeVisible();
 	await use(tree);
@@ -78,8 +113,7 @@ export async function withTree(
 
 /** Picks a file in the tree (from the sheet on a phone, which then closes). */
 export async function pickInTree(page: Page, name: RegExp) {
-	const button = page.getByRole("button", { name: "Files", exact: true });
-	if (narrow(page)) await button.click();
+	if (narrow(page)) await tapFilesButton(page);
 	await page.getByTestId("file-tree").getByRole("button", { name }).click();
 	await expect(page.getByRole("dialog", { name: "Files" })).toBeHidden();
 }
@@ -177,13 +211,25 @@ export async function underStack(row: Locator) {
 export const rowTop = async (row: Locator) =>
 	(await row.boundingBox())?.y ?? Number.NaN;
 
-/** Sets a Settings switch (by its label) and closes Settings again. */
+/**
+ * Sets a Settings switch (by its label) and closes Settings again. By
+ * keyboard (Enter on the focused button), not a click: a click lands where
+ * the button was when Playwright found it stable, and the header can still
+ * reflow under it (a mark's patch set landing shortens the page: the header
+ * expands and the agent chip moves into the title row, taking Settings
+ * about 48px right and 24px down), so press and release hit different
+ * elements and Settings never opens (CAR-304). The gear's own click is
+ * covered by settings.spec.ts (desktop and phone) and inlineDiff.spec.ts.
+ */
 export async function setSwitch(page: Page, label: string, on: boolean) {
 	const gear = page.getByRole("button", { name: "Settings", exact: true });
-	if ((await gear.getAttribute("aria-expanded")) !== "true") await gear.click();
+	if ((await gear.getAttribute("aria-expanded")) !== "true") {
+		await gear.press("Enter");
+	}
+	await expect(gear).toHaveAttribute("aria-expanded", "true");
 	const toggle = page.getByRole("switch", { name: label });
 	if ((await toggle.getAttribute("aria-checked")) !== String(on)) {
-		await toggle.click();
+		await toggle.press("Enter");
 	}
 	await expect(toggle).toHaveAttribute("aria-checked", String(on));
 	await page.keyboard.press("Escape");

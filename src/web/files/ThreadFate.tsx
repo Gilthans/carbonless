@@ -6,10 +6,13 @@ import {
 	CircleSlashIcon,
 	DiffRemovedIcon,
 	FileRemovedIcon,
+	GitBranchIcon,
 	GitCompareIcon,
 	HistoryIcon,
 	type Icon,
 	QuestionIcon,
+	StopIcon,
+	UnverifiedIcon,
 	VersionsIcon,
 } from "@primer/octicons-react";
 import { useQuery } from "@tanstack/react-query";
@@ -19,6 +22,7 @@ import {
 	type ReactNode,
 	useCallback,
 	useContext,
+	useEffect,
 	useId,
 	useMemo,
 	useRef,
@@ -37,6 +41,7 @@ import { CentredWithHandle } from "../agent/ThreadAgentButton";
 import { AgentCover } from "../agent/ThreadAgentPanel";
 import { ThreadAgentContext, useThreadAgent } from "../agent/threadAgent";
 import { placementsQuery, type RereviewTo, sessionQuery } from "../api";
+import { useMessageCopy } from "../messageCopy";
 import { Badge, BotIcon, Chip, SkeletonBar } from "../overview/parts";
 import { RelativeTime } from "../RelativeTime";
 import { useReviewId } from "../reviewId";
@@ -54,6 +59,7 @@ import {
 } from "../threads/Conversation";
 import { MoreToggle, useReplyCount } from "../threads/MoreToggle";
 import { Avatar, usePerson } from "../threads/people";
+import { FullDiffLink } from "./FullDiffLink";
 import { type ThreadFocus, useFocusCard } from "./threadFocus";
 import {
 	firstWords,
@@ -63,7 +69,7 @@ import {
 	movesOf,
 	useMovable,
 } from "./threadMove";
-import type { Placements } from "./threadPlacement";
+import { madeOnHead, type NotHere, type Placements } from "./threadPlacement";
 
 /**
  * What the page knows of the threads' places in the viewed snapshot
@@ -76,6 +82,11 @@ export interface PlacementInfo {
 	pending: boolean;
 	/** They couldn't be computed (each card says so; the page offers a retry). */
 	error: Error | null;
+	/**
+	 * Asking again after a partial answer failed (CAR-8): the threads still
+	 * `pending` in it say so instead of spinning.
+	 */
+	stalled?: Error | null;
 	/** Asks for them again. */
 	retry: () => void;
 	/** A retry after an error is under way. */
@@ -114,7 +125,7 @@ export const PlacementProvider = PlacementContext.Provider;
 export const usePlacementInfo = () => useContext(PlacementContext);
 
 /** A fate's word, icon, tone and tooltip. */
-export const FATES: Record<
+const FATES: Record<
 	Fate,
 	{
 		label: string;
@@ -185,6 +196,20 @@ export const FATES: Record<
 		tip: "The base branch changed this line since",
 		sentence: "The base changed under the commented line since the review",
 	},
+	"base-unknown": {
+		label: "base unknown",
+		icon: GitBranchIcon,
+		tone: "yellow",
+		tip: "Its old line isn't where GitHub showed it",
+		sentence: "Couldn't find the base the commented old line was on",
+	},
+	"check-failed": {
+		label: "couldn't check",
+		icon: StopIcon,
+		tone: "red",
+		tip: "GitHub's copy of its line couldn't be read",
+		sentence: "Couldn't check the commented old line against GitHub",
+	},
 };
 
 /** No fate known: the placements couldn't be computed. */
@@ -222,30 +247,53 @@ export function PlacementChip({ thread }: { thread: ReviewThread }) {
 function FateChip({ thread }: { thread: ReviewThread }) {
 	const info = usePlacementInfo();
 	const placement = info.placements?.get(thread.id);
-	if (!placement && info.error && !thread.resolved) {
+	const failed =
+		placement?.kind === "pending" ? (info.error ?? info.stalled) : info.error;
+	// Made on the viewed head, it is shown where it was made: nothing to
+	// place, so never unknown (CAR-271).
+	if (
+		(!placement || placement.kind === "pending") &&
+		failed &&
+		!thread.resolved &&
+		!madeOnHead(thread, info.viewedHead)
+	) {
 		return (
 			<Chip
 				tone="red"
 				icon={AlertIcon}
-				tip={`Where this thread sits now couldn't be computed: ${info.error.message}`}
+				tip={`Where this thread sits now couldn't be computed: ${failed.message}`}
 				testId="placement-error"
 			>
 				place unknown
 			</Chip>
 		);
 	}
-	if (!placement) {
-		return info.pending && !thread.resolved ? (
+	// Placing: all of them on their way, or this one (an old-side thread
+	// waiting for GitHub's hunk, CAR-8).
+	if (
+		placement?.kind === "pending" ||
+		(!placement && info.pending && !thread.resolved)
+	) {
+		return (
 			<span className="flex h-4 w-4 items-center" data-testid="placement-slot">
 				<Spinner label="Placing threads" size={12} />
 			</span>
-		) : null;
+		);
 	}
+	if (!placement) return null;
 	// A resolved thread is placed so it never vanishes, never to ask for
 	// attention: its chip is muted.
 	const quiet = thread.resolved;
 	if (placement.kind === "changed") {
-		return <ChangedChip thread={thread} />;
+		return (
+			<>
+				<ChangedChip thread={thread} />
+				{placement.unchecked && <UncheckedChip quiet={quiet} />}
+			</>
+		);
+	}
+	if (placement.kind === "placed" && placement.unchecked) {
+		return <UncheckedChip quiet={quiet} />;
 	}
 	if (placement.kind === "unplaced" || placement.kind === "outside") {
 		// GitHub's outdated already has its badge on the card: no second sign.
@@ -263,6 +311,23 @@ function FateChip({ thread }: { thread: ReviewThread }) {
 		);
 	}
 	return null;
+}
+
+/**
+ * An old-side line placed with nothing from GitHub to check it by, from a
+ * base other than today's merge base (CAR-8): a flag of uncertainty.
+ */
+function UncheckedChip({ quiet }: { quiet: boolean }) {
+	return (
+		<Chip
+			tone={quiet ? "gray" : "yellow"}
+			icon={UnverifiedIcon}
+			tip="Its old line couldn't be checked against GitHub"
+			testId="placement-unchecked"
+		>
+			unchecked
+		</Chip>
+	);
 }
 
 /** "changed since": a thread's line was rewritten since it was made (muted once resolved). */
@@ -341,7 +406,7 @@ export function ChangedSince({
 }
 
 /** Where a moved thread's original lines are: the move's patch set (none for a head) and file. */
-export const movedOriginalOf = (m: MovedInfo) => ({
+const movedOriginalOf = (m: MovedInfo) => ({
 	ps: "patchset" in m.on ? m.on.patchset : null,
 	path: m.path,
 });
@@ -367,7 +432,7 @@ export type OldLines = Extract<ThreadPlacement, { kind: "changed" }>["old"];
  * commented lines from `fallback` (a changed placement's `old`: the same
  * patch set's lines, never where the thread sits now); else nothing.
  */
-export function OriginalCode({
+function OriginalCode({
 	thread,
 	fallback,
 	moved,
@@ -796,6 +861,8 @@ function UnplacedReplies({
  */
 function Opener({ thread }: { thread: ReviewThread }) {
 	const opener = usePerson(thread.author, thread.avatarUrl);
+	// A long press on a phone: Copy message (its Markdown, as written).
+	const copy = useMessageCopy(thread.body || thread.excerpt);
 	if (thread.unavailable !== undefined || (thread.id === "" && thread.loaded))
 		return <UnavailableText reason={thread.unavailable ?? "unreadable"} />;
 	return (
@@ -822,6 +889,7 @@ function Opener({ thread }: { thread: ReviewThread }) {
 				<div
 					data-testid="thread-body"
 					className={`${commentSurface(opener.tint)} break-words`}
+					{...copy.press}
 				>
 					<CommentBody
 						html={thread.html}
@@ -835,10 +903,12 @@ function Opener({ thread }: { thread: ReviewThread }) {
 				<p
 					data-testid="thread-body"
 					className={`${commentSurface(opener.tint)} text-sm break-words`}
+					{...copy.press}
 				>
 					{thread.excerpt}
 				</p>
 			)}
+			{copy.menu}
 		</div>
 	);
 }
@@ -892,6 +962,60 @@ export function UnplacedThreads(props: {
 						}
 						dropPath={props.path}
 					/>
+				))}
+			</ul>
+		</div>
+	);
+}
+
+/**
+ * Threads still being placed (CAR-8: an old-side thread waiting for
+ * GitHub's hunk): a spinner pill each, laid over the top of the file's
+ * lines, so showing or hiding it moves nothing; counted nowhere. When
+ * asking again failed, each says so instead of spinning.
+ */
+export function WaitingThreads(props: { waiting: readonly ReviewThread[] }) {
+	const info = usePlacementInfo();
+	if (props.waiting.length === 0) return null;
+	const failed = info.error ?? info.stalled ?? null;
+	return (
+		<div className="relative h-0">
+			<ul
+				data-testid="placing-threads"
+				aria-busy={failed ? undefined : true}
+				className="absolute top-1 right-2 z-10 flex max-w-[calc(100%-1rem)] flex-col items-end gap-1"
+			>
+				{props.waiting.map((t) => (
+					<li
+						key={t.id}
+						data-testid="placing-thread"
+						data-thread={t.id}
+						className="flex min-h-10 max-w-full min-w-0 items-center gap-2 rounded-full border border-line bg-surface px-3 text-xs text-muted shadow-sm"
+					>
+						{failed ? (
+							<Tooltip
+								content={`Where this thread sits now couldn't be computed: ${failed.message}`}
+							>
+								{(trigger) => (
+									<span
+										{...trigger}
+										role="img"
+										aria-label="Place unknown"
+										data-testid="placing-thread-error"
+										className="flex shrink-0 text-bad"
+									>
+										<AlertIcon size={14} aria-hidden />
+									</span>
+								)}
+							</Tooltip>
+						) : (
+							<Spinner label="Placing thread" size={14} />
+						)}
+						<span className="min-w-0 truncate">
+							{t.author}
+							{t.excerpt ? ` · ${t.excerpt}` : ""}
+						</span>
+					</li>
 				))}
 			</ul>
 		</div>
@@ -975,6 +1099,18 @@ export function useSessionPlacements(
 	});
 	const answer =
 		asked && query.data && !("pending" in query.data) ? query.data : null;
+	// A failure stays shown while the query asks again by itself (a refetch
+	// clears its error), until an answer lands (CAR-271).
+	const key = asked ? JSON.stringify([readId, to]) : "";
+	const [held, setHeld] = useState<{ key: string; error: Error } | null>(null);
+	useEffect(() => {
+		if (query.error) setHeld({ key, error: query.error });
+		else if (answer) setHeld(null);
+	}, [query.error, answer, key]);
+	const error =
+		asked && answer === null
+			? (query.error ?? (held?.key === key ? held.error : null))
+			: null;
 	const placements = usePlacementMap(answer);
 	const moves = useMemo(() => movesOf(answer), [answer]);
 	const patchsets = session?.patchsets;
@@ -983,8 +1119,8 @@ export function useSessionPlacements(
 	return useMemo(
 		() => ({
 			placements,
-			pending: asked && answer === null && !query.error,
-			error: asked && answer === null ? query.error : null,
+			pending: asked && answer === null && error === null,
+			error,
 			retry: () => void query.refetch(),
 			readId: readId ?? null,
 			to,
@@ -1000,6 +1136,7 @@ export function useSessionPlacements(
 			moves,
 			asked,
 			answer,
+			error,
 			query,
 			readId,
 			toKey,
@@ -1020,5 +1157,73 @@ export function usePlacementMap(
 		() =>
 			answer ? new Map(answer.threads.map((t) => [t.id, t.placement])) : null,
 		[answer],
+	);
+}
+
+/**
+ * NotHere's word and tooltip, by why (since: the compared patch set). A
+ * file unchanged since is the same fact (the line was deleted before),
+ * said in the tooltip only. One wording wherever the since view says why
+ * a line isn't in it (CAR-255; CAR-253's landing hint).
+ */
+export function notHereText(
+	why: NotHere["why"],
+	since: number | undefined,
+): { label: string; tip: string } {
+	const ps = since === undefined ? "the compared patch set" : `PS${since}`;
+	switch (why) {
+		case "deleted-before":
+			return {
+				label: `deleted before ${ps}`,
+				tip: `Its line was deleted before ${ps}: not in this comparison`,
+			};
+		case "unchanged":
+			return {
+				label: `deleted before ${ps}`,
+				tip: `Its line was deleted before ${ps}, and the file is unchanged since ${ps}`,
+			};
+		default:
+			return {
+				label: "not in this comparison",
+				tip: "Its line isn't in this comparison",
+			};
+	}
+}
+
+/**
+ * The since view's word on a thread whose line it has no row for
+ * (CAR-255): why (NotHere, never a tracer fate: the line is where the
+ * thread says), and a link to the full diff on that line, its card opened
+ * there (FullDiffLink). Muted once resolved.
+ */
+export function NotHereNote(props: {
+	notHere: NotHere;
+	path: string;
+	since?: number;
+	resolved?: boolean;
+	/** The card to open there: a review thread's id, or an agent conversation's. */
+	open: { thread: string } | { conversation: string };
+}) {
+	const { label, tip } = notHereText(props.notHere.why, props.since);
+	return (
+		<span data-testid="not-here" className="inline-flex items-center gap-1">
+			<Chip
+				tone={props.resolved ? "gray" : "yellow"}
+				icon={CircleSlashIcon}
+				tip={tip}
+				testId="not-here-why"
+			>
+				{label}
+			</Chip>
+			<FullDiffLink
+				testId="not-here-full-diff"
+				target={{
+					path: props.path,
+					line: props.notHere.line,
+					side: props.notHere.side,
+					open: props.open,
+				}}
+			/>
+		</span>
 	);
 }

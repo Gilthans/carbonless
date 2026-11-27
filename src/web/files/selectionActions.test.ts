@@ -1,5 +1,6 @@
 import { ZapIcon } from "@primer/octicons-react";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { SAME_AS_BASE } from "../../shared/types";
 import { askAgentAvailable } from "../agent/askAgentAction";
 import { getComposers, resetComposers } from "../threads/newThreads";
 import {
@@ -174,6 +175,22 @@ describe("commentAvailable: a line only an earlier patch set had (CAR-217)", () 
 		expect(askAgentAvailable(left, ctx({ noLine: "unknown" }))).toBe(
 			NO_GITHUB_LINE,
 		);
+	});
+
+	it("a since-view line GitHub's diff hasn't: Comment off with why; Ask agent on (CAR-293)", () => {
+		const right = span();
+		expect(
+			commentAvailable(right, ctx({ inDiff: false, sameAsBase: true })),
+		).toBe(SAME_AS_BASE);
+		expect(SAME_AS_BASE).toBe(
+			"Same as the base: GitHub can't take a comment here",
+		);
+		expect(commentAvailable(right, ctx({ inDiff: false }))).toBe(
+			"GitHub only takes comments on lines in the diff",
+		);
+		expect(
+			askAgentAvailable(right, ctx({ inDiff: false, sameAsBase: true })),
+		).toBe(true);
 	});
 
 	it("Ask agent is off there too (the agent reads a LEFT line in the base)", () => {

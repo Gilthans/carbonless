@@ -26,10 +26,10 @@ import { codeLinkSearch } from "./codeLinks";
 import { openReviewDrawer } from "./drawerStore";
 
 /** An agent thread or message id: a lowercase ULID. */
-export const ULID = /^[0-9a-hjkmnp-tv-z]{26}$/;
+const ULID = /^[0-9a-hjkmnp-tv-z]{26}$/;
 
 /** A citation the agent writes in a reply: `crb:c/<thread id>`. */
-export const CITATION = /crb:c\/([0-9a-hjkmnp-tv-z]{26})(?![0-9a-z])/g;
+const CITATION = /crb:c\/([0-9a-hjkmnp-tv-z]{26})(?![0-9a-z])/g;
 
 /** Where a conversation is, in a few words: `path:start–end`, `path`, or "Thread · <author>". */
 export function conversationLabel(

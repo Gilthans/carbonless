@@ -1,6 +1,12 @@
 import { CommentIcon, type Icon } from "@primer/octicons-react";
-import type { DiffSide, FileSummary, PrOverview } from "../../shared/types";
+import {
+	type DiffSide,
+	type FileSummary,
+	type PrOverview,
+	SAME_AS_BASE,
+} from "../../shared/types";
 import { openComposer } from "../threads/newThreads";
+import type { NoLine } from "./codeSpan";
 
 /**
  * What a selection in Files changed points at, whatever is done with it: a
@@ -41,12 +47,17 @@ export interface SelectionContext {
 	 * view doesn't know (CAR-217), or the earlier patch set's lines mixed
 	 * with the head's (CAR-233).
 	 */
-	noLine?: "earlier" | "unknown" | "mixed" | "renamed" | "split";
+	noLine?: NoLine;
 	/**
 	 * The diff on screen is not yet the viewed head's (a Refresh moved the
 	 * head first): its lines would be named on the wrong commit.
 	 */
 	headUnsure?: boolean;
+	/**
+	 * The since view: an end of the span (`inDiff` false) is a line GitHub's
+	 * diff hasn't, though the view shows it as changed (CAR-293).
+	 */
+	sameAsBase?: boolean;
 	/** An earlier patch set (read-only): GitHub's comments go on the latest. */
 	readOnly?: boolean;
 }
@@ -70,11 +81,18 @@ export const NO_GITHUB_LINE = "Can't place this line on GitHub's diff";
 export const RENAMED_SINCE = "Renamed since the earlier patch set";
 
 /** Why nothing can start on an earlier patch set's lines that aren't one run there. */
-export const SPLIT_EARLIER = "Not one range on the earlier patch set";
+const SPLIT_EARLIER = "Not one range on the earlier patch set";
 
-export const noLineReason = (
-	why: "earlier" | "unknown" | "mixed" | "renamed" | "split",
-) =>
+/**
+ * Why nothing can start on a since-view orphan removed line (CAR-216)
+ * with lines outside its run (CAR-276).
+ */
+const ORPHAN_MIXED = "Mixes lines not reviewed earlier with others";
+
+/** Why nothing can start on orphan removed lines whose base lines aren't one run. */
+const ORPHAN_SPLIT = "Not one range of base lines";
+
+export const noLineReason = (why: NoLine) =>
 	why === "earlier"
 		? EARLIER_ONLY
 		: why === "mixed"
@@ -83,7 +101,11 @@ export const noLineReason = (
 				? RENAMED_SINCE
 				: why === "split"
 					? SPLIT_EARLIER
-					: NO_GITHUB_LINE;
+					: why === "orphan"
+						? ORPHAN_MIXED
+						: why === "orphan-split"
+							? ORPHAN_SPLIT
+							: NO_GITHUB_LINE;
 
 /** Why nothing can start on a span while the diff shown isn't the head's. */
 export const HEAD_UNSURE = "The new head's diff is loading";
@@ -106,7 +128,7 @@ export interface SelectionAction {
  * Whether GitHub takes a comment on a line that only expanded context shows
  * (outside every hunk): it doesn't (422), so Comment is off there.
  */
-export const COMMENT_OUTSIDE_HUNKS = false;
+const COMMENT_OUTSIDE_HUNKS = false;
 
 const sides = (span: CodeSpan): DiffSide[] =>
 	span.subject === "file"
@@ -135,7 +157,9 @@ export function commentAvailable(
 	// Checked on GitHub: a line only expanded context shows is refused (a
 	// range across hunks is taken).
 	if (!COMMENT_OUTSIDE_HUNKS && ctx.inDiff === false) {
-		return "GitHub only takes comments on lines in the diff";
+		return ctx.sameAsBase
+			? SAME_AS_BASE
+			: "GitHub only takes comments on lines in the diff";
 	}
 	return true;
 }

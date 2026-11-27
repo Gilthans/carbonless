@@ -14,6 +14,7 @@ import { dirname, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
 	fakeGhEnv,
+	release,
 	type Scenario,
 	writeScenario,
 } from "../../test/fake-gh/scenario";
@@ -24,11 +25,14 @@ import {
 	testGitEnv,
 } from "../../test/git-fixture";
 import { settleGh } from "../../test/settle-gh";
+import { fakeDelay } from "../../test/sleep";
+import { Activity, beginCall, runIn } from "./activity";
 import {
 	clonePath,
 	ensureClone,
 	ensureRepoInit,
 	fetchPr,
+	isCloning,
 	withRepoLock,
 } from "./clone";
 import { GhError, type PrMeta } from "./gh";
@@ -233,14 +237,19 @@ describe("private clone", () => {
 	it("ensureRepoInit doesn't wait for the lock when the repo exists (a clone running)", async () => {
 		const path = await ensureRepoInit("acme", "widget");
 		let release = () => {};
+		let locked = false;
 		const held = withRepoLock(
 			path,
-			() => new Promise<void>((r) => (release = r)),
+			() =>
+				new Promise<void>((r) => {
+					locked = true;
+					release = r;
+				}),
 		);
-		await new Promise((r) => setTimeout(r, 50));
-		const started = Date.now();
+		await vi.waitFor(() => expect(locked).toBe(true));
+		// Answers while the lock is still held: waiting for it would hang
+		// (the test's timeout), as only this test releases it, afterwards.
 		expect(await ensureRepoInit("acme", "widget")).toBe(path);
-		expect(Date.now() - started).toBeLessThan(1000);
 		release();
 		await held;
 	});
@@ -253,6 +262,131 @@ describe("private clone", () => {
 		await ensureRepoInit("acme", "widget");
 		expect(refs()).toBe(before);
 		expect(configOf(path, "crb.initOnly")).toBe("");
+	});
+
+	it("says a repo is cloning only while its first clone runs, for every spelling (CAR-291)", async () => {
+		scenario({ hold: ["clone"] });
+		let atStart: boolean | undefined;
+		const first = ensureClone("Acme", "Widget", () => {
+			atStart = isCloning("acme", "widget");
+		});
+		// Held in `gh repo clone`: cloning, whoever asks and however spelled.
+		await vi.waitFor(() => expect(ghLog()).toMatch(/^repo clone /m));
+		expect(atStart).toBe(true);
+		expect(isCloning("ACME", "widget")).toBe(true);
+		expect(isCloning("acme", "other")).toBe(false);
+		// An open of the same repo waits on the lock meanwhile (the repo
+		// reads as cloning for it too), and clones nothing again.
+		const waiter = ensureClone("acme", "widget");
+		release(scenarioPath, "clone");
+		await Promise.all([first, waiter]);
+		expect(isCloning("acme", "widget")).toBe(false);
+		expect(ghLog().match(/^repo clone /gm)).toHaveLength(1);
+		// The next open only fetches: never cloning.
+		const onClone = vi.fn(() => isCloning("acme", "widget"));
+		await ensureClone("acme", "widget", onClone);
+		expect(onClone).not.toHaveBeenCalled();
+		expect(isCloning("acme", "widget")).toBe(false);
+		// A failed clone isn't left cloning.
+		scenario({ repoPath: join(tmp, "does-not-exist") });
+		await expect(ensureClone("acme", "gone")).rejects.toThrow();
+		expect(isCloning("acme", "gone")).toBe(false);
+	});
+
+	it("says an init-only repo is cloning while ensureClone fills it", async () => {
+		await ensureRepoInit("acme", "widget");
+		expect(isCloning("acme", "widget")).toBe(false);
+		let during: boolean | undefined;
+		await ensureClone("acme", "widget", () => {
+			during = isCloning("acme", "widget");
+		});
+		expect(during).toBe(true);
+		expect(isCloning("acme", "widget")).toBe(false);
+	});
+
+	it("a request waiting on the repo lock says what its holder in this process does; another crb's lock reads as the lock (CAR-296)", async () => {
+		const path = join(tmp, "locked.git");
+		let letGo = () => {};
+		const holding = new Promise<void>((r) => {
+			letGo = r;
+		});
+		let inside = () => {};
+		const entered = new Promise<void>((r) => {
+			inside = r;
+		});
+		const holder = new Activity();
+		const waiter = new Activity();
+		const held = runIn(holder, () =>
+			withRepoLock(path, async () => {
+				const end = beginCall("git fetch");
+				inside();
+				await holding;
+				end();
+			}),
+		);
+		await entered;
+		const waiting = runIn(waiter, () => withRepoLock(path, async () => {}));
+		await vi.waitFor(() => expect(waiter.current()?.label).toBe("git fetch"));
+		letGo();
+		await Promise.all([held, waiting]);
+		expect(waiter.size).toBe(0);
+		// The holder makes another call beside the lock's work, later: a
+		// waiter shows the lock's work, not that call.
+		let letGo2 = () => {};
+		const holding2 = new Promise<void>((r) => {
+			letGo2 = r;
+		});
+		let inside2 = () => {};
+		const entered2 = new Promise<void>((r) => {
+			inside2 = r;
+		});
+		const holder2 = new Activity();
+		const waiter2 = new Activity();
+		let endBeside = () => {};
+		const held2 = runIn(holder2, () =>
+			Promise.all([
+				withRepoLock(path, async () => {
+					const end = beginCall("git fetch");
+					inside2();
+					await holding2;
+					end();
+				}),
+				entered2.then(() => {
+					endBeside = beginCall("gh pr view");
+				}),
+			]),
+		);
+		await entered2;
+		const waiting2 = runIn(waiter2, () => withRepoLock(path, async () => {}));
+		await vi.waitFor(() => expect(waiter2.current()?.label).toBe("git fetch"));
+		// The holder's own request shows the lock's work too (the newest wait).
+		expect(holder2.current()?.label).toBe("git fetch");
+		endBeside();
+		letGo2();
+		await Promise.all([held2, waiting2]);
+		// A lock another process holds: the wait's own words.
+		writeFileSync(`${path}.lock`, "elsewhere 1 token\n");
+		const other = new Activity();
+		const blocked = runIn(other, () =>
+			withRepoLock(path, async () => {}, { timeoutMs: 60_000 }),
+		);
+		await vi.waitFor(() =>
+			expect(other.current()?.label).toBe("Waiting for the repo lock"),
+		);
+		rmSync(`${path}.lock`);
+		await blocked;
+		expect(other.size).toBe(0);
+	});
+
+	it("says the clone's step while crb clones a repo for the first time (CAR-296)", async () => {
+		scenario({ hold: ["clone"] });
+		const activity = new Activity();
+		const first = runIn(activity, () => ensureClone("acme", "widget"));
+		await vi.waitFor(() => expect(ghLog()).toMatch(/^repo clone /m));
+		expect(activity.current()?.label).toBe("Cloning acme/widget…");
+		release(scenarioPath, "clone");
+		await first;
+		expect(activity.size).toBe(0);
 	});
 
 	it("serializes concurrent opens with the lock", async () => {
@@ -454,7 +588,7 @@ describe("withRepoLock", () => {
 		const hold = (name: string, ms: number, fail = false) =>
 			withRepoLock(path, async () => {
 				order.push(`${name}+`);
-				await new Promise((r) => setTimeout(r, ms));
+				await fakeDelay(ms);
 				order.push(`${name}-`);
 				if (fail) throw new Error(`${name} failed`);
 				return name;
@@ -501,7 +635,7 @@ describe("withRepoLock", () => {
 			path,
 			async () => {
 				order.push("slow+");
-				await new Promise((r) => setTimeout(r, 4_000));
+				await fakeDelay(4_000);
 				order.push("slow-");
 			},
 			opts,
@@ -524,9 +658,16 @@ describe("withRepoLock", () => {
 		const path = join(tmp, "repo.git");
 		mkdirSync(dirname(path), { recursive: true });
 		writeFileSync(`${path}.lock`, `${hostname()} ${process.pid} live\n`);
-		setTimeout(() => rmSync(`${path}.lock`), 300);
-		const started = Date.now();
-		await withRepoLock(path, async () => {});
-		expect(Date.now() - started).toBeGreaterThanOrEqual(250);
+		let removed = false;
+		setTimeout(() => {
+			rmSync(`${path}.lock`);
+			removed = true;
+		}, 300);
+		let ranAfterRemoval: boolean | undefined;
+		await withRepoLock(path, async () => {
+			ranAfterRemoval = removed;
+		});
+		// It ran only once the other holder's lock was gone.
+		expect(ranAfterRemoval).toBe(true);
 	});
 });

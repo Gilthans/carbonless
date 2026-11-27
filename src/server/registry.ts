@@ -1,3 +1,4 @@
+import { join, shared } from "./activity.js";
 import { GitError } from "./git.js";
 import { cacheDir } from "./paths.js";
 import type { HeadSpec } from "./pinnedHead.js";
@@ -133,9 +134,10 @@ export class SessionRegistry {
 			return Promise.resolve({ id: known, session: entry.session });
 		}
 		const pending = this.#opening.get(key);
-		if (pending) return pending;
+		// Joined: a request waiting on the open shows its step (activity.ts).
+		if (pending) return join(pending);
 		const generation = this.#generation;
-		const run = (async () => {
+		const run = shared(async () => {
 			if (known !== undefined) await this.#afterClose(known);
 			const session = await Session.open(
 				req.pr,
@@ -152,7 +154,8 @@ export class SessionRegistry {
 				throw asRefusal(error);
 			});
 			if (generation !== this.#generation) {
-				this.#closeLater(session);
+				// Tracked in #closing (a reset waits for it); handled there.
+				void this.#closeLater(session);
 				throw new SessionClosedError("The server was reset");
 			}
 			const kept = this.#keep(session, req.viewer);
@@ -160,7 +163,7 @@ export class SessionRegistry {
 			kept.agent?.start();
 			this.#idOf.set(key, kept.id);
 			return { id: kept.id, session: kept };
-		})();
+		});
 		this.#opening.set(key, run);
 		// Only its own entry: a reset may have dropped it, and a newer open
 		// of the same request taken the key.
@@ -168,7 +171,7 @@ export class SessionRegistry {
 			if (this.#opening.get(key) === run) this.#opening.delete(key);
 		};
 		run.then(forget, forget);
-		return run;
+		return join(run);
 	}
 
 	/** Closes `session`, out of #open already, tracked until it has closed. */
@@ -188,11 +191,13 @@ export class SessionRegistry {
 	#keep(session: Session, viewer: string | undefined): Session {
 		const existing = this.#open.get(session.id);
 		if (this.#closed) {
-			this.#closeLater(session);
+			// Tracked in #closing (closeAll waits for it); handled there.
+			void this.#closeLater(session);
 			throw new SessionClosedError("The server is closing");
 		}
 		if (existing && !existing.session.closed && existing.viewer === viewer) {
-			this.#closeLater(session);
+			// The duplicate goes in the background, tracked in #closing.
+			void this.#closeLater(session);
 			existing.lastUsed = this.#now();
 			return existing.session;
 		}
@@ -219,9 +224,9 @@ export class SessionRegistry {
 		}
 		if (!REVIEW_ID.test(id)) throw new UnknownReviewError(`No review ${id}`);
 		const pending = this.#reopening.get(id);
-		if (pending) return pending;
+		if (pending) return join(pending);
 		const generation = this.#generation;
-		const run = (async () => {
+		const run = shared(async () => {
 			await this.#afterClose(id);
 			const found = await findReviewById(cacheDir(), id);
 			if (!found) throw new UnknownReviewError(`No review ${id}`);
@@ -241,13 +246,13 @@ export class SessionRegistry {
 				);
 			}
 			return session;
-		})();
+		});
 		this.#reopening.set(id, run);
 		const forget = () => {
 			if (this.#reopening.get(id) === run) this.#reopening.delete(id);
 		};
 		run.then(forget, forget);
-		return run;
+		return join(run);
 	}
 
 	/**
@@ -342,7 +347,8 @@ export class SessionRegistry {
 		this.#idOf.clear();
 		this.#opening.clear();
 		this.#reopening.clear();
-		for (const e of all) this.#closeLater(e.session);
+		// Not awaited here: the loop below waits for #closing, up to the deadline.
+		for (const e of all) void this.#closeLater(e.session);
 		for (const run of opens.keys()) {
 			const done = () => opens.delete(run);
 			run.then(done, done);

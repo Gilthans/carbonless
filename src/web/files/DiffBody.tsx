@@ -59,8 +59,10 @@ import {
 import {
 	type CommentScope,
 	CommentScopeProvider,
+	earlierSpan,
 	onHeadMove,
 	spanInHunks,
+	spanOffGithub,
 } from "../agent/commentOnGithub";
 import {
 	type PendingComposers,
@@ -106,12 +108,13 @@ import {
 } from "./ClusterControls";
 import { type CellLine, CODE_CELL, cellLine } from "./codeSpan";
 import { contextRanges, rangesKeyOf } from "./contextRanges";
+import { FullDiffLink, type FullDiffTarget } from "./FullDiffLink";
 import { EXPAND_STEP, fileGaps, type Gap, gapState } from "./gaps";
 import { Labelled, labelReserve } from "./HunkHeading";
 import { hiddenLines } from "./hiddenLines";
 import { languageFor } from "./highlight";
 import { KindChip } from "./KindChip";
-import type { Landing } from "./landing";
+import { earlierRow, type Landing, landingRow } from "./landing";
 import {
 	getPicks,
 	type Picks,
@@ -121,6 +124,7 @@ import {
 	setPicks,
 	usePicks,
 } from "./linePicks";
+import { isOrphanLeft, leftNo, orphanBase, rowSelector } from "./orphanLeft";
 import { type Marker, pieceMark } from "./pieceMark";
 import { type ResolveCollapse, useResolveCollapse } from "./resolveCollapse";
 import { stickyBottom } from "./scrollAnchor";
@@ -130,6 +134,7 @@ import type { KindEntry } from "./since";
 import { SinceNotes } from "./sinceNotes";
 import { StackControls, useStickyControls } from "./stickyControls";
 import { BubbleSlot, ThreadBubble } from "./ThreadBubble";
+import { notHereText } from "./ThreadFate";
 import {
 	AgentThreadRow,
 	type CardPlace,
@@ -141,10 +146,14 @@ import {
 	type FilePlacement,
 	type LineKey,
 	lineKey,
+	type NotHere,
+	notHereOf,
 	onSinceRows,
 	type Placeable,
 	type Placements,
 	placeThreads,
+	type SinceEarlier,
+	type SinceLeft,
 	sinceEarlier,
 	sinceLeft,
 } from "./threadPlacement";
@@ -211,7 +220,7 @@ export interface FileLead {
  * Side by side it sits at the right with the line bubbles, in the first
  * row's right cell when that is code (PairRow).
  */
-export function FileBubbleSlot(props: { children: ReactNode; count?: number }) {
+function FileBubbleSlot(props: { children: ReactNode; count?: number }) {
 	return (
 		<span
 			data-testid="file-bubble-slot"
@@ -326,7 +335,7 @@ function FileLabel(props: { children: ReactNode; bubble?: ReactNode }) {
  * copy), rather than mid-name; a name wider than the line still breaks
  * anywhere (FileLabel). Plain text: React escapes it.
  */
-export function breakablePath(text: string | undefined): ReactNode {
+function breakablePath(text: string | undefined): ReactNode {
 	if (!text) return null;
 	const parts = text.split("/");
 	return parts.map((part, i) =>
@@ -436,6 +445,10 @@ interface WsLine {
 	psNo?: number;
 	/** Its removed line's, in the since view (DiffLine.psMoved). */
 	psMoved?: true;
+	/** Its removed line's, in the since view (DiffLine.orphan, CAR-276). */
+	orphan?: true;
+	/** Its added line's, in the since view (DiffLine.offGithub). */
+	offGithub?: true;
 }
 
 /** What a diff row shows: a line as it is, or a whitespace-only pair. */
@@ -453,6 +466,8 @@ const rowLine = (row: DiffRow): RowLine => {
 		...(row.del?.baseNo === undefined ? {} : { baseNo: row.del.baseNo }),
 		...(row.del?.psNo === undefined ? {} : { psNo: row.del.psNo }),
 		...(row.del?.psMoved ? { psMoved: true as const } : {}),
+		...(row.del?.orphan ? { orphan: true as const } : {}),
+		...(row.add?.offGithub ? { offGithub: true as const } : {}),
 	};
 };
 
@@ -468,6 +483,8 @@ const sideLine = (line: DiffLine, ws: boolean): RowLine =>
 				...(line.baseNo === undefined ? {} : { baseNo: line.baseNo }),
 				...(line.psNo === undefined ? {} : { psNo: line.psNo }),
 				...(line.psMoved ? { psMoved: true as const } : {}),
+				...(line.orphan ? { orphan: true as const } : {}),
+				...(line.offGithub ? { offGithub: true as const } : {}),
 			}
 		: line;
 
@@ -478,6 +495,22 @@ const sideLine = (line: DiffLine, ws: boolean): RowLine =>
  */
 const baseAttr = (baseNo: number | null | undefined) =>
 	baseNo === undefined ? undefined : baseNo === null ? "" : baseNo;
+
+/** A number cell's pick button. */
+const NUMBER_BUTTON =
+	"block w-full cursor-pointer text-right hover:text-ink focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-accent";
+
+/** A number button with no number to show (a since-view orphan removed row's). */
+const NO_NUMBER = "\u00a0";
+
+/**
+ * Where a row's old side is, as its bubble names it: its old number, or a
+ * since-view orphan removed row's base line (it has no old number there).
+ */
+const oldWhere = (line: RowLine) =>
+	line.oldNo === undefined && typeof line.baseNo === "number"
+		? `on base line ${line.baseNo}`
+		: `on old line ${line.oldNo}`;
 
 /** Which side(s) a whitespace-only row shows (tests). */
 const wsSide = (line: WsLine) =>
@@ -636,6 +669,20 @@ const rowState = (
 		? lineState(r.line)
 		: combined([r.del, r.add], lineState, state);
 
+/**
+ * A changed row's colour, for the seams between clusters (HunkRows): its
+ * state and its kind (a pair row's two sides); a gone run's are red. Null
+ * for a row with no cluster colour (context, no state).
+ */
+const toneOf = (
+	state: ClusterView["state"] | undefined,
+	kind: string,
+	gone: boolean,
+): string | null =>
+	state === undefined || kind === "context"
+		? null
+		: `${state}:${kind}${gone ? ":gone" : ""}`;
+
 const pairState = (
 	r: SideRow,
 	lineState: (line: DiffLine | undefined) => ClusterView["state"] | undefined,
@@ -724,7 +771,7 @@ export function codeCellOf(line: RowLine): {
 } {
 	// A context line is one line, always RIGHT (the spec's cells contract).
 	if (line.kind === "del" || line.newNo === undefined) {
-		return { side: "LEFT", line: line.oldNo as number };
+		return { side: "LEFT", line: leftNo(line) as number };
 	}
 	return { side: "RIGHT", line: line.newNo };
 }
@@ -773,6 +820,12 @@ interface NumberPick {
 	label: string;
 	button: boolean;
 	picked: boolean;
+	/**
+	 * A since-view removed orphan row's (CAR-276): its button shows no
+	 * number (the old side is the compared patch set's, which hasn't the
+	 * line) and is named by its base line.
+	 */
+	orphan?: boolean;
 }
 
 /** The pick a number makes for code cell `code`: its key, its name, whether it is picked. */
@@ -782,11 +835,15 @@ const pickOf = (
 	picker: Picker | undefined,
 ): NumberPick => {
 	const key = pickKey(code);
+	const orphan = code.side === "LEFT" && isOrphanLeft(code.line);
 	return {
 		key,
-		label: `${code.side === "LEFT" ? "Old line" : "Line"} ${code.line}`,
+		label: orphan
+			? `Base line ${orphanBase(code.line)}`
+			: `${code.side === "LEFT" ? "Old line" : "Line"} ${code.line}`,
 		button,
 		picked: picker?.keys.has(key) ?? false,
+		...(orphan ? { orphan } : {}),
 	};
 };
 
@@ -1002,10 +1059,35 @@ function NumberCell(props: {
 					aria-pressed={pick.picked}
 					onKeyDown={picker.onKeyDown}
 					onFocus={() => picker.onFocus(stopOf(props.side, pick.key))}
-					className="block w-full cursor-pointer text-right hover:text-ink focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-accent"
+					className={NUMBER_BUTTON}
 				>
 					{n}
 				</button>
+			) : picker && pick?.button && pick.orphan ? (
+				// No number to show: its name says which line it picks (CAR-276).
+				<Tooltip content={pick.label} describe={false} lazy>
+					{(trigger) => (
+						<button
+							{...trigger}
+							type="button"
+							data-pick={pick.key}
+							tabIndex={picker.roving === stopOf(props.side, pick.key) ? 0 : -1}
+							aria-label={pick.label}
+							aria-pressed={pick.picked}
+							onKeyDown={(e) => {
+								trigger.onKeyDown(e);
+								picker.onKeyDown(e);
+							}}
+							onFocus={(e) => {
+								trigger.onFocus(e);
+								picker.onFocus(stopOf(props.side, pick.key));
+							}}
+							className={NUMBER_BUTTON}
+						>
+							{NO_NUMBER}
+						</button>
+					)}
+				</Tooltip>
 			) : (
 				n
 			)}
@@ -1065,6 +1147,7 @@ function CodeCell(props: {
 			data-len={line.text.length}
 			data-hunk={props.hunk}
 			data-order={props.order}
+			data-orphan={line.orphan || undefined}
 			data-kind={cell ? line.kind : undefined}
 			data-landed={cell?.landed || undefined}
 			data-commented={cell?.commented ? "" : undefined}
@@ -1146,6 +1229,11 @@ interface RowProps {
 	pendingWords?: ReadonlySet<DiffLine>;
 	/** The paired lines whose word marks couldn't be computed (wordWork.ts). */
 	failedWords?: ReadonlySet<DiffLine>;
+	/**
+	 * The row starts a cluster right under another of the same colour
+	 * (HunkRows): a darker hairline at its top edge (`cluster-seam`).
+	 */
+	seam?: boolean;
 }
 
 /** The spans painted over a cell's characters: those of the threads on its keys. */
@@ -1385,7 +1473,7 @@ function LineRow(props: RowProps & { line: RowLine; order?: number }) {
 		(line.kind === "ws" &&
 			ending.length > 0 &&
 			ending.every((t) => t.anchor?.side === "LEFT"));
-	const where = onOld ? `on old line ${line.oldNo}` : `on line ${line.newNo}`;
+	const where = onOld ? oldWhere(line) : `on line ${line.newNo}`;
 	// The commented range: the accent stripe and tinted numbers (thread-mark),
 	// unlike a landed line's tint and rail; not while it is landed on.
 	const mark = commented && landed !== "on" ? "thread-mark" : "";
@@ -1410,11 +1498,14 @@ function LineRow(props: RowProps & { line: RowLine; order?: number }) {
 				data-base-no={baseAttr(line.baseNo)}
 				data-ps-no={line.psNo}
 				data-ps-moved={line.psMoved || undefined}
+				data-orphan={line.orphan || undefined}
+				data-off-github={line.offGithub || undefined}
 				data-landed={landed === "on" || undefined}
 				data-commented={commented ? "" : undefined}
 				data-picked={isPicked || undefined}
 				data-find-current={current || undefined}
-				className={`${rowBg} ${landed ? LANDED_CLASS[landed] : ""} ${mark} ${isPicked ? "line-picked" : ""} ${current ? "mark-tint" : ""}`}
+				data-seam={props.seam || undefined}
+				className={`${rowBg} ${landed ? LANDED_CLASS[landed] : ""} ${mark} ${isPicked ? "line-picked" : ""} ${current ? "mark-tint" : ""} ${props.seam ? "cluster-seam" : ""}`}
 			>
 				<Rail state={state} gone={props.gone} />
 				<ControlsCell>{props.checkbox}</ControlsCell>
@@ -1617,7 +1708,7 @@ function PairRow(
 				line,
 				row.del,
 				threads ? rowKeys(line) : [],
-				`on old line ${line.oldNo}`,
+				oldWhere(line),
 			);
 		}
 		if (row.add) {
@@ -1743,10 +1834,13 @@ function PairRow(
 				data-base-no={baseAttr(left?.line.baseNo)}
 				data-ps-no={left?.line.psNo}
 				data-ps-moved={left?.line.psMoved || undefined}
+				data-orphan={left?.line.orphan || right?.line.orphan || undefined}
+				data-off-github={right?.line.offGithub || undefined}
 				data-landed={phase === "on" || undefined}
 				data-commented={commented ? "" : undefined}
 				data-picked={isPicked || undefined}
-				className={phase ? LANDED_ROW[phase] : ""}
+				data-seam={props.seam || undefined}
+				className={`${phase ? LANDED_ROW[phase] : ""} ${props.seam ? "cluster-seam" : ""}`}
 			>
 				<Rail state={state} gone={props.gone} />
 				<ControlsCell>{props.checkbox}</ControlsCell>
@@ -1855,6 +1949,30 @@ function BubbleRow(props: {
  * A row above a cluster's lines saying what happened to it since the
  * compared patch set (KindChip): reworked, new, gone, or carried.
  */
+/** A cluster's chip kind on its KindRow: gone, reworked, new or carried. */
+const kindOf = (
+	entry: KindEntry | undefined,
+	carried: ClusterView["carried"],
+) =>
+	entry?.kind === "gone"
+		? "gone"
+		: entry?.kind === "reworked" || entry?.kind === "new"
+			? entry.kind
+			: carried
+				? "carried"
+				: null;
+
+/** Whether KindRow draws a row (HunkRows' seams: a band row between two runs). */
+const kindRowShows = (props: {
+	entry?: KindEntry;
+	carried?: ClusterView["carried"];
+	linesCarried?: ClusterView["linesCarried"];
+	sinceOnly?: string;
+}) =>
+	kindOf(props.entry, props.carried) !== null ||
+	props.sinceOnly !== undefined ||
+	(props.linesCarried ? size(props.linesCarried.lines) : 0) > 0;
+
 function KindRow(props: {
 	columns: number;
 	state?: ClusterView["state"];
@@ -1863,20 +1981,16 @@ function KindRow(props: {
 	carried?: ClusterView["carried"];
 	/** Lines whose mark the engine carried (CAR-195): a chip of their own. */
 	linesCarried?: ClusterView["linesCarried"];
-	/** A piece that owns no line of this snapshot: reverted, or removed. */
-	sinceOnly?: "reverted" | "removed";
+	/**
+	 * A piece that owns no line of this snapshot: reverted, or removed; or
+	 * a run of orphan lines (CAR-216): unreviewed.
+	 */
+	sinceOnly?: "reverted" | "removed" | "unreviewed";
 	from?: number;
 }) {
-	const kind =
-		props.entry?.kind === "gone"
-			? "gone"
-			: props.entry?.kind === "reworked" || props.entry?.kind === "new"
-				? props.entry.kind
-				: props.carried
-					? "carried"
-					: null;
+	const kind = kindOf(props.entry, props.carried);
 	const lines = props.linesCarried ? size(props.linesCarried.lines) : 0;
-	if (!kind && !props.sinceOnly && lines === 0) return null;
+	if (!kindRowShows(props)) return null;
 	return (
 		<tr
 			data-testid="cluster-kind"
@@ -2072,7 +2186,7 @@ const OWN_CONTROLS = "button, a, input, textarea, select, [role=button]";
  * on the row's top half and ↑ on its bottom half. None over the row's other
  * controls (a bubble, Retry), which keep their own clicks.
  */
-export function gapRowTarget(
+function gapRowTarget(
 	e: { target: EventTarget | null; currentTarget: Element; clientY: number },
 	count: number,
 ): number | null {
@@ -2097,14 +2211,17 @@ type HunksRead = Pick<
  * What Comment on an Ask-agent composer can do with its span here: its
  * head's facts, and whether GitHub's diff has both ends of the rows it is
  * on (`rowsOf`: in the since view, a removed line by its own row,
- * CAR-217; `hunkKeys`: the hunks' lines by side, null until they are in).
- * The line view's and the Rendered view's composers both ask it.
+ * CAR-217; `hunkKeys`: the hunks' lines by side, null until they are in),
+ * and whether either end is a since-view line GitHub's diff hasn't
+ * (`offKeys`, CAR-293: it reads as the base there). The line view's and
+ * the Rendered view's composers both ask it.
  */
 export function agentCommentOn(
 	span: CodeSpan,
 	at: {
 		rowsOf: (range: SpanRange & { earlier?: boolean }) => SpanRange | null;
 		hunkKeys: ReadonlySet<string> | null;
+		offKeys: ReadonlySet<string>;
 		head: string | undefined;
 		file: Pick<FileView, "binary" | "submodule">;
 		headUnsure: boolean;
@@ -2132,6 +2249,10 @@ export function agentCommentOn(
 				? at.hunkKeys.has(`${rows.startSide}:${rows.startLine}`) &&
 					at.hunkKeys.has(`${rows.side}:${rows.line}`)
 				: undefined,
+		sameAsBase:
+			!!rows &&
+			(at.offKeys.has(`${rows.startSide}:${rows.startLine}`) ||
+				at.offKeys.has(`${rows.side}:${rows.line}`)),
 		headUnsure: at.headUnsure,
 		readOnly: at.readOnly,
 	};
@@ -2148,6 +2269,13 @@ const HIDDEN_HUNKS: HunksRead = {
 
 const hunkHeader = (h: DisplayHunk) =>
 	`@@ -${h.oldStart},${h.oldCount} +${h.newStart},${h.newCount} @@`;
+
+/**
+ * A row's old side in its React key: an orphan removed line (CAR-216) has
+ * no old number in the since view, its base number instead.
+ */
+const oldKeyOf = (line?: DiffLine) =>
+	line?.oldNo ?? (line?.orphan ? `b${line.baseNo}` : "");
 
 /** The expanded file: file-level clusters, then hunks with loadable context between them. */
 export function DiffBody(props: {
@@ -2269,6 +2397,10 @@ export function DiffBody(props: {
 	);
 	const noteId = (cluster: ClusterView) => noteIds.get(cluster.key);
 	const fileClusters = file.clusters.filter((c) => c.kind === "file");
+	const filePieces =
+		props.from === undefined
+			? []
+			: (hunks.data?.pieces ?? []).filter((p) => p.file !== undefined);
 	const root = useRef<HTMLDivElement>(null);
 	const scroller = useRef<HTMLDivElement>(null);
 	const table = useRef<HTMLTableElement>(null);
@@ -2279,6 +2411,7 @@ export function DiffBody(props: {
 	const overflow = useScrollbarProxy(scroller, table, proxy);
 	useBubbleFocusKept(scroller, wide);
 	const onPointerDown = useOneSideSelection(table, view);
+	useCardSelection(table);
 	// With its lines hidden (an image) no line is shown to land on: a
 	// thread link to a line, or a find's step, neither scrolls nor hints.
 	// Their file shows as Text to take them (FileDiff); a remount back to
@@ -2288,19 +2421,59 @@ export function DiffBody(props: {
 		linesHidden && props.landing?.line !== undefined
 			? undefined
 			: props.landing;
+	// The since view numbers its old side in the compared patch set; a
+	// LEFT anchor, span or landing counts in the base, so it goes to the
+	// removed row that shows it (the row's base number), else through the
+	// full diff (its clusters) to the head line it became
+	// (threadPlacement.ts).
+	const left = useMemo(
+		() =>
+			props.from === undefined
+				? undefined
+				: sinceLeft(file.clusters, hunks.data?.hunks),
+		[props.from, file.clusters, hunks.data],
+	);
+	// The since view's compared patch set's head: a comment on a line
+	// only it had goes there (CAR-233), shown on that line's removed row.
+	const sessionData = useQuery({ ...sessionQuery, enabled: false }).data;
+	const earlierHead =
+		props.from === undefined
+			? undefined
+			: sessionData?.patchsets.find((p) => p.number === props.from)?.head;
+	const early = useMemo(
+		() =>
+			earlierHead === undefined
+				? undefined
+				: sinceEarlier(earlierHead, hunks.data?.hunks),
+		[earlierHead, hunks.data],
+	);
+	// Why a base line the since view has no row for isn't in it (CAR-255).
+	const notHere = useMemo(() => {
+		const data = hunks.data;
+		if (props.from === undefined || !left || !data) return undefined;
+		return {
+			at: (n: number) => (left(n) === null ? notHereOf(data, n, left) : null),
+			since: props.from,
+		};
+	}, [props.from, left, hunks.data]);
 	const { hint, landed, pending } = useLanding(
 		root,
 		lineLanding,
 		hunks.isSuccess,
+		left,
+		early,
+		notHere,
 	);
 	useFindStep(root, linesHidden ? undefined : find, hunks.isSuccess);
 	// The line a thread link is about to land on (so a collapsed cluster
 	// holding it is open by the time the landing looks); once it has
 	// landed, `landed` keeps the cluster open while the highlight lasts.
 	const landingLine: LineRef | null =
-		pending && lineLanding?.line !== undefined && !lineLanding.moved
-			? { old: lineLanding.side === "LEFT", line: lineLanding.line }
-			: null;
+		!pending || lineLanding?.line === undefined
+			? null
+			: lineLanding.moved
+				? earlierRow(lineLanding, early)
+				: landingRow(lineLanding.side ?? "RIGHT", lineLanding.line, left);
 
 	const loaded = new Map<number, DiffLine>();
 	for (const result of contexts) {
@@ -2342,13 +2515,6 @@ export function DiffBody(props: {
 	const mineNew = allItems.filter(
 		(i) => i.span.path === file.path && i.span.subject === "line",
 	);
-	// The since view's compared patch set's head: a comment on a line
-	// only it had goes there (CAR-233), shown on that line's removed row.
-	const sessionData = useQuery({ ...sessionQuery, enabled: false }).data;
-	const earlierHead =
-		props.from === undefined
-			? undefined
-			: sessionData?.patchsets.find((p) => p.number === props.from)?.head;
 	const onEarlier = (span: CodeSpan) =>
 		span.earlier === true &&
 		earlierHead !== undefined &&
@@ -2399,24 +2565,6 @@ export function DiffBody(props: {
 			)
 		: [];
 
-	// The since view numbers its old side in the compared patch set; a
-	// LEFT anchor or span counts in the base, so it goes to the removed row
-	// that shows it (the row's base number), else through the full diff
-	// (its clusters) to the head line it became (threadPlacement.ts).
-	const left = useMemo(
-		() =>
-			props.from === undefined
-				? undefined
-				: sinceLeft(file.clusters, hunks.data?.hunks),
-		[props.from, file.clusters, hunks.data],
-	);
-	const early = useMemo(
-		() =>
-			earlierHead === undefined
-				? undefined
-				: sinceEarlier(earlierHead, hunks.data?.hunks),
-		[earlierHead, hunks.data],
-	);
 	/** A span (GitHub's numbers) on this view's rows; null when none shows it. */
 	const onRows = <A extends SpanRange & { earlier?: boolean }>(
 		span: A,
@@ -2515,8 +2663,10 @@ export function DiffBody(props: {
 	};
 	// Each line's text by both keys, to quote a span above its composer.
 	const textAt = new Map<LineKey, string>();
-	// GitHub's diff's own lines (a hunk's), where it takes a comment.
+	// GitHub's diff's own lines (a hunk's), where it takes a comment; the
+	// since view's lines GitHub's diff hasn't (CAR-293) are left out.
 	const hunkKeys = new Set<string>();
+	const offKeys = new Set<string>();
 	for (const [lines, inHunk] of [
 		[hunks.data?.hunks.flatMap((h) => h.lines) ?? [], true],
 		[[...loaded.values()], false],
@@ -2526,7 +2676,8 @@ export function DiffBody(props: {
 				const k = lineKey(side, l);
 				if (!k) continue;
 				textAt.set(k, l.text);
-				if (inHunk) hunkKeys.add(k);
+				if (inHunk && side === "RIGHT" && l.offGithub) offKeys.add(k);
+				else if (inHunk) hunkKeys.add(k);
 			}
 		}
 	}
@@ -2569,7 +2720,29 @@ export function DiffBody(props: {
 			side: span.side,
 			line: span.line,
 		});
-		return describeSpan(rows ? { ...span, ...rows } : span);
+		if (!rows) return describeSpan(span);
+		const orphan = (side: DiffSide, n: number) =>
+			side === "LEFT" && isOrphanLeft(n);
+		if (
+			!orphan(rows.startSide, rows.startLine) &&
+			!orphan(rows.side, rows.line)
+		) {
+			return describeSpan({ ...span, ...rows });
+		}
+		// An orphan removed row has no number of this view's: its base
+		// line names it, as its button does (CAR-276).
+		const word = (side: DiffSide, n: number) =>
+			side === "RIGHT" ? "new" : orphan(side, n) ? "base" : "old";
+		const no = (side: DiffSide, n: number) =>
+			orphan(side, n) ? orphanBase(n) : n;
+		const from = no(rows.startSide, rows.startLine);
+		const to = no(rows.side, rows.line);
+		const [a, b] = [
+			word(rows.startSide, rows.startLine),
+			word(rows.side, rows.line),
+		];
+		if (a !== b) return `${a} ${from} – ${b} ${to}`;
+		return from === to ? `line ${to}, ${b}` : `lines ${from}–${to}, ${b}`;
 	};
 	/** A span's first and last line's text, on the rows it is on here (kept with a draft). */
 	const spanLineTexts = (span: CodeSpan): LineTexts | undefined =>
@@ -2684,6 +2857,7 @@ export function DiffBody(props: {
 		agentCommentOn(span, {
 			rowsOf: onRows,
 			hunkKeys: hunks.data ? hunkKeys : null,
+			offKeys,
 			head: snapshotHead ?? sessionHead,
 			file,
 			headUnsure: props.headSure === false,
@@ -3162,6 +3336,47 @@ export function DiffBody(props: {
 			</tbody>
 		);
 	});
+	// The since view's file-level change no cluster of this snapshot shows
+	// (SincePiece.file, CAR-297: a mode or binary reverted since): its label,
+	// its chip, and a box of its own, on its since mark.
+	const filePieceRows = filePieces.map((piece) => {
+		const marked = markOf(piece);
+		if (!marked) return null;
+		const { cluster, marker } = marked;
+		const entry =
+			piece.key === undefined ? undefined : props.kinds?.get(piece.key);
+		const gone = entry?.kind === "gone";
+		const lead = takeLead();
+		return (
+			<tbody
+				key={`file-level:${piece.key ?? ""}`}
+				className="group"
+				data-testid="since-file-level"
+				{...(gone ? { "data-gone": "" } : {})}
+			>
+				<KindRow
+					columns={columns}
+					state={cluster.state}
+					gone={gone && cluster.state === "unreviewed"}
+					entry={gone ? entry : undefined}
+					sinceOnly={gone ? undefined : piece.kind}
+					from={props.from}
+				/>
+				<tr className={cluster.state === "reviewed" ? "text-muted" : ""}>
+					<Rail state={cluster.state} />
+					<ControlsCell className="py-1">
+						{checkbox(cluster, marker)}
+					</ControlsCell>
+					<td colSpan={columns - 2} className="px-2 py-1 font-sans text-sm">
+						<FileLabel bubble={lead?.bubble}>
+							{breakablePath(piece.file ?? "")}
+						</FileLabel>
+					</td>
+				</tr>
+				{lead?.row(columns, RAIL[cluster.state])}
+			</tbody>
+		);
+	});
 	const hunkRows = hunks.data?.hunks.map((hunk, index) => (
 		<Fragment key={hunkHeader(hunk)}>
 			{gapRows(gapAt(index), takeLead)}
@@ -3200,16 +3415,38 @@ export function DiffBody(props: {
 	// Comment on an agent card here: the head's diff shown, and whether a
 	// span's ends are this diff's lines (as the selection bar asks).
 	const hunkList = hunks.data?.hunks;
-	const commentScope = useMemo<CommentScope>(
-		() => ({
+	// The since view: GitHub's numbers on this view's rows (commentOn), never
+	// matched against its old side's numbers (the compared patch set's).
+	const sinceInDiff = useRef(commentOn);
+	sinceInDiff.current = commentOn;
+	const since = left !== undefined;
+	const commentScope = useMemo<CommentScope>(() => {
+		// The since view: a conversation on lines only its compared patch
+		// set had comments there, on that commit (CAR-264).
+		const renamed =
+			hunkList?.some((h) => h.lines.some((l) => l.psMoved)) === true;
+		return {
 			headSure: props.headSure !== false,
 			inDiff: (span) =>
 				hunkList && span.path === file.path
-					? spanInHunks(span, hunkList)
+					? since && !span.earlier
+						? sinceInDiff.current(span).inDiff
+						: spanInHunks(span, hunkList)
 					: undefined,
-		}),
-		[props.headSure, hunkList, file.path],
-	);
+			// The head's lines only (an earlier patch set's go there, CAR-264).
+			sameAsBase: (span) =>
+				!!hunkList &&
+				span.path === file.path &&
+				!span.earlier &&
+				spanOffGithub(span, hunkList),
+			...(early
+				? {
+						earlier: (span: CodeSpan) =>
+							earlierSpan(span, early, { path: file.path, renamed }),
+					}
+				: {}),
+		};
+	}, [props.headSure, hunkList, file.path, early, since]);
 
 	// A composer drawn in its conversation's card: what this diff gives one.
 	// Its functions read this render's (a ref), so the value changes only
@@ -3331,6 +3568,7 @@ export function DiffBody(props: {
 								</tbody>
 							)}
 							{clusterRows}
+							{filePieceRows}
 							{hunkRows}
 							{tailRows}
 						</table>
@@ -3362,6 +3600,7 @@ export function DiffBody(props: {
 							kinds={props.kinds}
 							hunks={hunks.data}
 							unshown={!linesHidden}
+							fileLevel={filePieces.length}
 						/>
 					)}
 					{hunks.isPending && (
@@ -3397,6 +3636,57 @@ const markSelecting = (
 	if (side) table.dataset.selecting = side;
 	else delete table.dataset.selecting;
 };
+
+/**
+ * A text selection begun in a card under a line (a thread, a composer, an
+ * agent conversation: TailRow's `data-tail-card`) stays out of the code
+ * (CAR-280). The card is sticky at the diff's left while the lines scroll
+ * sideways under it: on a phone, a selection handle dragged past the
+ * card's edge reached into the code rows, whose lines run far wider than
+ * the screen, and the browser scrolled the diff sideways to show the
+ * selection's end. The lines slid under a card that stays put, and the
+ * selection jumped from line to line under the finger. While a selection
+ * starts in a card, the table carries `data-card-selecting` and, on touch,
+ * its rows' cells can't be selected but the cards' contents can
+ * (index.css).
+ */
+function useCardSelection(table: RefObject<HTMLTableElement | null>) {
+	useEffect(() => {
+		const el = table.current;
+		if (!el) return;
+		cardTables.add(el);
+		markCardSelecting(el);
+		return () => {
+			cardTables.delete(el);
+			delete el.dataset.cardSelecting;
+		};
+	}, [table]);
+}
+
+/** The diff tables on the page, for one document listener among them all. */
+const cardTables = new Set<HTMLTableElement>();
+
+/** Marks `el` while the document's selection starts in one of its cards. */
+function markCardSelecting(el: HTMLTableElement) {
+	const selection = document.getSelection();
+	const anchor = selection?.anchorNode;
+	const from =
+		anchor instanceof Element ? anchor : (anchor?.parentElement ?? null);
+	const inCard =
+		!!selection &&
+		!selection.isCollapsed &&
+		!!from &&
+		el.contains(from) &&
+		from.closest("[data-tail-card]") !== null;
+	if (inCard) el.dataset.cardSelecting = "";
+	else delete el.dataset.cardSelecting;
+}
+
+if (typeof document !== "undefined") {
+	document.addEventListener("selectionchange", () => {
+		for (const el of cardTables) markCardSelecting(el);
+	});
+}
 
 /**
  * Side by side, a text selection stays on one side: the table carries
@@ -3661,23 +3951,27 @@ export interface Landed {
 }
 
 const landedPhase = (landed: Landed | null, line: RowLine) =>
-	landed && (landed.old ? line.oldNo : line.newNo) === landed.line
+	landed && (landed.old ? leftNo(line) : line.newNo) === landed.line
 		? landed.phase
 		: undefined;
 
 /** A line by its number on one side (a landing's or the find's). */
-export interface LineRef {
+interface LineRef {
 	old: boolean;
 	line: number;
 }
 
 const landingOn = (target: LineRef | null, line: RowLine) =>
-	target !== null && (target.old ? line.oldNo : line.newNo) === target.line;
+	target !== null && (target.old ? leftNo(line) : line.newNo) === target.line;
 
-/** Why a landing found no line: the text and its tooltip. */
+/**
+ * Why a landing found no line: the text and its tooltip; `full`, the
+ * since view's old line no row shows: the link to it in the full diff.
+ */
 interface Hint {
 	text: string;
 	tip: string;
+	full?: FullDiffTarget;
 }
 
 /**
@@ -3715,9 +4009,7 @@ function useFindStep(
 		if (!el || !ready || seq === 0 || done.current === seq) return;
 		done.current = seq;
 		if (line === undefined) return;
-		const row = el.querySelector(
-			`tr[data-${old ? "old" : "new"}-no="${line}"]`,
-		);
+		const row = el.querySelector(rowSelector(Boolean(old), line));
 		if (row) scrollUnderStack(el, row, 60);
 	}, [root, seq, ready, old, line]);
 }
@@ -3732,10 +4024,26 @@ function useLanding(
 	root: RefObject<HTMLDivElement | null>,
 	landing: Landing | undefined,
 	ready: boolean,
+	/** The since view's base lines on its rows (landingRow); read as the landing runs. */
+	left: SinceLeft | undefined,
+	/** The since view's lines only its compared patch set had (earlierRow). */
+	early: SinceEarlier | undefined,
+	/**
+	 * The since view: why a base line it has no row for isn't in it
+	 * (notHereOf, as a thread's card says it, CAR-255), and its compared
+	 * patch set; null for a line that rule doesn't cover.
+	 */
+	notHere?: { at: (n: number) => NotHere | null; since: number },
 ): { hint: Hint | null; landed: Landed | null; pending: boolean } {
 	const [hint, setHint] = useState<Hint | null>(null);
 	const [landed, setLanded] = useState<Landed | null>(null);
 	const done = useRef(0);
+	const leftNow = useRef(left);
+	leftNow.current = left;
+	const earlyNow = useRef(early);
+	earlyNow.current = early;
+	const notHereNow = useRef(notHere);
+	notHereNow.current = notHere;
 	// Until the landing below has run (it sets state when it does).
 	const pending =
 		landing !== undefined && ready && done.current !== landing.seq;
@@ -3746,15 +4054,43 @@ function useLanding(
 		const section = el.closest("section");
 		const scrollTo = (target: Element, margin: number) =>
 			scrollUnderStack(el, target, margin);
-		const old = landing.side === "LEFT";
-		const where = `${old ? "Old line" : "Line"} ${landing.line}`;
-		const row =
-			landing.line === undefined || landing.moved
+		const side = landing.side ?? "RIGHT";
+		const where = `${side === "LEFT" ? "Old line" : "Line"} ${landing.line}`;
+		// The row it is on, as this view numbers its rows: in the since view
+		// a LEFT (base) line is where its thread shows (landingRow).
+		// A moved line: only on the since view's removed row of a line its
+		// compared patch set alone had, numbered on that commit (earlierRow).
+		const at =
+			landing.line === undefined
 				? null
-				: el.querySelector(
-						`tr[data-${old ? "old" : "new"}-no="${landing.line}"]`,
-					);
-		if (!row) {
+				: landing.moved
+					? earlierRow(landing, earlyNow.current)
+					: landingRow(side, landing.line, leftNow.current);
+		const row = at && el.querySelector(rowSelector(at.old, at.line));
+		if (!row || !at) {
+			// A line no row of the since view shows: the full diff may.
+			const since = leftNow.current !== undefined;
+			const sinceHint = (
+				path: string | undefined,
+				line: number,
+				side: DiffSide,
+				where: string,
+			): Hint => {
+				const full = path === undefined ? undefined : { path, line, side };
+				// A base line the compared patch set had already deleted: the
+				// thread card's words (notHereText); else unchanged since.
+				const why =
+					side === "LEFT" ? (notHereNow.current?.at(line) ?? null) : null;
+				if (why && notHereNow.current) {
+					const { label, tip } = notHereText(why.why, notHereNow.current.since);
+					return { text: `${where}: ${label}`, tip, ...(full && { full }) };
+				}
+				return {
+					text: `${where} isn't in this view`,
+					tip: "Unchanged since the compared patch set, or not in the diff",
+					...(full && { full }),
+				};
+			};
 			setHint(
 				landing.line === undefined
 					? null
@@ -3763,10 +4099,12 @@ function useLanding(
 								text: `${where} is from another commit`,
 								tip: "Commented on another commit: the line may have moved",
 							}
-						: {
-								text: `${where} isn't in this diff`,
-								tip: "Outdated, or an unchanged line the diff doesn't show",
-							},
+						: since
+							? sinceHint(landing.path, landing.line, side, where)
+							: {
+									text: `${where} isn't in this diff`,
+									tip: "Outdated, or an unchanged line the diff doesn't show",
+								},
 			);
 			if (section) scrollTo(section, -1);
 			return;
@@ -3774,7 +4112,7 @@ function useLanding(
 		setHint(null);
 		// A few lines of context above it stay in view.
 		scrollTo(row, 60);
-		const line = landing.line as number;
+		const { old, line } = at;
 		setLanded({ old, line, phase: "on" });
 		// The highlight's time counts from when the page is next idle: the
 		// line's first paint often comes with heavy work (the highlighter's
@@ -3814,22 +4152,31 @@ function whenIdle(fn: () => void): () => void {
 }
 
 function LandingHint({ hint }: { hint: Hint }) {
+	// The status (its tooltip's trigger) is the text alone; the full diff's
+	// link sits beside it: its own tab stop, never read as the status.
 	return (
-		<Tooltip content={hint.tip}>
-			{(trigger) => (
-				<p
-					{...trigger}
-					role="status"
-					data-testid="landing-hint"
-					// biome-ignore lint/a11y/noNoninteractiveTabindex: the tooltip opens on focus.
-					tabIndex={0}
-					className="flex min-h-10 items-center gap-2 border-b border-line bg-band px-3 text-xs text-muted focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-accent"
-				>
-					<InfoIcon size={14} aria-hidden className="shrink-0 text-accent" />
-					{hint.text}
-				</p>
+		<div
+			data-testid="landing-hint"
+			className="flex min-h-10 items-center gap-2 border-b border-line bg-band pr-1 text-xs text-muted"
+		>
+			<Tooltip content={hint.tip}>
+				{(trigger) => (
+					<p
+						{...trigger}
+						role="status"
+						// biome-ignore lint/a11y/noNoninteractiveTabindex: the tooltip opens on focus.
+						tabIndex={0}
+						className="flex min-h-10 min-w-0 flex-1 items-center gap-2 px-3 focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-accent"
+					>
+						<InfoIcon size={14} aria-hidden className="shrink-0 text-accent" />
+						{hint.text}
+					</p>
+				)}
+			</Tooltip>
+			{hint.full && (
+				<FullDiffLink target={hint.full} testId="landing-full-diff" />
 			)}
-		</Tooltip>
+		</div>
 	);
 }
 
@@ -3933,6 +4280,9 @@ function HunkRows(props: {
 	const columns = columnsOf(view);
 	// Unified, the file bubble is centred on rows that aren't code (FileBubbleSlot).
 	const centred = view === "unified";
+	// The colour of the last row of the run drawn so far, when nothing
+	// follows it (the seams, below); null at the hunk's top.
+	let above: string | null = null;
 	return (
 		<>
 			<tbody>
@@ -3958,7 +4308,7 @@ function HunkRows(props: {
 			</tbody>
 			{hunkRuns.map((run) => {
 				const first = run.lines[0];
-				const runKey = `${run.key ?? ""}:${first?.oldNo}:${first?.newNo}`;
+				const runKey = `${run.key ?? ""}:${oldKeyOf(first)}:${first?.newNo}`;
 				const whole =
 					run.key === undefined ? undefined : props.clusters.get(run.key);
 				// The since view: every piece is marked as a cluster of its own,
@@ -3973,8 +4323,10 @@ function HunkRows(props: {
 				const entry =
 					run.key === undefined ? undefined : props.kinds?.get(run.key);
 				// Its chip: reverted or removed (a piece of its own, or a cluster's
-				// piece of removals only).
-				const sinceOnly = piece?.kind;
+				// piece of removals only); a run of orphan lines (CAR-216): not
+				// reviewed in the compared patch set.
+				const sinceOnly: "reverted" | "removed" | "unreviewed" | undefined =
+					run.orphan ? "unreviewed" : piece?.kind;
 				// A cluster the review doesn't list still shows as unreviewed.
 				const state = cluster
 					? cluster.state
@@ -3991,20 +4343,24 @@ function HunkRows(props: {
 					(cluster.reviewedLines || cluster.crossedLines)
 						? lineReviewedState(cluster, line)
 						: state;
+				const kinds = {
+					// A piece of its own isn't its neighbour's: only gone says where it came from.
+					entry:
+						(piece?.owns === null && entry?.kind !== "gone") || run.orphan
+							? undefined
+							: entry,
+					carried: cluster?.carried,
+					// The carried lines are the full diff's to show: the since
+					// view never shows them.
+					linesCarried: props.pieces ? undefined : cluster?.linesCarried,
+					sinceOnly,
+				};
 				const kindRow = (
 					<KindRow
 						columns={columns}
 						state={state}
 						gone={gone}
-						// A piece of its own isn't its neighbour's: only gone says where it came from.
-						entry={
-							piece?.owns === null && entry?.kind !== "gone" ? undefined : entry
-						}
-						carried={cluster?.carried}
-						// The carried lines are the full diff's to show: the since
-						// view never shows them.
-						linesCarried={props.pieces ? undefined : cluster?.linesCarried}
-						sinceOnly={sinceOnly}
+						{...kinds}
 						from={props.from}
 					/>
 				);
@@ -4048,6 +4404,36 @@ function HunkRows(props: {
 								: tailed(r.del) || tailed(r.add),
 						)
 					: rows.map((r) => tailed(rowLine(r)));
+				// The seam (CAR-235): this run's first row right under the last
+				// row of the run above, both the same colour (state and row
+				// kind), with nothing between (a kind row, a thread, a cross-off
+				// note, a collapsed whitespace cluster): a hairline says where
+				// one cluster ends and the next starts.
+				const collapsed = Boolean(
+					state && ignoreWhitespace && cluster?.whitespaceOnly,
+				);
+				const tones = run.side
+					? run.side.map((r) =>
+							r.kind === "context"
+								? null
+								: toneOf(
+										pairState(r, lineState, state),
+										`${r.del ? r.del.kind : ""}/${r.add ? r.add.kind : ""}`,
+										gone,
+									),
+						)
+					: rows.map((r) =>
+							toneOf(rowState(r, lineState, state), rowLine(r).kind, gone),
+						);
+				const top =
+					collapsed || kindRowShows(kinds) ? null : (tones[0] ?? null);
+				const seam = top !== null && top === above;
+				above =
+					collapsed ||
+					cluster?.state === "crossed-off" ||
+					rowTails.at(-1) === true
+						? null
+						: (tones.at(-1) ?? null);
 				const stack = props.stackOf(
 					runKey,
 					() =>
@@ -4065,7 +4451,8 @@ function HunkRows(props: {
 				const lineRows = (controls?: ReactNode) =>
 					run.side
 						? run.side.map((r, i) => {
-								const old = r.kind === "context" ? r.line.oldNo : r.del?.oldNo;
+								const old =
+									r.kind === "context" ? r.line.oldNo : oldKeyOf(r.del);
 								const nu = r.kind === "context" ? r.line.newNo : r.add?.newNo;
 								return (
 									<PairRow
@@ -4073,6 +4460,7 @@ function HunkRows(props: {
 										row={r}
 										checkbox={i === 0 ? controls : undefined}
 										{...rowProps}
+										seam={i === 0 && seam}
 										state={pairState(r, lineState, state)}
 									/>
 								);
@@ -4083,11 +4471,12 @@ function HunkRows(props: {
 								const shown = r.kind === "line" ? r.line : (r.add ?? r.del);
 								return (
 									<LineRow
-										key={`${line.kind}${line.oldNo ?? ""}:${line.newNo ?? ""}`}
+										key={`${line.kind}${line.kind === "ws" ? (line.oldNo ?? "") : oldKeyOf(line)}:${line.newNo ?? ""}`}
 										line={line}
 										order={shown ? orderOf(shown) : undefined}
 										checkbox={i === 0 ? controls : undefined}
 										{...rowProps}
+										seam={i === 0 && seam}
 										state={rowState(r, lineState, state)}
 									/>
 								);

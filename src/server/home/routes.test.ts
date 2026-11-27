@@ -1,6 +1,7 @@
+import { request } from "node:http";
 import Fastify, { type FastifyInstance } from "fastify";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { homePr } from "../../../test/fake-gh/scenario";
+import { homePr, release } from "../../../test/fake-gh/scenario";
 import {
 	createHomeFixture,
 	type HomeFixture,
@@ -29,8 +30,35 @@ afterEach(async () => {
 	fx = undefined;
 });
 
-async function setup() {
-	fx = createHomeFixture({
+/** A request whose path goes out as written (no dot-segment removal). */
+function raw(
+	base: string,
+	method: string,
+	path: string,
+	body?: unknown,
+): Promise<{ status: number; body: string }> {
+	return new Promise((resolve, reject) => {
+		const req = request(
+			`${base}/`,
+			{ method, path, headers: { "content-type": "application/json" } },
+			(res) => {
+				let text = "";
+				res.setEncoding("utf8");
+				res.on("data", (c: string) => {
+					text += c;
+				});
+				res.on("end", () =>
+					resolve({ status: res.statusCode ?? 0, body: text }),
+				);
+			},
+		);
+		req.on("error", reject);
+		req.end(body === undefined ? undefined : JSON.stringify(body));
+	});
+}
+
+async function setup(
+	scenario: Parameters<typeof createHomeFixture>[0] = {
 		repos: {
 			"acme/api": {
 				prs: [
@@ -44,7 +72,9 @@ async function setup() {
 				],
 			},
 		},
-	});
+	},
+) {
+	fx = createHomeFixture(scenario);
 	let config: HomeConfig = {
 		views: [{ name: "My PRs", repos: ["acme/api"] }],
 		refresh: { minutes: 2 },
@@ -65,6 +95,42 @@ async function setup() {
 }
 
 describe("/api/home", () => {
+	it("whole=1 answers a cold repo only whole; anything else gets its batches (CAR-290)", async () => {
+		// 15 PRs: a first batch of 10, then 5 (held).
+		const prs = Array.from({ length: 15 }, (_, i) =>
+			homePr({
+				repo: "acme/api",
+				number: i + 1,
+				author: "Octo",
+				updatedAt: iso(Date.now() - (i + 1) * 1000),
+			}),
+		);
+		const { app } = await setup({
+			repos: { "acme/api": { prs } },
+			hold: ["homePr:11"],
+		});
+		const get = (query: string) =>
+			app
+				.inject({ method: "GET", url: `/api/home/repos/acme/api${query}` })
+				.then((r) => r.json<RepoHome>());
+		let wholeDone = false;
+		const whole = get("?whole=1").then((r) => {
+			wholeDone = true;
+			return r;
+		});
+		// The first batch is in: a plain ask and a misspelt one get it.
+		for (const query of ["", "?whole=yes", "?whole=true"]) {
+			const partial = await get(query);
+			expect(partial, query).toMatchObject({ complete: false });
+			expect(partial.rows, query).toHaveLength(10);
+		}
+		expect(wholeDone).toBe(false);
+		release(fx?.path ?? "", "homePr:11");
+		const answer = await whole;
+		expect(answer).toMatchObject({ complete: true });
+		expect(answer.rows).toHaveLength(15);
+	});
+
 	it("GET answers the view without reading a repo; each repo has its own GET", async () => {
 		const { app } = await setup();
 		const res = await app.inject({ method: "GET", url: "/api/home" });
@@ -109,6 +175,34 @@ describe("/api/home", () => {
 			url: "/api/home/repos/-x/tool",
 		});
 		expect(bad.statusCode).toBe(400);
+		// `seen` is a batch count: a whole number, nothing else.
+		for (const seen of ["-1", "x", "1.5", "01", "9999999999"]) {
+			const res = await app.inject({
+				method: "GET",
+				url: `/api/home/repos/acme/api?seen=${seen}`,
+			});
+			expect(res.statusCode, seen).toBe(400);
+		}
+		const seen = await app.inject({
+			method: "GET",
+			url: "/api/home/repos/acme/api?seen=0",
+		});
+		expect(seen.json<RepoHome>()).toMatchObject({ complete: true });
+		// A dot segment is never a repo: it would name a path, not a clone.
+		// A browser drops it from the URL, a raw request doesn't (inject
+		// normalizes as a browser does, so this goes over a socket).
+		const base = await app.listen({ port: 0, host: "127.0.0.1" });
+		for (const dots of [".", ".."]) {
+			const get = await raw(base, "GET", `/api/home/repos/acme/${dots}`);
+			expect(get.status, `${dots} ${get.body}`).toBe(400);
+			const post = await raw(
+				base,
+				"POST",
+				`/api/home/prs/acme/${dots}/1/annotations`,
+				{ op: "wake" },
+			);
+			expect(post.status, `${dots} ${post.body}`).toBe(400);
+		}
 	});
 
 	it("GET and a repo's GET answer 200 with the reason while gh is logged out", async () => {
@@ -245,19 +339,21 @@ describe("/api/home", () => {
 		const { app } = await setup();
 		fx?.scenario({ orgMembers: { acme: ["Octo", "olga"] } });
 		await app.inject({ method: "GET", url: "/api/home/repos/acme/api" });
-		let people: PeopleResult | undefined;
-		for (let i = 0; i < 200; i++) {
-			const res = await app.inject({
-				method: "GET",
-				url: "/api/home/people?q=o",
-			});
-			expect(res.statusCode).toBe(200);
-			people = res.json<PeopleResult>();
-			if (!people.pending) break;
-			await new Promise((resolve) => setTimeout(resolve, 50));
-		}
+		const people = await vi.waitFor(
+			async () => {
+				const res = await app.inject({
+					method: "GET",
+					url: "/api/home/people?q=o",
+				});
+				expect(res.statusCode).toBe(200);
+				const answer = res.json<PeopleResult>();
+				if (answer.pending) throw new Error("people still pending");
+				return answer;
+			},
+			{ timeout: 10_000, interval: 50 },
+		);
 		// Never the viewer: "Me" is theirs.
-		expect(people?.close.map((p) => p.login)).toEqual(["olga"]);
+		expect(people.close.map((p) => p.login)).toEqual(["olga"]);
 		const long = await app.inject({
 			method: "GET",
 			url: `/api/home/people?q=${"x".repeat(301)}`,

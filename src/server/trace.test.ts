@@ -4,13 +4,26 @@ import {
 	readdirSync,
 	readFileSync,
 	rmSync,
+	statSync,
+	utimesSync,
 	writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { readRequests, spansOf } from "../../scripts/test-profile/load";
-import { createTracer, parseTraceparent, toNanos, traceparent } from "./trace";
+import {
+	createTracer,
+	DEFAULT_ROTATION,
+	FLUSH_AFTER_MS,
+	isServiceFile,
+	parseTraceparent,
+	pruneTraces,
+	rotationFromEnv,
+	toNanos,
+	traceparent,
+} from "./trace";
+import { BUILD } from "./version";
 
 const dirs: string[] = [];
 function tempDir(): string {
@@ -21,6 +34,7 @@ function tempDir(): string {
 afterEach(() => {
 	for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true });
 	vi.unstubAllEnvs();
+	vi.useRealTimers();
 });
 
 const PARENT = "00-0123456789abcdef0123456789abcdef-0011223344556677-01";
@@ -63,8 +77,20 @@ describe("createTracer", () => {
 			expect.arrayContaining([
 				{ key: "service.name", value: { stringValue: "svc" } },
 				{ key: "crb.run", value: { stringValue: "r1" } },
+				{ key: "service.version", value: { stringValue: BUILD.version } },
+				{ key: "service.commit", value: { stringValue: BUILD.commit } },
 			]),
 		);
+		// From source (tests): package.json's version, the checkout's HEAD.
+		expect(BUILD.version).toBe(
+			JSON.parse(
+				readFileSync(
+					resolve(import.meta.dirname, "../../package.json"),
+					"utf8",
+				),
+			).version,
+		);
+		expect(BUILD.commit).toMatch(/^([0-9a-f]{40}|unknown)$/);
 		const [a, b] = rs.scopeSpans[0].spans;
 		expect(a).toMatchObject({
 			traceId: expect.stringMatching(/^[0-9a-f]{32}$/),
@@ -99,7 +125,7 @@ describe("createTracer", () => {
 		const root = t.root("crb serve");
 		const outer = t.start("POST /api/reviews");
 		const inner = await t.run(outer, async () => {
-			await new Promise((r) => setTimeout(r, 1));
+			await new Promise((r) => setTimeout(r, 0));
 			return t.start("git fetch");
 		});
 		inner.end();
@@ -159,6 +185,382 @@ describe("createTracer", () => {
 			expect(fresh.tracer().start("x").context).toBeNull();
 		} finally {
 			g[key] = saved;
+			vi.resetModules();
+		}
+	});
+});
+
+const MiB = 1024 * 1024;
+const DAY = 24 * 60 * 60 * 1000;
+
+/**
+ * Timers the test's fake clock drives, handed to the tracer (which uses
+ * the real ones by default), each checked to be unref'd.
+ */
+function testTimers() {
+	const unrefs: ReturnType<typeof vi.fn>[] = [];
+	const timers = {
+		setTimeout(fn: () => void, ms: number) {
+			const handle = setTimeout(fn, ms);
+			const unref = vi.fn(() => handle);
+			unrefs.push(unref);
+			return Object.assign(handle, { unref });
+		},
+		clearTimeout(handle: { unref?(): unknown }) {
+			clearTimeout(handle as ReturnType<typeof setTimeout>);
+		},
+	};
+	return { timers, unrefs };
+}
+
+describe("a long-running process's files", () => {
+	it("writes a span a few seconds after it ends, by an unref'd timer", () => {
+		vi.useFakeTimers();
+		const dir = tempDir();
+		const { timers, unrefs } = testTimers();
+		const t = createTracer({
+			dir,
+			service: "crb",
+			flushOnExit: false,
+			timers,
+		});
+		t.start("GET /api/x").end();
+		t.start("git fetch").end();
+		vi.advanceTimersByTime(FLUSH_AFTER_MS - 1);
+		expect(readdirSync(dir)).toEqual([]);
+		vi.advanceTimersByTime(1);
+		const names = spansOf(readRequests(dir)).map((s) => s.name);
+		expect(names).toEqual(["GET /api/x", "git fetch"]);
+		// One write for both; nothing pending after it.
+		expect(vi.getTimerCount()).toBe(0);
+		t.start("later").end();
+		vi.advanceTimersByTime(FLUSH_AFTER_MS);
+		expect(spansOf(readRequests(dir)).map((s) => s.name)).toContain("later");
+		// Never keeps the process alive.
+		expect(unrefs).toHaveLength(2);
+		for (const unref of unrefs) expect(unref).toHaveBeenCalled();
+	});
+
+	it("uses the real timers: a test's fake clock neither sees nor holds them", async () => {
+		vi.useFakeTimers();
+		const dir = tempDir();
+		const t = createTracer({
+			dir,
+			service: "crb",
+			flushOnExit: false,
+			flushAfterMs: 5,
+		});
+		t.start("a").end();
+		expect(vi.getTimerCount()).toBe(0);
+		vi.useRealTimers();
+		await vi.waitFor(() =>
+			expect(spansOf(readRequests(dir)).map((s) => s.name)).toEqual(["a"]),
+		);
+	});
+
+	it("makes its directory again when it was deleted while running", () => {
+		const dir = join(tempDir(), "traces");
+		const warn = vi.fn();
+		const t = createTracer({
+			dir,
+			service: "crb",
+			flushOnExit: false,
+			rotation: DEFAULT_ROTATION,
+			warn,
+		});
+		t.start("before").end();
+		t.flush();
+		rmSync(dir, { recursive: true, force: true });
+		t.start("after").end();
+		t.flush();
+		expect(warn).not.toHaveBeenCalled();
+		expect(spansOf(readRequests(dir)).map((s) => s.name)).toEqual(["after"]);
+	});
+
+	it("rolls to a new file before one would pass the size limit", () => {
+		const dir = tempDir();
+		const t = createTracer({
+			dir,
+			service: "crb",
+			flushOnExit: false,
+			rotation: { ...DEFAULT_ROTATION, maxFileBytes: 1500 },
+		});
+		for (let i = 0; i < 12; i++) {
+			t.start(`span ${i}`, { pad: "x".repeat(300) }).end();
+			t.flush();
+		}
+		const files = readdirSync(dir).sort();
+		expect(files.length).toBeGreaterThan(2);
+		for (const f of files) {
+			expect(f).toMatch(/^crb-\d+-[0-9a-f]{6}\.\d{8}\.\d{6}\.jsonl$/);
+			expect(statSync(join(dir, f)).size).toBeLessThanOrEqual(1500);
+		}
+		// One stem, numbered in order: nothing lost or reordered.
+		expect(new Set(files.map((f) => f.split(".")[0])).size).toBe(1);
+		expect(files.map((f) => f.split(".")[2])).toEqual(
+			files.map((_, i) => String(i).padStart(6, "0")),
+		);
+		expect(spansOf(readRequests(dir)).map((s) => s.name)).toEqual(
+			Array.from({ length: 12 }, (_, i) => `span ${i}`),
+		);
+	});
+
+	it("rolls at the UTC day change", () => {
+		let now = Date.parse("2026-11-24T23:59:58Z");
+		const dir = tempDir();
+		const t = createTracer({
+			dir,
+			service: "crb",
+			flushOnExit: false,
+			clock: () => now,
+			rotation: DEFAULT_ROTATION,
+		});
+		t.start("before midnight").end();
+		t.flush();
+		now += 1000;
+		t.start("still before").end();
+		t.flush();
+		now += 2000;
+		t.start("after midnight").end();
+		t.flush();
+		const files = readdirSync(dir).sort();
+		expect(files).toEqual([
+			expect.stringMatching(/\.20261124\.000000\.jsonl$/),
+			expect.stringMatching(/\.20261125\.000001\.jsonl$/),
+		]);
+		expect(readFileSync(join(dir, files[0] as string), "utf8")).toContain(
+			"still before",
+		);
+		expect(readFileSync(join(dir, files[1] as string), "utf8")).toContain(
+			"after midnight",
+		);
+	});
+
+	it("rotate() switches a tracer on from its next write", () => {
+		const dir = tempDir();
+		const t = createTracer({ dir, service: "crb", flushOnExit: false });
+		t.start("a").end();
+		t.flush();
+		t.rotate(DEFAULT_ROTATION);
+		t.start("b").end();
+		t.flush();
+		const files = readdirSync(dir).sort();
+		expect(files).toEqual([
+			expect.stringMatching(/^crb-\d+-[0-9a-f]{6}\.\d{8}\.000000\.jsonl$/),
+			expect.stringMatching(/^crb-\d+-[0-9a-f]{6}\.jsonl$/),
+		]);
+	});
+
+	const old = (dir: string, name: string, size: number, ageMs: number) => {
+		const path = join(dir, name);
+		writeFileSync(path, "x".repeat(size));
+		const t = new Date(Date.now() - ageMs);
+		utimesSync(path, t, t);
+	};
+
+	it("deletes its service's files older than the days kept, at start", () => {
+		const dir = tempDir();
+		old(dir, "crb-1-aaaaaa.jsonl", 10, 20 * DAY);
+		old(dir, "crb-2-bbbbbb.20261101.000.jsonl", 10, 15 * DAY);
+		old(dir, "crb-3-cccccc.20261120.000.jsonl", 10, 4 * DAY);
+		const t = createTracer({
+			dir,
+			service: "crb",
+			flushOnExit: false,
+			rotation: DEFAULT_ROTATION,
+		});
+		t.start("now").end();
+		t.flush();
+		const files = readdirSync(dir);
+		expect(files).toHaveLength(2);
+		expect(files).toEqual(
+			expect.arrayContaining([
+				"crb-3-cccccc.20261120.000.jsonl",
+				expect.stringMatching(new RegExp(`^crb-${process.pid}-`)),
+			]),
+		);
+	});
+
+	it("deletes the oldest while its files pass the total cap, on rotation too", () => {
+		const dir = tempDir();
+		old(dir, "crb-1-aaaaaa.20261120.000.jsonl", 400, 4 * DAY);
+		old(dir, "crb-1-aaaaaa.20261121.001.jsonl", 400, 3 * DAY);
+		old(dir, "crb-2-bbbbbb.20261122.000.jsonl", 400, 2 * DAY);
+		const t = createTracer({
+			dir,
+			service: "crb",
+			flushOnExit: false,
+			rotation: { maxFileBytes: 600, keepDays: 14, maxTotalBytes: 1000 },
+		});
+		t.start("first", { pad: "y".repeat(300) }).end();
+		t.flush();
+		// At start: 1200 bytes of old files > 1000, so the oldest went.
+		expect(readdirSync(dir)).not.toContain("crb-1-aaaaaa.20261120.000.jsonl");
+		expect(readdirSync(dir)).toContain("crb-1-aaaaaa.20261121.001.jsonl");
+		t.start("second", { pad: "y".repeat(300) }).end();
+		t.flush();
+		// A rotation: the next oldest goes, never the file being written.
+		const files = readdirSync(dir).sort();
+		expect(files).not.toContain("crb-1-aaaaaa.20261121.001.jsonl");
+		expect(
+			files.filter((f) => f.startsWith(`crb-${process.pid}-`)),
+		).toHaveLength(2);
+	});
+
+	it("never touches files it didn't write: other services, test runs, packs", () => {
+		const dir = tempDir();
+		const foreign = [
+			"fake-gh-1-aaaaaa.jsonl",
+			"crb-client-2-bbbbbb.jsonl",
+			"vitest-3-cccccc.jsonl",
+			"packed-4-dddddddd.jsonl.gz",
+			"crb-5-eeeeee.jsonl.packing-6-ffffffff",
+			"notes.txt",
+		];
+		for (const f of foreign) old(dir, f, 5000, 100 * DAY);
+		const deleted = pruneTraces(
+			dir,
+			"crb",
+			{ maxFileBytes: 100, keepDays: 1, maxTotalBytes: 1 },
+			Date.now(),
+		);
+		expect(deleted).toEqual([]);
+		expect(readdirSync(dir).sort()).toEqual([...foreign].sort());
+		expect(isServiceFile("crb", "crb-5-eeeeee.jsonl")).toBe(true);
+		expect(isServiceFile("crb", "crb-5-eeeeee.20261124.012.jsonl")).toBe(true);
+		expect(isServiceFile("crb", "crb-client-5-eeeeee.jsonl")).toBe(false);
+	});
+
+	it("a write failure on a rotating tracer still warns once and stops", () => {
+		vi.useFakeTimers();
+		const dir = tempDir();
+		const notADir = join(dir, "file");
+		writeFileSync(notADir, "");
+		const warn = vi.fn();
+		const t = createTracer({
+			dir: notADir,
+			service: "crb",
+			flushOnExit: false,
+			rotation: DEFAULT_ROTATION,
+			warn,
+			timers: testTimers().timers,
+		});
+		expect(() => {
+			t.start("a").end();
+			vi.advanceTimersByTime(FLUSH_AFTER_MS);
+			t.start("b").end();
+			vi.advanceTimersByTime(FLUSH_AFTER_MS);
+			t.flush();
+		}).not.toThrow();
+		expect(warn).toHaveBeenCalledTimes(1);
+		// Stopped: no timer left waiting for spans that go nowhere.
+		expect(vi.getTimerCount()).toBe(0);
+	});
+
+	it("the disabled tracer starts no timer and writes nothing", () => {
+		vi.useFakeTimers();
+		const t = createTracer({
+			dir: "",
+			service: "crb",
+			timers: testTimers().timers,
+		});
+		t.rotate(DEFAULT_ROTATION);
+		t.start("a").end();
+		expect(vi.getTimerCount()).toBe(0);
+	});
+
+	it("takes rotation from the environment, defaults for what's unset or bad", () => {
+		expect(rotationFromEnv({})).toEqual(DEFAULT_ROTATION);
+		expect(
+			rotationFromEnv({
+				CRB_TRACE_FILE_MB: "8",
+				CRB_TRACE_KEEP_DAYS: "3",
+				CRB_TRACE_MAX_MB: "abc",
+			}),
+		).toEqual({
+			maxFileBytes: 8 * MiB,
+			keepDays: 3,
+			maxTotalBytes: DEFAULT_ROTATION.maxTotalBytes,
+		});
+		expect(rotationFromEnv({ CRB_TRACE_KEEP_DAYS: "-1" }).keepDays).toBe(14);
+	});
+
+	it("raises tiny settings to a floor: 1 MiB files, a day, one file in all", () => {
+		expect(
+			rotationFromEnv({
+				CRB_TRACE_FILE_MB: "0.0000001",
+				CRB_TRACE_KEEP_DAYS: "0.01",
+				CRB_TRACE_MAX_MB: "0.5",
+			}),
+		).toEqual({ maxFileBytes: MiB, keepDays: 1, maxTotalBytes: MiB });
+		expect(
+			rotationFromEnv({ CRB_TRACE_FILE_MB: "64", CRB_TRACE_MAX_MB: "10" }),
+		).toEqual({
+			maxFileBytes: 64 * MiB,
+			keepDays: 14,
+			maxTotalBytes: 64 * MiB,
+		});
+	});
+
+	it("prunes at start, before anything is written", () => {
+		const dir = tempDir();
+		old(dir, "crb-1-aaaaaa.20261101.000000.jsonl", 10, 20 * DAY);
+		const t = createTracer({ dir, service: "crb", flushOnExit: false });
+		t.rotate(DEFAULT_ROTATION);
+		expect(readdirSync(dir)).toEqual([]);
+	});
+
+	it("the cap never deletes a file written in the last minutes (another live crb's)", () => {
+		const dir = tempDir();
+		old(dir, "crb-1-aaaaaa.20261124.000000.jsonl", 600, 60_000);
+		old(dir, "crb-2-bbbbbb.20261123.000000.jsonl", 600, DAY);
+		const deleted = pruneTraces(
+			dir,
+			"crb",
+			{ maxFileBytes: 100, keepDays: 14, maxTotalBytes: 100 },
+			Date.now(),
+		);
+		expect(deleted).toEqual(["crb-2-bbbbbb.20261123.000000.jsonl"]);
+		expect(readdirSync(dir)).toEqual(["crb-1-aaaaaa.20261124.000000.jsonl"]);
+	});
+});
+
+describe("the build on every file", () => {
+	it("is read only when tracing is on, once, and never through version.ts", async () => {
+		const readBuild = vi.fn(() => ({
+			version: "9.9.9",
+			commit: "c".repeat(40),
+		}));
+		vi.resetModules();
+		vi.doMock("./buildInfo", () => ({ readBuild }));
+		// version.ts reads the build (git, from source) at import: the tracer
+		// must not load it, or every unit file pays a git spawn.
+		vi.doMock("./version", () => {
+			throw new Error("trace.ts imported version.ts");
+		});
+		try {
+			const fresh = await import("./trace");
+			fresh.createTracer({ dir: undefined, service: "x" });
+			expect(readBuild).not.toHaveBeenCalled();
+			const dir = tempDir();
+			for (const service of ["a", "b"]) {
+				const t = fresh.createTracer({ dir, service, flushOnExit: false });
+				t.start("s").end();
+				t.flush();
+			}
+			expect(readBuild).toHaveBeenCalledTimes(1);
+			const versions = readRequests(dir).map((r) =>
+				r.resourceSpans[0]?.resource?.attributes?.find(
+					(x) => x.key === "service.version",
+				),
+			);
+			expect(versions).toEqual([
+				{ key: "service.version", value: { stringValue: "9.9.9" } },
+				{ key: "service.version", value: { stringValue: "9.9.9" } },
+			]);
+		} finally {
+			vi.doUnmock("./buildInfo");
+			vi.doUnmock("./version");
 			vi.resetModules();
 		}
 	});

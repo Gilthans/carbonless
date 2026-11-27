@@ -12,7 +12,12 @@ import {
 	selectText,
 	test,
 } from "./agent-ui";
-import { expectNoPageOverflow, fileSection, marksReady } from "./files-ui";
+import {
+	expectNoPageOverflow,
+	fileSection,
+	marksReady,
+	openFiles,
+} from "./files-ui";
 
 // Its own crb serve: the agent's config, its fake ACP env and checkouts.
 test.use({ crbServer: "own" });
@@ -415,6 +420,7 @@ function storedThreads(p: { scenarioPath: string }) {
 					reviewThreads?: {
 						path: string;
 						line: number;
+						diffSide?: string;
 						first?: { nodes: { originalCommit?: { oid: string } }[] };
 					}[];
 				};
@@ -425,6 +431,7 @@ function storedThreads(p: { scenarioPath: string }) {
 		(pr.graphql?.reviewThreads ?? []).map((t) => ({
 			path: t.path,
 			line: t.line,
+			side: t.diffSide,
 			originalCommit: t.first?.nodes[0]?.originalCommit?.oid,
 		})),
 	);
@@ -522,5 +529,254 @@ test("Comment on a conversation asked on PS1, the PR's new head on screen: the p
 	const panel = await openConversation(thread);
 	await expect(panel.getByTestId("agent-message-human")).toHaveText([
 		"Asked on PS1",
+	]);
+});
+
+test("Comment on a conversation asked in the since view on a line only PS1 had: posted on PS1's commit, the card becomes the thread in place on that row (CAR-264)", async ({
+	page,
+	pr,
+	agentCrb,
+	isMobile,
+}) => {
+	// A mark, a push, the since view, an answer, a post.
+	test.slow();
+	const p = await pr(fixture);
+	const ps1 = p.repo.shas.at(-1) ?? "";
+	const s = await agentCrb({
+		scenario: { agent: AGENT, answers: [{ text: "PS2 reworked it." }] },
+	});
+	await holdSeen(page);
+	const section = await openFile(page, s.url, CALC);
+	// The mark starts PS1 (the file's only cluster: it closes).
+	await marksReady(page, section);
+	await section
+		.getByRole("checkbox", { name: "Mark cluster reviewed" })
+		.first()
+		.click();
+	await expect(
+		section.getByRole("button", { name: "Expand file" }),
+	).toBeVisible();
+	// PS2 rewrites PS1's line 3: that line is in neither the base nor the head.
+	const head = p.moveHead({
+		message: "total adds v3",
+		files: {
+			[CALC]: `${Array.from({ length: 12 }, (_, i) =>
+				i === 2
+					? "export const total = v1 + v2 + v3;"
+					: `export const v${i + 1} = ${i + 1};`,
+			).join("\n")}\n`,
+		},
+	});
+	await page.reload();
+	await expect(page.getByTestId("ps-tail")).toHaveAttribute(
+		"data-state",
+		"head",
+		// The head check's fetch on a loaded machine (rereview.spec's GIT_WAIT).
+		{ timeout: 30_000 },
+	);
+	await page
+		.getByTestId("head-toast")
+		.getByRole("button", { name: "View" })
+		.click();
+	// The since view (PS1 → the head).
+	await expect(
+		page
+			.getByTestId("ps-node-ps1")
+			.getByRole("button", { name: "comparison base" }),
+	).toBeVisible();
+	const since = fileSection(page, CALC);
+	await since.getByRole("button", { name: "Expand file" }).click();
+	const removed = since.locator(
+		'tr[data-testid="diff-line"][data-kind="del"][data-old-no="3"]',
+	);
+	// Built on its first view: up to 30 s on a loaded machine (GIT_WAIT).
+	await expect(removed).toBeVisible({ timeout: 30_000 });
+	await expect(removed).toHaveAttribute("data-ps-no", "3");
+	const number = removed.getByTestId("old");
+	if (isMobile) await number.tap();
+	else await number.click();
+	await bar(page).getByRole("button", { name: "Ask agent" }).click();
+	const asking = since.getByTestId("agent-composer");
+	await asking
+		.getByRole("textbox", { name: "Ask your agent" })
+		.fill("Why was this dropped?");
+	await asking.getByTestId("agent-composer-ask").click();
+	const card = since
+		.getByTestId("agent-thread")
+		.filter({ hasText: "Why was this dropped?" });
+	await expect(card.getByTestId("agent-message-ai")).toHaveText(
+		"PS2 reworked it.",
+	);
+	const comment = card.getByRole("button", { name: "Comment on GitHub" });
+	await expect(comment).not.toHaveAttribute("aria-disabled", "true");
+	const boxes = since.locator(BOXES);
+	await expect(boxes).toHaveCount(1);
+	await comment.click();
+	// The card turns into the composer in its place; the page stays.
+	const composer = since.getByTestId("new-thread");
+	await expect(card).toHaveCount(0);
+	await expect(boxes).toHaveCount(1);
+	await expect(
+		page
+			.getByTestId("ps-node-ps1")
+			.getByRole("button", { name: "comparison base" }),
+	).toBeVisible();
+	const box = composer.getByRole("textbox", { name: "Comment" });
+	await expect(box).toBeFocused();
+	await box.fill("Why add it, then rework it?");
+	if (isMobile) await expectNoPageOverflow(page);
+	await watchBoxes(since);
+	await composer.getByTestId("new-thread-post").click();
+	const thread = since
+		.getByTestId("files-thread")
+		.filter({ hasText: "Why add it, then rework it?" });
+	await expect(thread).toBeVisible();
+	expect(await minBoxes(since)).toBe(1);
+	await expect(since.getByTestId("agent-thread")).toHaveCount(0);
+	// On that row, and on GitHub on PS1's commit at its line there.
+	await expect(removed).toHaveAttribute("data-commented", "");
+	expect(head).not.toBe(ps1);
+	expect(storedThreads(p)).toMatchObject([
+		{ path: CALC, line: 3, originalCommit: ps1 },
+	]);
+	// The conversation is the thread's now: behind its agent button.
+	const panel = await openConversation(thread);
+	await expect(panel.getByTestId("agent-message-human")).toHaveText([
+		"Why was this dropped?",
+	]);
+});
+
+/**
+ * CAR-276 (CAR-216's example the other way round, rereview.spec): the
+ * base is gallery #58's PS2 and PS2 its base. PS2's diff removes base
+ * line 10, a blank that PS1 kept and nobody reviewed: the since view shows
+ * it removed, an orphan with no number of PS1's.
+ */
+const RESULT = "src/result.py";
+const pyLines = (lines: string[]) => `${lines.join("\n")}\n`;
+const resultHead = pyLines([
+	"class Result:",
+	"    count: int",
+	"",
+	"    def total(self):",
+	"        return self.count",
+]);
+const resultPs1 = pyLines([
+	"class Result(Base):",
+	"    count: int = 0",
+	"",
+	"    def add(self):",
+	"        return 2",
+	"",
+	"    def total(self):",
+	"        return self.count",
+]);
+const resultBase = pyLines([
+	"class Totals:",
+	"    count: int",
+	"",
+	"",
+	"class Result(Base):",
+	"    count: int = 0",
+	"",
+	"    def add(self):",
+	"        return 3",
+	"",
+	"    def total(self):",
+	"        return self.count",
+]);
+
+test("Ask agent on a removed line never reviewed in PS1 (since view), then Comment on GitHub: posted on its base line, LEFT, on the head (CAR-276)", async ({
+	page,
+	pr,
+	agentCrb,
+	isMobile,
+}) => {
+	// A review of PS1, a push, the since view, an answer, a post.
+	test.slow();
+	const p = await pr({
+		base: { [RESULT]: resultBase },
+		files: [{ message: "PS1", files: { [RESULT]: resultPs1 } }],
+	});
+	const s = await agentCrb({
+		scenario: { agent: AGENT, answers: [{ text: "A spacer." }] },
+	});
+	await holdSeen(page);
+	await openFiles(page, s.url);
+	const first = fileSection(page, RESULT);
+	await first.getByRole("button", { name: "Expand file" }).click();
+	await marksReady(page, first);
+	const boxes = first.getByRole("checkbox", { name: "Mark cluster reviewed" });
+	const n = await boxes.count();
+	for (let i = 0; i < n; i++) await boxes.nth(i).click();
+	await expect(
+		first.getByRole("button", { name: "Expand file" }),
+	).toBeVisible();
+	// The head check's fetch and the engine's answer on a loaded machine:
+	// up to 30 s (rereview.spec's GIT_WAIT).
+	const GIT_WAIT = { timeout: 30_000 };
+	await expect(page.getByTestId("sync-notices")).toHaveCount(0, GIT_WAIT);
+	const head = p.moveHead({ message: "PS2", files: { [RESULT]: resultHead } });
+	await page.reload();
+	await expect(page.getByTestId("ps-tail")).toHaveAttribute(
+		"data-state",
+		"head",
+		GIT_WAIT,
+	);
+	await page
+		.getByTestId("head-toast")
+		.getByRole("button", { name: "View" })
+		.click();
+	await expect(
+		page
+			.getByTestId("ps-node-ps1")
+			.getByRole("button", { name: "comparison base" }),
+	).toBeVisible();
+	const since = fileSection(page, RESULT);
+	await since.getByRole("button", { name: "Expand file" }).click();
+	const orphan = since.locator(
+		'tr[data-testid="diff-line"][data-kind="del"][data-base-no="10"]:not([data-old-no])',
+	);
+	await expect(orphan).toBeVisible(GIT_WAIT);
+	if (isMobile) await orphan.getByTestId("old").tap();
+	else await orphan.getByRole("button", { name: "Base line 10" }).click();
+	await expect(orphan).toHaveAttribute("data-picked", "true");
+	await bar(page).getByRole("button", { name: "Ask agent" }).click();
+	const asking = since.getByTestId("agent-composer");
+	await expect(asking).toContainText("line 10, base");
+	await asking
+		.getByRole("textbox", { name: "Ask your agent" })
+		.fill("Why drop the blank?");
+	await asking.getByTestId("agent-composer-ask").click();
+	await expect(asking).toHaveCount(0);
+	const card = since
+		.getByTestId("agent-thread")
+		.filter({ hasText: "Why drop the blank?" });
+	await expect(card.getByTestId("agent-message-ai")).toHaveText("A spacer.");
+	// On its row.
+	await expect(orphan.getByTestId("agent-bubble")).toBeVisible();
+	const comment = card.getByRole("button", { name: "Comment on GitHub" });
+	await expect(comment).not.toHaveAttribute("aria-disabled", "true");
+	await comment.click();
+	const composer = since.getByTestId("new-thread");
+	const box = composer.getByRole("textbox", { name: "Comment" });
+	await expect(box).toBeFocused();
+	await box.fill("Is the blank needed?");
+	if (isMobile) await expectNoPageOverflow(page);
+	await composer.getByTestId("new-thread-post").click();
+	const thread = since
+		.getByTestId("files-thread")
+		.filter({ hasText: "Is the blank needed?" });
+	await expect(thread).toBeVisible();
+	// GitHub has it on the head, LEFT 10 (the base line).
+	expect(storedThreads(p)).toMatchObject([
+		{ path: RESULT, line: 10, side: "LEFT", originalCommit: head },
+	]);
+	await expect(orphan).toHaveAttribute("data-commented", "");
+	// The conversation is the thread's now: behind its agent button.
+	await expect(since.getByTestId("agent-thread")).toHaveCount(0);
+	const panel = await openConversation(thread);
+	await expect(panel.getByTestId("agent-message-human")).toHaveText([
+		"Why drop the blank?",
 	]);
 });

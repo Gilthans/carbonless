@@ -63,6 +63,9 @@ describe("pieces of a cluster", () => {
 		expect(lineIndex(cluster, add(29))).toBe(11);
 		expect(lineIndex(cluster, add(30))).toBeUndefined();
 		expect(lineIndex(cluster, del(12, "x"))).toBeUndefined();
+		// Lines just before the cluster are none of its lines either.
+		expect(lineIndex(cluster, add(19))).toBeUndefined();
+		expect(lineIndex(cluster, del(9, "x"))).toBeUndefined();
 		expect(
 			lineIndex(cluster, { kind: "context", oldNo: 10, newNo: 20 }),
 		).toBeUndefined();
@@ -252,6 +255,11 @@ describe("pieces of a cluster", () => {
 			crossOffChange(view({ crossedLines: [[0, 10]] }), [[10, 12]]),
 		).toEqual({ key: k, state: "crossed-off" });
 		expect(crossOffChange(view())).toEqual({ key: k, state: "crossed-off" });
+		// The cross-off toggle undoes a whole cross-off.
+		expect(crossOffChange(view({ state: "crossed-off" }))).toEqual({
+			key: k,
+			state: "unreviewed",
+		});
 		expect(pieceState(view({ crossedLines: [[7, 10]] }), [[7, 10]])).toBe(
 			"crossed-off",
 		);
@@ -315,6 +323,98 @@ describe("the since view's pieces", () => {
 			[false, undefined, 1],
 			[true, "k", 1],
 		]);
+	});
+
+	it("orphan lines (CAR-216) are a piece of their own: never merged with their cluster's shown lines, owning exactly theirs, unchipped", () => {
+		const orphan = (line: DiffLine): DiffLine => ({
+			...line,
+			clusterKey: cluster.key,
+			orphan: true,
+		});
+		const lines = [
+			ctx(1, 19),
+			// Base line 10, removed: no number here, its base number instead.
+			orphan({ kind: "del", text: "old a", baseNo: 10 }),
+			keyed(add(20), cluster.key),
+			orphan(add(21)),
+			orphan(add(22)),
+			keyed(add(23), cluster.key),
+			ctx(2, 30),
+		];
+		expect(
+			lineRuns(lines).map((r) => [r.change, r.orphan, r.lines.length]),
+		).toEqual([
+			[false, undefined, 1],
+			[true, true, 1],
+			[true, undefined, 1],
+			[true, true, 2],
+			[true, undefined, 1],
+			[false, undefined, 1],
+		]);
+		const pieces = sincePieces([{ newStart: 19, lines }], [cluster], () => ({
+			baseNo: (line) => (line.orphan ? (line.baseNo ?? undefined) : undefined),
+		}));
+		expect(pieces).toEqual([
+			{
+				hunk: 0,
+				line: 1,
+				key: cluster.key,
+				orphan: true,
+				owns: [[0, 1]],
+				old: [],
+				new: [],
+			},
+			{
+				hunk: 0,
+				line: 2,
+				key: cluster.key,
+				owns: [[2, 3]],
+				old: [],
+				new: [[20, 21]],
+			},
+			{
+				hunk: 0,
+				line: 3,
+				key: cluster.key,
+				orphan: true,
+				owns: [[3, 5]],
+				old: [],
+				new: [[21, 23]],
+			},
+			{
+				hunk: 0,
+				line: 5,
+				key: cluster.key,
+				owns: [[5, 6]],
+				old: [],
+				new: [[23, 24]],
+			},
+		]);
+		// The since view's units count an orphan's own lines (a removed one
+		// has no number here).
+		const units = sinceUnits(
+			[
+				{
+					index: 0,
+					path: "a.ts",
+					clusters: [{ key: cluster.key, kind: "new" }],
+					pieces,
+				},
+			],
+			1,
+			() => [view()],
+			undefined,
+		);
+		expect(units.filter((u) => !u.rest).map((u) => u.lines)).toEqual([
+			1, 1, 2, 1,
+		]);
+		// An orphan run with none of its cluster's lines is no piece.
+		expect(
+			sincePieces(
+				[{ newStart: 1, lines: [ctx(1, 1), orphan(add(40))] }],
+				[cluster],
+			),
+		).toEqual([]);
 	});
 
 	it("finds the cluster at a removal's place", () => {
@@ -408,6 +508,16 @@ describe("the since view's pieces", () => {
 		);
 		expect(undo.state).toBe("unreviewed");
 		expect(undo.sinceMark?.crossed).toEqual({ old: [], new: [] });
+		// Crossing off a crossed-off piece undoes it too.
+		const uncross = sinceToggleChange(
+			[cross.sinceMark as SinceMark],
+			1,
+			"a.ts",
+			piece,
+			true,
+		);
+		expect(uncross.state).toBe("unreviewed");
+		expect(uncross.sinceMark?.crossed).toEqual({ old: [], new: [] });
 	});
 
 	it("whole-file marks move only the given pieces of the file's own mark (CAR-155)", () => {
@@ -960,6 +1070,107 @@ describe("the since view's pieces cut at whitespace runs (CAR-218)", () => {
 			);
 			expect(seen).toEqual(changed);
 		}
+	});
+
+	it("a file-level cluster no piece owns is one unit, unreviewed until marked (principle 2)", () => {
+		// A binary or mode change: no lines, so nothing of it is ever "rest".
+		const fileLevel: Cluster = {
+			key: "f".repeat(64),
+			kind: "file",
+			label: "Binary file changed",
+			oldStart: 0,
+			oldCount: 0,
+			newStart: 0,
+			newCount: 0,
+			removed: [],
+			added: [],
+			lines: 0,
+		};
+		const units = (kind: string, state: ClusterView["state"]) =>
+			sinceUnits(
+				[
+					{
+						index: 0,
+						path: "a.bin",
+						clusters: [{ key: fileLevel.key, kind }],
+					},
+				],
+				1,
+				() => [{ ...fileLevel, state }],
+				undefined,
+			).map(({ kind, state, lines, open }) => ({ kind, state, lines, open }));
+		for (const kind of ["new", "reworked"]) {
+			expect(units(kind, "unreviewed")).toEqual([
+				{ kind, state: "unreviewed", lines: 0, open: 0 },
+			]);
+			expect(units(kind, "reviewed")).toEqual([
+				{ kind, state: "reviewed", lines: 0, open: 0 },
+			]);
+		}
+	});
+
+	it("the rest of a cluster is reviewed once its own lines are, whatever its pieces' state", () => {
+		// A piece owns lines 0–1 (unmarked); lines 2–11, the rest, reviewed.
+		const piece = {
+			hunk: 0,
+			line: 0,
+			key: cluster.key,
+			owns: [[0, 2]] as [number, number][],
+			old: [[10, 12]] as [number, number][],
+			new: [],
+		};
+		const units = sinceUnits(
+			[
+				{
+					index: 0,
+					path: "a.ts",
+					clusters: [{ key: cluster.key, kind: "reworked" }],
+					pieces: [piece],
+				},
+			],
+			1,
+			() => [view({ reviewedLines: [[2, 12]] })],
+			undefined,
+		);
+		expect(units.map(({ rest, state }) => [rest === true, state])).toEqual([
+			[false, "unreviewed"],
+			[true, "reviewed"],
+		]);
+	});
+
+	it("the rest of a cluster counts only its unmarked lines open", () => {
+		// Lines 0–4 reviewed, 5 crossed off, 6–11 unmarked: six open.
+		const units = sinceUnits(
+			[
+				{
+					index: 0,
+					path: "a.ts",
+					clusters: [{ key: cluster.key, kind: "reworked" }],
+				},
+			],
+			1,
+			() => [view({ reviewedLines: [[0, 5]], crossedLines: [[5, 6]] })],
+			undefined,
+		);
+		expect(
+			units.map(({ state, lines, open }) => ({ state, lines, open })),
+		).toEqual([{ state: "unreviewed", lines: 12, open: 6 }]);
+		// Every line marked: no line open.
+		const done = sinceUnits(
+			[
+				{
+					index: 0,
+					path: "a.ts",
+					clusters: [{ key: cluster.key, kind: "reworked" }],
+				},
+			],
+			1,
+			() => [view({ state: "reviewed" })],
+			undefined,
+		);
+		expect(done.map(({ state, open }) => ({ state, open }))).toEqual([
+			{ state: "reviewed", open: 0 },
+		]);
 	});
 
 	it("a piece's unit takes the piece's flag, the rest of a cluster its cluster's", () => {

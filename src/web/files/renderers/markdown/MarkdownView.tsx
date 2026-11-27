@@ -9,6 +9,7 @@ import {
 import { useQuery } from "@tanstack/react-query";
 import {
 	type MouseEvent,
+	type ReactElement,
 	type ReactNode,
 	useCallback,
 	useEffect,
@@ -272,6 +273,9 @@ export function MarkdownView(props: {
 				}
 			} else {
 				for (const piece of hunks.data?.pieces ?? []) {
+					// A file-level piece (CAR-297) has no block to sit on: the
+					// document is left to the Text view, which shows its row.
+					if (piece.file !== undefined) return "failed" as const;
 					const mark = pieceMark(piece, {
 						clusters,
 						since: from,
@@ -290,9 +294,13 @@ export function MarkdownView(props: {
 						ws: mark.cluster.whitespaceOnly === true,
 						// A piece of its own isn't its neighbour's: only gone says
 						// where it came from.
-						entry: mark.whole || entry?.kind === "gone" ? entry : undefined,
+						// An orphan run (CAR-216) says only that it wasn't reviewed.
+						entry:
+							!piece.orphan && (mark.whole || entry?.kind === "gone")
+								? entry
+								: undefined,
 						carried: mark.whole?.carried,
-						sinceOnly: piece.kind,
+						sinceOnly: piece.orphan ? "unreviewed" : piece.kind,
 					};
 					if (ignoreWs && control.ws) continue;
 					units.push({
@@ -651,18 +659,23 @@ export function MarkdownView(props: {
 		composersAt.has(key) ||
 		agentAt.has(key) ||
 		askingAt.has(key);
-	// GitHub's diff's own lines (a hunk's), by side: where a comment goes.
-	const hunkKeys = useMemo(() => {
-		const out = new Set<string>();
+	// GitHub's diff's own lines (a hunk's), by side: where a comment goes;
+	// the since view's lines GitHub's diff hasn't (CAR-293) apart, as the
+	// line view keeps them (DiffBody).
+	const { hunkKeys, offKeys } = useMemo(() => {
+		const inDiff = new Set<string>();
+		const off = new Set<string>();
 		for (const h of hunks.data?.hunks ?? []) {
 			for (const l of h.lines) {
 				for (const side of ["LEFT", "RIGHT"] as const) {
 					const k = lineKey(side, l);
-					if (k) out.add(k);
+					if (!k) continue;
+					if (side === "RIGHT" && l.offGithub) off.add(k);
+					else inDiff.add(k);
 				}
 			}
 		}
-		return out;
+		return { hunkKeys: inDiff, offKeys: off };
 	}, [hunks.data]);
 	/** The span's quote and where it is, as this view numbers its rows. */
 	const quoteAndWhere = (span: CodeSpan) => {
@@ -912,6 +925,7 @@ export function MarkdownView(props: {
 							comment={agentCommentOn(item.span, {
 								rowsOf: (range) => rowsOf({ ...item.span, ...range }),
 								hunkKeys: hunks.data ? hunkKeys : null,
+								offKeys,
 								head: snapshotHead || undefined,
 								file,
 								headUnsure: props.headSure === false,
@@ -1528,11 +1542,14 @@ interface UnitControl {
 	entry?: KindEntry;
 	carried?: ClusterView["carried"];
 	linesCarried?: ClusterView["linesCarried"];
-	sinceOnly?: "reverted" | "removed";
+	sinceOnly?: "reverted" | "removed" | "unreviewed";
 }
 
 /** A unit's chips, as the line view's kind row shows them. */
-function unitChips(u: UnitControl, from: number | undefined): ReactNode {
+function unitChips(
+	u: UnitControl,
+	from: number | undefined,
+): ReactElement | null {
 	const kind =
 		u.entry?.kind === "gone"
 			? "gone"

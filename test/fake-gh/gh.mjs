@@ -19,7 +19,7 @@ import { routeCall } from "./route.mjs";
 const run = promisify(execFile);
 
 /** Thrown by exit(): ends a call with its exit code. */
-export class FakeGhExit extends Error {
+class FakeGhExit extends Error {
 	constructor(code) {
 		super(`fake gh exited ${code}`);
 		this.code = code;
@@ -100,6 +100,12 @@ async function call(io) {
 	 * for that only; its new `hold` is kept, so a write saved after doesn't put
 	 * the gate back. Other test edits made while it waited are overwritten if
 	 * this call saves (a write): see the hazards in scenario.ts (HoldOp).
+	 *
+	 * A release seen ends the wait only after one more turn for news of a
+	 * kill: a test kills gh, awaits its exit, then releases, and the kill
+	 * may land between sleep()'s check and the read that sees the release.
+	 * Its socket closed before the release was written, so the next turn
+	 * takes it in, and the killed call saves nothing (CAR-274).
 	 */
 	async function delay(op, ms) {
 		if (ms) await sleep(ms);
@@ -108,6 +114,7 @@ async function call(io) {
 			const hold = JSON.parse(readFileSync(scenarioPath, "utf8")).hold;
 			if (!hold?.includes(op)) {
 				s.hold = hold;
+				await sleep(0);
 				return;
 			}
 			await sleep(20);
@@ -1273,6 +1280,7 @@ async function call(io) {
 		case "repo clone": {
 			const [, , , path, ...flags] = args;
 			if (flags.join(" ") !== "-- --bare --quiet") unsupported();
+			await delay("clone", 0);
 			// Like a real clone failing: git's progress line, then its fatal line.
 			if (s.cloneError) {
 				fail(`Cloning into bare repository '${path}'...\n${s.cloneError}`, 128);
@@ -1618,6 +1626,10 @@ async function call(io) {
 							([, o, n]) => `${JSON.parse(o)}/${JSON.parse(n)}`,
 						);
 				for (const name of new Set(named.map((n) => n.toLowerCase()))) await delay(`home:${name}`);
+				// One details batch held: `homePr:<number>`, any batch reading that PR.
+				if (homeDetails) {
+					for (const [, n] of f.query.matchAll(/\bp(\d+): pullRequest\(number: \d+\)/g)) await delay(`homePr:${n}`);
+				}
 				if (s.rateLimited) {
 					writeOut(
 						`${JSON.stringify({ data: null, errors: [{ type: "RATE_LIMITED", message: "API rate limit exceeded for user ID 1." }] })}\n`,
@@ -1668,6 +1680,14 @@ async function call(io) {
 						]);
 					}
 					print({ data: { rateLimit, repository } });
+				}
+				if (
+					homeDetails &&
+					[...f.query.matchAll(/\bp(\d+): pullRequest\(number: \d+\)/g)].some(([, n]) =>
+						(s.homeDetailsFail ?? []).includes(Number(n)),
+					)
+				) {
+					fail("gh: HTTP 502: Bad Gateway (https://api.github.com/graphql)");
 				}
 				// r<i>: repository(owner: "o", name: "n") { p<n>: pullRequest(number: <n>) { ...F } … }
 				const data = { rateLimit };

@@ -25,6 +25,7 @@ import { useShortcut } from "../shortcuts";
 import { placeNear, Tooltip, type TooltipTriggerProps } from "../Tooltip";
 import { useThreads } from "../threads/useThreads";
 import { NOT_PHONE, useMedia } from "../useMedia";
+import { ignoreWhitespace } from "../viewSettings";
 import {
 	type Comparison,
 	type ComparisonBase,
@@ -37,10 +38,9 @@ import {
 	connectorLine,
 	connectorTone,
 	type ToRead,
+	toReadCounts,
 } from "./graphCards";
-
-/** The rail's last slot is always this wide: "up to date", or the head connector and dot. */
-export const TAIL_WIDTH = { desktop: 150, phone: 84 } as const;
+import { goneCount } from "./since";
 
 /** A dot of the rail. */
 interface Dot {
@@ -457,19 +457,17 @@ const stubShape = (code: Shape["code"], commits: number): Shape => ({
 });
 
 /** How much the engine found to read, and the reviewed clusters gone. */
-function toReadOf(answer: RereviewAnswer): ToRead {
+function toReadOf(answer: RereviewAnswer, ignoreWs: boolean): ToRead {
 	return {
-		...answer.toRead,
-		gone: answer.files.reduce(
-			(n, f) => n + f.clusters.filter((c) => c.kind === "gone").length,
-			0,
-		),
+		...toReadCounts(answer.toRead, ignoreWs),
+		gone: goneCount(answer),
 	};
 }
 
 /** The connector's card: what happened between its dots, and what is to read. */
 function ConnectorCard(props: { c: Connector; baseBranch?: string }) {
 	const { c } = props;
+	const ignoreWs = ignoreWhitespace.use();
 	const head = `${c.from.label} → ${c.to.label}`;
 	const answer = settled(c.answer);
 	if (answer) {
@@ -478,7 +476,7 @@ function ConnectorCard(props: { c: Connector; baseBranch?: string }) {
 				head={head}
 				body={connectorLine(
 					answer.shape,
-					c.live ?? toReadOf(answer),
+					c.live ?? toReadOf(answer, ignoreWs),
 					props.baseBranch,
 				)}
 			/>
@@ -546,6 +544,7 @@ function ConnectorLine(props: {
 	className?: string;
 }) {
 	const { c } = props;
+	const ignoreWs = ignoreWhitespace.use();
 	const answer = settled(c.answer);
 	const count = c.commits ?? answer?.shape.commits ?? null;
 	const tone = !c.dashed
@@ -555,7 +554,7 @@ function ConnectorLine(props: {
 					warn: "border-warn",
 					ok: "border-ok",
 					bad: "border-bad",
-				}[connectorTone(answer.shape, c.live ?? toReadOf(answer))]
+				}[connectorTone(answer.shape, c.live ?? toReadOf(answer, ignoreWs))]
 			: "border-warn";
 	// The count's slot keeps its height while it loads (nothing moves).
 	const label =
@@ -791,7 +790,7 @@ function countOf(
  * base branch dot, one dot per patch set of the reviewer (before any patch
  * set, a dot for the snapshot being reviewed, even when it is the PR's
  * head: where the PR is, nothing stored for it), and a last slot
- * that is always rendered at one width (TAIL_WIDTH): "up to date" when the
+ * that is always rendered at one width (150px, 84px on a phone): "up to date" when the
  * PR's head is the newest dot, else a dashed connector with its commit
  * count and the hollow head dot (nothing below the rail moves when a push
  * arrives). Two markers set the comparison: viewing and comparison base,
@@ -1192,7 +1191,14 @@ export function PatchsetGraph(props: {
 			<div
 				data-testid="ps-tail"
 				data-state={head ? "head" : upToDate ? "up-to-date" : "none"}
-				className="flex w-[84px] shrink-0 items-start sm:w-[150px]"
+				// On a phone the head dot's "comp. target" marker is wider than
+				// the slot leaves it: the slot widens while the head is the
+				// target, so its connector keeps a line to hover or tap (CAR-266).
+				className={`flex shrink-0 items-start sm:w-[150px] ${
+					head && sameViewing(head.viewing, comparison.viewing)
+						? "w-[124px]"
+						: "w-[84px]"
+				}`}
 			>
 				{head && headConnector ? (
 					<>
@@ -1200,6 +1206,7 @@ export function PatchsetGraph(props: {
 							c={headConnector}
 							phone={phone}
 							baseBranch={session.head?.baseBranch}
+							className="min-w-[26px]"
 						/>
 						{node(head)}
 					</>

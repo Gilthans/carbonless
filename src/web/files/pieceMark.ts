@@ -18,7 +18,7 @@ export interface Marker {
  * line it owns is; whitespace only as the piece is (`whitespaceOnly`, judged
  * on the interdiff, CAR-218), never as its cluster is against the base.
  */
-export function pieceView(
+function pieceView(
 	whole: ClusterView,
 	piece: LineRanges,
 	whitespaceOnly: boolean,
@@ -81,7 +81,8 @@ export function pieceMark(
 			newCount: 0,
 			removed: [],
 			added: [],
-			lines: size(piece.old) + size(piece.new),
+			// A file-level piece has no lines (its line 0 is the change), as counted.
+			lines: piece.file !== undefined ? 0 : size(piece.old) + size(piece.new),
 			state: sinceOnlyState(ctx.sinceMarks, since, path, piece),
 			...(piece.whitespaceOnly ? { whitespaceOnly: true } : {}),
 		},

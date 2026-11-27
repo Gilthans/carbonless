@@ -1,3 +1,4 @@
+import type { RouterHistory } from "@tanstack/react-router";
 import {
 	type RefObject,
 	useEffect,
@@ -38,7 +39,7 @@ export interface ThreadFocus {
 }
 
 /** The message a request landed on, outlined once its card took it. */
-export interface Outline {
+interface Outline {
 	message: string;
 	seq: number;
 	/** When its card took it (ms): it lights only for OUTLINE_MS after. */
@@ -63,8 +64,18 @@ const listeners = new Set<() => void>();
 const notify = () => {
 	for (const l of listeners) l();
 };
-const currentPath = () =>
-	typeof window === "undefined" ? "" : window.location.pathname;
+/**
+ * The router histories followed (`threadFocus.follow`), one entry per
+ * follow still on, newest last: the path is the newest's. Each history is
+ * subscribed once however often it is followed.
+ */
+const followed: RouterHistory[] = [];
+const unsubscribes = new Map<RouterHistory, () => void>();
+const currentPath = () => {
+	const moves = followed.at(-1);
+	if (moves) return moves.location.pathname;
+	return typeof window === "undefined" ? "" : window.location.pathname;
+};
 
 /** Drops the request (and any outline) once the path isn't the request's. */
 function leftPage() {
@@ -94,28 +105,6 @@ function pending(): ThreadFocus | null {
 	}
 	return snapshot;
 }
-
-/**
- * Every move to another page drops the request, whether or not anything
- * reads it while there: the router moves by the history API, and back and
- * forward by popstate. Wrapped once per window.
- */
-function watchMoves() {
-	if (typeof window === "undefined") return;
-	const w = window as Window & { __crbThreadFocusMoves?: true };
-	if (w.__crbThreadFocusMoves) return;
-	w.__crbThreadFocusMoves = true;
-	for (const name of ["pushState", "replaceState"] as const) {
-		const original = history[name];
-		history[name] = function (this: History, ...args) {
-			const result = original.apply(this, args);
-			leftPage();
-			return result;
-		} as History[typeof name];
-	}
-	window.addEventListener("popstate", leftPage);
-}
-watchMoves();
 
 export const threadFocus = {
 	request(target: {
@@ -198,6 +187,27 @@ export const threadFocus = {
 	},
 	/** The newest request's number, pending or taken. */
 	latest: () => lastSeq,
+	/**
+	 * Every move to another page drops the request, whether or not anything
+	 * reads it while there: `history` is the router's, which tells of each
+	 * push and replace, and of back and forward. The app follows its router
+	 * from its creation (main.tsx), and the root while mounted. The returned
+	 * function stops this follow: the one followed before is the path again.
+	 */
+	follow(history: RouterHistory): () => void {
+		if (!unsubscribes.has(history))
+			unsubscribes.set(history, history.subscribe(leftPage));
+		followed.push(history);
+		let on = true;
+		return () => {
+			if (!on) return;
+			on = false;
+			followed.splice(followed.lastIndexOf(history), 1);
+			if (followed.includes(history)) return;
+			unsubscribes.get(history)?.();
+			unsubscribes.delete(history);
+		};
+	},
 	/** Forgets everything (tests). */
 	reset() {
 		current = null;
@@ -226,7 +236,7 @@ export function usePendingFocus(): ThreadFocus | null {
  * not inside a hidden or inert part (a kept page that isn't showing, a
  * closed sheet), nor itself unrendered where the browser can tell.
  */
-export function onScreen(el: Element | null): el is Element {
+function onScreen(el: Element | null): el is Element {
 	if (!el?.isConnected || el.closest("[inert],[hidden]") !== null) return false;
 	const check = (el as { checkVisibility?: () => boolean }).checkVisibility;
 	return typeof check === "function" ? check.call(el) : true;
@@ -447,7 +457,7 @@ export function useFocusCard(
 				if (threadFocus.latest() !== hit.seq || !onScreen(el)) return;
 				// A message named: it, centred (its outline), not the card's top.
 				const message = hit.message
-					? el.querySelector(`[data-message-id="${hit.message}"]`)
+					? el.querySelector(`[data-message-id="${CSS.escape(hit.message)}"]`)
 					: null;
 				if (message) {
 					message.scrollIntoView?.({ block: "center" });
@@ -477,22 +487,26 @@ export const OUTLINE_MS = 2000;
 /**
  * The message of `messages` a request landed on, while it is outlined:
  * scrolled into view (centred) as its card takes it, its outline gone
- * after OUTLINE_MS.
+ * after OUTLINE_MS. `landed` is the caller's own element for that message
+ * (the one it outlines): only it scrolls, never another copy of the
+ * message elsewhere on the page (a kept page, a closed sheet, another
+ * card), and only while it is on screen.
  */
 export function useOutlinedMessage(
 	messages: readonly { id: string }[] | undefined,
+	landed: RefObject<Element | null>,
 ): string | null {
 	const active = usePageActive();
-	const landed = useSyncExternalStore(
+	const outlined = useSyncExternalStore(
 		threadFocus.subscribe,
 		threadFocus.outline,
 	);
 	const mine =
 		active &&
-		landed &&
-		Date.now() - landed.at < OUTLINE_MS &&
-		messages?.some((m) => m.id === landed.message)
-			? landed
+		outlined &&
+		Date.now() - outlined.at < OUTLINE_MS &&
+		messages?.some((m) => m.id === outlined.message)
+			? outlined
 			: null;
 	const [lit, setLit] = useState<Outline | null>(null);
 	const seq = mine?.seq ?? 0;
@@ -501,12 +515,13 @@ export function useOutlinedMessage(
 		if (!mine) return;
 		setLit(mine);
 		threadFocus.outlined(mine.seq);
-		document
-			.querySelector(`[data-message-id="${mine.message}"]`)
-			?.scrollIntoView?.({ block: "center" });
 	}, [seq]);
+	// biome-ignore lint/correctness/useExhaustiveDependencies: `landed` is a ref, read once lit drew it.
 	useEffect(() => {
 		if (!lit) return;
+		// Drawn lit by now: the caller's element for it, if it shows.
+		const el = landed.current;
+		if (onScreen(el)) el.scrollIntoView?.({ block: "center" });
 		const timer = setTimeout(() => setLit(null), OUTLINE_MS);
 		return () => clearTimeout(timer);
 	}, [lit]);

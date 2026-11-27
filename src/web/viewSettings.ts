@@ -5,7 +5,7 @@ import { useSyncExternalStore } from "react";
  * viewer in localStorage. Storage is a convenience only: when it's
  * unavailable the default holds (and a choice holds in memory for the page).
  */
-export interface Remembered<T> {
+interface Remembered<T> {
 	readonly key: string;
 	/** The stored choice, else the default. */
 	read(): T;

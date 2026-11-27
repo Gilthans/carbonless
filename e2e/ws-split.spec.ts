@@ -505,6 +505,121 @@ test("the full diff with a comparison open: to read leaves out whitespace-only c
 	await expect(toRead).toHaveText(/3 to read/);
 });
 
+test("a graph card's to-read count follows the switch: a push that only re-indents reads nothing new with it on, and counts the cluster with it off (CAR-247)", async ({
+	page,
+	pr,
+	startCrb,
+}) => {
+	test.slow();
+	const ps1 = lines.map((l, i) => (i === 1 ? `${l} changed` : l));
+	const p = await pr({
+		base: { [PATH]: text(lines) },
+		files: [{ message: "Line 2", files: { [PATH]: text(ps1) } }],
+	});
+	const s = await startCrb();
+	await openFiles(page, s.url);
+	const section = await expand(page);
+	await boxes(section).first().click();
+	await expect(progress(page)).toHaveAttribute("aria-valuenow", "100");
+	await expect(page.getByTestId("sync-notices")).toHaveCount(0);
+	// PS2 only re-indents lines 6-7.
+	p.moveHead({
+		message: "Re-indent",
+		files: {
+			[PATH]: text(ps1.map((l, i) => (i === 5 || i === 6 ? `    ${l}` : l))),
+		},
+	});
+	await page.reload();
+	await expect(page.getByTestId("ps-tail")).toHaveAttribute(
+		"data-state",
+		"head",
+		GIT_WAIT,
+	);
+	const card = page.locator('[role="tooltip"]:not([hidden])');
+	const conn = page.getByTestId("ps-conn-head");
+	const says = async (text: string) => {
+		await conn.hover();
+		await expect(card).toContainText(text, GIT_WAIT);
+		await page.mouse.move(0, 0);
+	};
+	await says("1 file, 1 cluster to read");
+	await ignoreWhitespace(page, true);
+	await says("nothing new");
+	await ignoreWhitespace(page, false);
+	await says("1 file, 1 cluster to read");
+});
+
+test("the full diff with a comparison open: its connector's card counts as the bar's to read, the switch off and on; the since view's counts its units (CAR-266)", async ({
+	page,
+	pr,
+	startCrb,
+}) => {
+	// A review, a push, the engine's answer and two views: past the default budget on a loaded machine.
+	test.slow();
+	const ps1 = lines.map((l, i) => (i === 1 ? `${l} changed` : l));
+	const p = await pr({
+		base: { [PATH]: text(lines) },
+		files: [{ message: "Line 2", files: { [PATH]: text(ps1) } }],
+	});
+	const s = await startCrb();
+	await openFiles(page, s.url);
+	const section = await expand(page);
+	await boxes(section).first().click();
+	await expect(progress(page)).toHaveAttribute("aria-valuenow", "100");
+	await expect(page.getByTestId("sync-notices")).toHaveCount(0);
+	// PS2 re-indents the changed line, read at PS1. With Ignore whitespace
+	// on, the engine's count leaves the re-indent out (judged on the
+	// interdiff: the line was read at PS1, CAR-218), while the full diff's
+	// bar counts its cluster (not whitespace-only against the base).
+	p.moveHead({
+		message: "Re-indent line 2",
+		files: {
+			[PATH]: text(ps1.map((l, i) => (i === 1 ? `    ${l}` : l))),
+		},
+	});
+	await page.reload();
+	await expect(page.getByTestId("ps-tail")).toHaveAttribute(
+		"data-state",
+		"head",
+		GIT_WAIT,
+	);
+	await page
+		.getByTestId("head-toast")
+		.getByRole("button", { name: "View" })
+		.click();
+	await expect(page).toHaveURL(/head=[0-9a-f]{40}/);
+	// The full diff of the same comparison (PS1 → head).
+	await page.keyboard.press("Control+Shift+[");
+	await expect(
+		page
+			.getByTestId("ps-node-branch")
+			.getByRole("button", { name: "comparison base" }),
+	).toBeVisible();
+	const toRead = page.getByTestId("to-read");
+	const card = page.locator('[role="tooltip"]:not([hidden])');
+	const conn = page.getByTestId("ps-conn-head");
+	const says = async (text: string) => {
+		await conn.hover();
+		await expect(card).toContainText(text, GIT_WAIT);
+		await page.mouse.move(0, 0);
+	};
+	await expect(toRead).toHaveText(/1 to read/, GIT_WAIT);
+	await says("1 file, 1 cluster to read");
+	await ignoreWhitespace(page, true);
+	await expect(toRead).toHaveText(/1 to read/);
+	await says("1 file, 1 cluster to read");
+	await ignoreWhitespace(page, false);
+	// The since view (PS1 is the base again): its units, as its bar.
+	await page.keyboard.press("Control+Shift+]");
+	await expect(
+		page
+			.getByTestId("ps-node-branch")
+			.getByRole("button", { name: "comparison base" }),
+	).toHaveCount(0);
+	await expect(toRead).toHaveText(/1 to read/, GIT_WAIT);
+	await says("1 file, 1 cluster to read");
+});
+
 test("the since view: a run mixing a re-indent read in PS1 and a real edit is one piece per stretch, each with its box, the switch off and on", async ({
 	page,
 	pr,
@@ -843,16 +958,19 @@ test("the since view: a re-indent of markup nobody marked in PS1 still counts wi
 	// left unmarked; the note's change is reviewed.
 	await sinceReindent(page, pr, startCrb, { base: 2, ps1: 4, ps2: 6 }, [NOTE]);
 	const bar = progress(page);
-	await expect(bar).toContainText("0 / 5 clusters reviewed");
+	// The card's lines no interdiff piece shows (PS1's re-indent, never
+	// read) are two orphan pieces of their own (CAR-216); placed among the
+	// interdiff's rows, they also cut PS1's `<Title />` off as a piece.
+	await expect(bar).toContainText("0 / 7 clusters reviewed");
 	await ignoreWhitespace(page, true);
-	// On: the card's line no piece shows (a re-indent against the base,
-	// read in the full diff) is left out, and so is the since piece that
-	// only re-indents base lines PS1 left alone (git kept them, byte-equal
-	// at PS1's depth: nothing to read there, as in the full diff; owner
-	// 2026-11-23); both are the card's one cluster, so the `~` says one.
-	// Its other two since pieces, re-indents of lines PS1 changed and
+	// On: the orphan pieces (a re-indent against the base, as the full
+	// diff reads them) are left out, and so is the since piece that only
+	// re-indents base lines PS1 left alone (git kept them, byte-equal at
+	// PS1's depth: nothing to read there, as in the full diff; owner
+	// 2026-11-23); all are the card's one cluster, so the `~` says one.
+	// Its other three since pieces, re-indents of lines PS1 changed and
 	// nobody marked, still count with the note.
-	await expect(bar).toContainText("0 / 3 clusters reviewed");
+	await expect(bar).toContainText("0 / 4 clusters reviewed");
 	await expect(
 		page
 			.locator("[data-page-bar]")
@@ -861,16 +979,16 @@ test("the since view: a re-indent of markup nobody marked in PS1 still counts wi
 			),
 	).toBeVisible();
 	// Nor are the counted ones collapsed: they show, `~` rows open; only
-	// the left-alone piece is a whitespace-only row.
+	// the left-alone piece and the two orphans are whitespace-only rows.
 	const cardSection = fileSection(page, CARD);
 	await opened(cardSection);
 	await expect(
 		cardSection.locator('[data-testid="diff-line"][data-kind="ws"]').first(),
 	).toBeVisible();
-	await expect(cardSection.getByTestId("ws-cluster")).toHaveCount(1);
+	await expect(cardSection.getByTestId("ws-cluster")).toHaveCount(3);
 	// Off: everything counts.
 	await ignoreWhitespace(page, false);
-	await expect(bar).toContainText("0 / 5 clusters reviewed");
+	await expect(bar).toContainText("0 / 7 clusters reviewed");
 	await expect(page.getByTestId("ws-left-out")).toHaveCount(0);
 });
 
@@ -1137,4 +1255,95 @@ test.describe("Home", () => {
 		).toBeVisible({ timeout: 30_000 });
 		await expect(anyLeftOut(page)).toHaveCount(0);
 	});
+});
+
+/** CAR-235: an added file is cut after each run of blank lines. */
+const ADDED = "src/added.ts";
+const addedFixture: PrOptions = {
+	base: { "README.md": "readme\n" },
+	files: [
+		{
+			message: "Add a file",
+			files: {
+				[ADDED]: text([
+					"import { x } from './x';",
+					"",
+					"export function a() {",
+					"  return x;",
+					"}",
+					"",
+					"",
+					"export const b = 1;",
+				]),
+			},
+		},
+	],
+};
+
+test("an added file is one box per blank-line-ended block; ticking each finishes the file", async ({
+	page,
+	pr,
+	startCrb,
+}) => {
+	await pr(addedFixture);
+	const s = await startCrb();
+	await openFiles(page, s.url);
+	const bar = progress(page);
+	await expect(bar).toContainText("0 / 3 clusters reviewed");
+	const section = fileSection(page, ADDED);
+	await section.getByRole("button", { name: "Expand file" }).click();
+	await expect(section.locator("table")).toBeVisible();
+	await expect(boxes(section)).toHaveCount(3);
+	await boxes(section).nth(0).click();
+	await expect(bar).toContainText("1 / 3 clusters reviewed");
+	await expect(section.locator("header")).not.toHaveAttribute("data-finished");
+	await boxes(section).nth(1).click();
+	await expect(bar).toContainText("2 / 3 clusters reviewed");
+	await boxes(section).nth(2).click();
+	await expect(bar).toContainText("3 / 3 clusters reviewed");
+	await expect(bar).toContainText("100%");
+	await expect(section.locator("header")).toHaveAttribute("data-finished");
+});
+
+test("a seam marks where one cluster ends and the next starts, only between two of the same colour; it moves nothing (CAR-235)", async ({
+	page,
+	pr,
+	startCrb,
+}) => {
+	await pr(addedFixture);
+	const s = await startCrb();
+	await openFiles(page, s.url);
+	const section = fileSection(page, ADDED);
+	await section.getByRole("button", { name: "Expand file" }).click();
+	await expect(section.locator("table")).toBeVisible();
+	await expect(boxes(section)).toHaveCount(3);
+	// The blocks start on new lines 1, 3 and 8.
+	const row = (n: number) =>
+		section.locator(`tr[data-testid="diff-line"][data-new-no="${n}"]`);
+	const seams = () =>
+		section
+			.locator('tr[data-testid="diff-line"][data-seam]')
+			.evaluateAll((rows) => rows.map((r) => r.getAttribute("data-new-no")));
+	const height = async () => (await row(3).boundingBox())?.height;
+	// All three unreviewed and green: a seam above the second and third.
+	await expect.poll(seams).toEqual(["3", "8"]);
+	const seamed = await height();
+	// The second reviewed: its colour differs from both neighbours, no seam.
+	await boxes(section).nth(1).click();
+	await expect(row(3)).toHaveAttribute("data-reviewed");
+	await expect.poll(seams).toEqual([]);
+	// A seam adds no height (a background image on the cells).
+	expect(await height()).toBe(seamed);
+	// The first reviewed too: the first two match again, the third doesn't.
+	await boxes(section).nth(0).click();
+	await expect(row(1)).toHaveAttribute("data-reviewed");
+	await expect.poll(seams).toEqual(["3"]);
+	// Side by side, the same seam, and again no height of its own.
+	await sideBySide(page, true);
+	await expect.poll(seams).toEqual(["3"]);
+	const sideSeamed = await height();
+	await boxes(section).nth(0).click();
+	await expect(row(1)).not.toHaveAttribute("data-reviewed");
+	await expect.poll(seams).toEqual([]);
+	expect(await height()).toBe(sideSeamed);
 });

@@ -767,7 +767,7 @@ const isMath = (src: string): boolean => {
 };
 
 /** The links every reference definition in the file declares. */
-export function fileLinks(
+function fileLinks(
 	lines: readonly string[],
 	blocks: readonly MdBlock[],
 ): Links {
@@ -929,7 +929,7 @@ export interface PairHtml {
  * same, or whose links, images and other elements look the same but for
  * their attributes (a link's target or title, an image's alt).
  */
-export function marksHidden(body: HTMLElement): boolean {
+function marksHidden(body: HTMLElement): boolean {
 	for (const m of body.querySelectorAll("del.md-del, ins.md-ins")) {
 		const look = looksOf(m);
 		if (

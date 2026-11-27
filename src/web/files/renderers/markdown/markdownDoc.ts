@@ -111,7 +111,7 @@ export type DocRow =
 	  };
 
 /** A run of more than this many unchanged blocks folds. */
-export const FOLD_MIN = 3;
+const FOLD_MIN = 3;
 
 export interface Doc {
 	rows: DocRow[];
@@ -123,7 +123,7 @@ const linesOf = (ranges: LineRanges): number[] =>
 	ranges.flatMap(([a, b]) => Array.from({ length: b - a }, (_, i) => a + i));
 
 /** A heading block's text, for a fold's name. */
-export function headingText(lines: readonly string[], b: MdBlock): string {
+function headingText(lines: readonly string[], b: MdBlock): string {
 	const first = lines[b.from - 1] ?? "";
 	const atx = /^\s{0,3}#{1,6}(?:\s+|$)(.*?)(?:\s+#+\s*)?$/.exec(first);
 	return (atx ? (atx[1] ?? "") : first).trim();

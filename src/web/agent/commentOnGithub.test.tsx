@@ -5,15 +5,20 @@ import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AgentAnchor, AgentThread, AgentView } from "../../shared/agent";
-import type {
-	DisplayHunk,
-	PrOverview,
-	ReviewThread,
-	SessionInfo,
+import {
+	type DisplayHunk,
+	type PrOverview,
+	type ReviewThread,
+	SAME_AS_BASE,
+	type SessionInfo,
 } from "../../shared/types";
 import { overviewQuery, sessionQuery } from "../api";
 import type { Viewing } from "../files/comparison";
-import { HEAD_UNSURE } from "../files/selectionActions";
+import {
+	HEAD_UNSURE,
+	MIXED_COMMITS,
+	RENAMED_SINCE,
+} from "../files/selectionActions";
 import {
 	getComposers,
 	newThreadItems,
@@ -30,9 +35,11 @@ import {
 	baseOf,
 	type CommentScope,
 	CommentScopeProvider,
+	earlierSpan,
 	onHeadMove,
 	ShowVersionProvider,
 	spanInHunks,
+	spanOffGithub,
 	versionOf,
 	viewingOf,
 } from "./commentOnGithub";
@@ -222,7 +229,7 @@ describe("agentCommentAvailable", () => {
 		expect(agentCommentAvailable(file, { ...on, inDiff: false })).toBe(true);
 	});
 
-	it("old lines only when asked against the base branch at today's merge base", () => {
+	it("old lines only when numbered in today's merge base: asked against the base branch, or recorded with it (CAR-276)", () => {
 		const left = { ...line, side: "LEFT" as const, startSide: "LEFT" as const };
 		const BASE = "b".repeat(40);
 		const asked = (from: AgentView["from"], l = BASE): AgentView => ({
@@ -258,6 +265,21 @@ describe("agentCommentAvailable", () => {
 				asked: asked({ branch: true }),
 			}),
 		).toBe(true);
+		// Asked in a since view with its merge base recorded (CAR-276): its
+		// old lines are base lines (CAR-217), GitHub's at that base.
+		const PS1 = "e".repeat(40);
+		expect(
+			agentCommentAvailable(left, {
+				...branch,
+				asked: { ...asked({ patchset: 1 }, PS1), base: BASE },
+			}),
+		).toBe(true);
+		expect(
+			agentCommentAvailable(left, {
+				...branch,
+				asked: { ...asked({ patchset: 1 }, PS1), base: "c".repeat(40) },
+			}),
+		).toMatch(/earlier base/);
 		// New lines are the head's whatever it was compared against.
 		expect(
 			agentCommentAvailable(line, { ...on, asked: asked({ patchset: 1 }) }),
@@ -399,6 +421,50 @@ describe("spanInHunks", () => {
 				hunks,
 			),
 		).toBe(false);
+	});
+});
+
+describe("a since-view line GitHub's diff hasn't (CAR-293)", () => {
+	const hunks = [
+		{
+			lines: [
+				{ oldNo: 1, newNo: 1, offGithub: true },
+				{ newNo: 2, offGithub: true },
+				{ oldNo: 2, newNo: 3 },
+				{ newNo: 4 },
+			],
+		},
+	] as unknown as DisplayHunk[];
+	const at = (startLine: number, end: number) =>
+		spanOfAnchor({ ...line, startLine, line: end });
+	it("isn't in GitHub's diff (spanInHunks), and says so (spanOffGithub), at either end", () => {
+		expect(spanInHunks(at(2, 2), hunks)).toBe(false);
+		expect(spanOffGithub(at(2, 2), hunks)).toBe(true);
+		expect(spanInHunks(at(2, 4), hunks)).toBe(false);
+		expect(spanOffGithub(at(2, 4), hunks)).toBe(true);
+		expect(spanInHunks(at(3, 1), hunks)).toBe(false);
+		expect(spanOffGithub(at(3, 1), hunks)).toBe(true);
+		// The lines beside it GitHub's diff has: in, and not off.
+		expect(spanInHunks(at(3, 4), hunks)).toBe(true);
+		expect(spanOffGithub(at(3, 4), hunks)).toBe(false);
+		// A LEFT line isn't the RIGHT line's flag: old 1 is in.
+		const left = spanOfAnchor({
+			...line,
+			side: "LEFT",
+			startSide: "LEFT",
+			line: 1,
+			startLine: 1,
+		});
+		expect(spanInHunks(left, hunks)).toBe(true);
+		expect(spanOffGithub(left, hunks)).toBe(false);
+	});
+
+	it("Comment on GitHub on the conversation shown is off with why; on another version it isn't checked here", () => {
+		const ctx = { ...on, inDiff: false, sameAsBase: true };
+		expect(agentCommentAvailable(line, ctx)).toBe(SAME_AS_BASE);
+		expect(agentCommentAvailable(line, { ...ctx, sameAsBase: undefined })).toBe(
+			"GitHub only takes comments on lines in the diff",
+		);
 	});
 });
 
@@ -733,5 +799,154 @@ describe("Comment on an agent conversation", () => {
 			screen.getByRole("button", { name: "Comment on GitHub" }),
 		);
 		expect(screen.queryByTestId("agent-link-problem")).toBeNull();
+	});
+});
+
+describe("a conversation on lines only the since view's earlier patch set had (CAR-264)", () => {
+	const P1 = "1".repeat(40);
+	// The since view's removed rows: PS1's RIGHT 2..3 only PS1 had (rows 60, 61).
+	const early = {
+		head: P1,
+		row: (n: number) => (n === 2 ? 60 : n === 3 ? 61 : null),
+	};
+	const file = { path: "src/math.js", renamed: false };
+	const asked = spanOfAnchor({
+		...line,
+		commit: P1,
+		startCol: undefined,
+		endCol: undefined,
+	} as AgentAnchor & { subject: "line" });
+
+	it("earlierSpan: its span marked earlier on that commit; mixed when some of its lines are still in the head; renamed; else none", () => {
+		expect(earlierSpan(asked, early, file)).toEqual({
+			...asked,
+			earlier: true,
+		});
+		// Lines 2..4: 4 is still in the head (no removed row).
+		expect(earlierSpan({ ...asked, line: 4 }, early, file)).toBe("mixed");
+		expect(
+			earlierSpan({ ...asked, path: "src/old.js" }, early, {
+				...file,
+				renamed: true,
+			}),
+		).toBe("renamed");
+		// None of its lines removed, another commit, LEFT lines, no since view.
+		expect(
+			earlierSpan({ ...asked, startLine: 7, line: 8 }, early, file),
+		).toBeNull();
+		expect(earlierSpan({ ...asked, commit: HEAD }, early, file)).toBeNull();
+		expect(
+			earlierSpan({ ...asked, side: "LEFT", startSide: "LEFT" }, early, file),
+		).toBeNull();
+		expect(earlierSpan(asked, undefined, file)).toBeNull();
+	});
+
+	it("agentCommentAvailable: on as a direct comment there is, off with the since view's reasons", () => {
+		const anchor = { ...line, commit: P1 };
+		const ctx = { ...on, version: "read-only" as const };
+		// Without the since view's take: an earlier version's.
+		expect(agentCommentAvailable(anchor, ctx)).toMatch(/earlier/);
+		expect(
+			agentCommentAvailable(anchor, {
+				...ctx,
+				earlier: { ...asked, earlier: true },
+			}),
+		).toBe(true);
+		expect(agentCommentAvailable(anchor, { ...ctx, earlier: "mixed" })).toBe(
+			MIXED_COMMITS,
+		);
+		expect(agentCommentAvailable(anchor, { ...ctx, earlier: "renamed" })).toBe(
+			RENAMED_SINCE,
+		);
+		// The rules every comment has still apply.
+		expect(
+			agentCommentAvailable(anchor, {
+				...ctx,
+				writes: "as-of",
+				earlier: { ...asked, earlier: true },
+			}),
+		).toMatch(/cutoff/);
+		expect(
+			agentCommentAvailable(anchor, {
+				...ctx,
+				headUnsure: true,
+				earlier: { ...asked, earlier: true },
+			}),
+		).toBe(HEAD_UNSURE);
+	});
+
+	const scopeOf = (renamed = false): CommentScope => ({
+		...SCOPE,
+		earlier: (span) => earlierSpan(span, early, { ...file, renamed }),
+	});
+	const sinceView = (n: ReactNode) => (
+		<SendViewProvider value={{ target: { head: HEAD }, from: { patchset: 1 } }}>
+			{n}
+		</SendViewProvider>
+	);
+
+	it("the card's Comment on GitHub is on, labelled as usual; the composer is on that commit, marked earlier, and the page stays on the since view", async () => {
+		const go = vi.fn();
+		const t = thread({
+			anchor: { ...line, commit: P1, startCol: undefined, endCol: undefined },
+		});
+		show(t, {
+			patchsets: [1, 2],
+			showVersion: go,
+			scope: scopeOf(),
+			wrap: sinceView,
+		});
+		// show() names PS1's head "1…1".
+		const button = screen.getByRole("button", { name: "Comment on GitHub" });
+		expect(button.getAttribute("aria-disabled")).toBeNull();
+		await userEvent.click(button);
+		expect(go).not.toHaveBeenCalled();
+		const [item] = newThreadItems([], getComposers());
+		if (!item) throw new Error("no item");
+		expect(targetOf(item.span, t.id)).toEqual({
+			path: "src/math.js",
+			commit: P1,
+			subject: "line",
+			startSide: "RIGHT",
+			startLine: 2,
+			side: "RIGHT",
+			line: 3,
+			agentThread: t.id,
+			earlier: true,
+		});
+	});
+
+	it("off, with the reason, on a range some of whose lines are still in the head, or a file renamed since", () => {
+		const mixed = thread({
+			anchor: {
+				...line,
+				commit: P1,
+				line: 4,
+				startCol: undefined,
+				endCol: undefined,
+			},
+		});
+		show(mixed, { patchsets: [1, 2], scope: scopeOf(), wrap: sinceView });
+		expect(
+			screen.getByRole("button", {
+				name: `Comment on GitHub — ${MIXED_COMMITS}`,
+			}),
+		).toBeTruthy();
+		cleanup();
+		const moved = thread({
+			anchor: {
+				...line,
+				path: "src/old.js",
+				commit: P1,
+				startCol: undefined,
+				endCol: undefined,
+			},
+		});
+		show(moved, { patchsets: [1, 2], scope: scopeOf(true), wrap: sinceView });
+		expect(
+			screen.getByRole("button", {
+				name: `Comment on GitHub — ${RENAMED_SINCE}`,
+			}),
+		).toBeTruthy();
 	});
 });

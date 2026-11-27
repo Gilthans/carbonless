@@ -224,8 +224,11 @@ describe("SyncNotices for thread writes", () => {
 		const chip = screen.getByTestId("refused-bar");
 		await userEvent.click(chip);
 		expect(screen.queryByTestId("refused-list")).toBeNull();
+		// The refusal again, a moment later: a new `last` is what makes it
+		// news (RefusedWrites keys on it). The clock moves; nothing sleeps.
+		vi.useFakeTimers({ toFake: ["Date"] });
+		vi.setSystemTime(Date.now() + 1000);
 		await act(async () => {
-			await new Promise((r) => setTimeout(r, 5));
 			writes.retry("T1", "resolve");
 		});
 		await vi.waitFor(() =>

@@ -5,8 +5,6 @@ export type CallRepos =
 	| { kind: "unknown" };
 /** The repositories a gh call is about, as gh.mjs answers it. */
 export function repoOf(args: readonly string[]): CallRepos;
-/** Whether `value` is a router file's content. */
-export function isRouter(value: unknown): boolean;
 /** Where a call reads its scenario, or the message of a stray. */
 export function routeCall(
 	path: string,

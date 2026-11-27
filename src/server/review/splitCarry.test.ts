@@ -377,7 +377,7 @@ describe("splitCarries, for any hunk and any marks on it (principle 2)", () => {
 						newLines: around(added),
 						noNewlineAtEnd: false,
 					},
-			markdown,
+			{ markdown },
 		);
 		if (clusters.length < 2) return true;
 		const snap = snapshot();
@@ -497,7 +497,7 @@ describe("splitCarries onto Markdown block pieces (CAR-167)", () => {
 				[hunk],
 				keysOf,
 				{ oldLines, newLines, noNewlineAtEnd: false },
-				true,
+				{ markdown: true },
 			);
 
 		it("is cut into one piece per item, each pointing at the hunk", () => {
@@ -580,7 +580,7 @@ describe("splitCarries onto Markdown block pieces (CAR-167)", () => {
 			[hunk],
 			keysOf,
 			{ oldLines, newLines, noNewlineAtEnd: false },
-			true,
+			{ markdown: true },
 		);
 
 		it("reads a CAR-156 piece the block cut splits again unreviewed, and keeps the marks of pieces it leaves whole", () => {
@@ -630,7 +630,7 @@ describe("splitCarries onto Markdown block pieces (CAR-167)", () => {
 				[one],
 				keys,
 				{ oldLines: oneOld, newLines: oneNew, noNewlineAtEnd: false },
-				true,
+				{ markdown: true },
 			);
 			expect(after.map((c) => c.key)).toEqual(before.map((c) => c.key));
 			const w = before[1] as Cluster;
@@ -673,7 +673,7 @@ describe("splitCarries onto Markdown block pieces (CAR-167)", () => {
 					[hunk],
 					keysOf,
 					{ oldLines, newLines, noNewlineAtEnd: false },
-					true,
+					{ markdown: true },
 				),
 			};
 		};
@@ -883,5 +883,77 @@ describe("the cut over display hunks: reset, no carry (CAR-218, owner 2026-11-22
 		expect(
 			before.filter((c) => afterKeys.has(c.key)).map((c) => c.key),
 		).toEqual([H4]);
+	});
+});
+
+describe("an added file cut at blank lines (CAR-235): marks from before carry", () => {
+	const newLines = ["import x", "", "function a() {", "}", "", "const b = 1;"];
+	const patch = `@@ -0,0 +1,6 @@\n${newLines.map((l) => `+${l}\n`).join("")}`;
+	const hunks = parseU0Patch(patch).map((c) => ({
+		...c,
+		kind: "lines" as const,
+	}));
+	const keysOf = (cs: Omit<Cluster, "key">[]) =>
+		clusterKeys("src/a.ts", cs, newLines);
+	const text = { oldLines: [], newLines, noNewlineAtEnd: false };
+	/** The review's snapshot as this change cuts it (the whole hunk before). */
+	const cutSnapshot = (): Snapshot => {
+		const snap = snapshot();
+		const file = snap.files[0] as Snapshot["files"][number];
+		file.status = "added";
+		file.additions = 6;
+		file.deletions = 0;
+		file.clusters = cutClusters(hunks, keysOf, text, { blankLines: true });
+		return snap;
+	};
+	const [WHOLE] = keysOf(hunks);
+
+	it("cuts the file in three, each piece remembering the whole file's key", () => {
+		const before = cutClusters(hunks, keysOf, text);
+		expect(before.map((c) => c.key)).toEqual([WHOLE]);
+		const after = cutSnapshot().files[0]?.clusters ?? [];
+		expect(after.map((c) => c.added.length)).toEqual([2, 3, 1]);
+		expect(after.every((c) => c.split?.key === WHOLE)).toBe(true);
+	});
+
+	it("a whole-file mark from before reads on every piece, and nothing more", () => {
+		for (const state of ["reviewed", "crossed-off"] as const) {
+			const { view, again } = carry(
+				[
+					started(),
+					mark(
+						WHOLE as string,
+						state,
+						state === "crossed-off" ? "generated" : undefined,
+					),
+				],
+				cutSnapshot(),
+			);
+			expect(view.files[0]?.clusters.map((c) => c.state)).toEqual([
+				state,
+				state,
+				state,
+			]);
+			expect(again).toEqual([]);
+		}
+	});
+
+	it("an unmarked file stays unreviewed; line marks land on the lines they marked", () => {
+		expect(
+			carry([started()], cutSnapshot()).view.files[0]?.clusters.map(
+				(c) => c.state,
+			),
+		).toEqual(["unreviewed", "unreviewed", "unreviewed"]);
+		// Lines 0-2 of the whole hunk reviewed: the first piece whole, the
+		// second's first line only, the third not at all.
+		const { view } = carry(
+			[started(), lines(WHOLE as string, "reviewed", [[0, 3]])],
+			cutSnapshot(),
+		);
+		expect(states(view)).toEqual([
+			{ state: "reviewed" },
+			{ state: "unreviewed", reviewedLines: [[0, 1]] },
+			{ state: "unreviewed" },
+		]);
 	});
 });

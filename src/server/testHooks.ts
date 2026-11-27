@@ -1,11 +1,16 @@
 import { timingSafeEqual } from "node:crypto";
-import type { FastifyInstance, FastifyRequest } from "fastify";
+import type {
+	FastifyInstance,
+	FastifyPluginAsync,
+	FastifyRequest,
+} from "fastify";
 import { IMAGE_MAX_BYTES } from "../shared/imageTypes.js";
 import { clearSnapshotCaches } from "./diff/snapshot.js";
 import { ghRunning } from "./gh.js";
 import { gitChildren } from "./git.js";
 import type { HomeService } from "./home/homeService.js";
 import type { SessionRegistry } from "./registry.js";
+import { placingHooks } from "./session.js";
 import { tracer } from "./trace.js";
 
 /*
@@ -29,6 +34,9 @@ import { tracer } from "./trace.js";
  * POST /api/_test/limits `{ imageMaxBytes: n | null }`: lowers the blob
  *   route's size cap (so a test needs no 50 MB fixture); null, or a reset,
  *   puts the default back. Answers the limits now in force.
+ * POST /api/_test/placing `{ fail: "message" | null }`: every placement
+ *   job fails with that GitError (CAR-271: a real failure on the server,
+ *   not a faked answer); null, or a reset, lets them run.
  */
 
 export const TEST_HOOKS_ENV = "CRB_TEST_HOOKS";
@@ -36,7 +44,7 @@ export const TEST_HOOK_HEADER = "x-crb-test-hook";
 const TOKEN = /^[0-9a-f]{32}$/;
 
 /** How long a reset waits for gh and git to end before answering with what's left. */
-export const RESET_SETTLE_MS = 5000;
+const RESET_SETTLE_MS = 5000;
 
 /** The token in `value` ($CRB_TEST_HOOKS), or null when it isn't one. */
 export function testHookToken(value: string | undefined): string | null {
@@ -117,7 +125,7 @@ export async function registerTestHooks(
 		const given = Buffer.from(typeof raw === "string" ? raw : "");
 		return given.length === expected.length && timingSafeEqual(given, expected);
 	};
-	await app.register(async (scope) => {
+	await app.register((async (scope) => {
 		scope.addHook("onRequest", async (request, reply) => {
 			if (!allowed(request)) {
 				return reply.status(403).send({ error: "Not allowed" });
@@ -133,6 +141,7 @@ export async function registerTestHooks(
 			// Per snapshot, not content alone: a fresh process has none.
 			clearSnapshotCaches();
 			resetLimits();
+			placingHooks.fail = null;
 			const left = await settle(deadline);
 			// Again: a read that was past an await when they were cleared
 			// (Home's config read, a blob's cat-file) may have written since.
@@ -176,6 +185,19 @@ export async function registerTestHooks(
 				return { ...limits };
 			},
 		);
+		scope.post<{ Body: unknown }>(
+			"/api/_test/placing",
+			async (request, reply) => {
+				const fail = (request.body as { fail?: unknown } | null)?.fail;
+				if (fail !== null && typeof fail !== "string") {
+					return reply
+						.status(400)
+						.send({ error: "fail must be a message or null" });
+				}
+				placingHooks.fail = fail;
+				return { fail };
+			},
+		);
 		scope.get("/api/_test/state", async (): Promise<TestState> => {
 			tracer().flush();
 			const gh = ghRunning();
@@ -188,5 +210,5 @@ export async function registerTestHooks(
 				git: gitChildren(),
 			};
 		});
-	});
+	}) satisfies FastifyPluginAsync);
 }

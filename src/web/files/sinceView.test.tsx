@@ -1,6 +1,12 @@
 // @vitest-environment jsdom
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { cleanup, render, screen, within } from "@testing-library/react";
+import {
+	cleanup,
+	fireEvent,
+	render,
+	screen,
+	within,
+} from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import type { SincePiece } from "../../shared/pieces";
@@ -26,6 +32,7 @@ import { contextRanges } from "./contextRanges";
 import { agentCommentOn, DiffBody, type DiffThreads } from "./DiffBody";
 import { GoneFile } from "./FileDiff";
 import { FileTree } from "./FileTree";
+import { getPicks, setPicks } from "./linePicks";
 import { ProgressBar } from "./ProgressBar";
 import type { KindEntry } from "./since";
 import {
@@ -139,12 +146,18 @@ function renderBody(opts: {
 	kinds?: Map<string, KindEntry>;
 	readOnly?: boolean;
 	sinceMarks?: SinceMark[];
+	threads?: DiffThreads;
 }) {
 	vi.stubGlobal(
 		"fetch",
 		vi.fn(async (input: RequestInfo | URL) => {
 			const url = new URL(String(input), "http://test");
-			const body = url.pathname === "/api/files/0/hunks" ? opts.hunks : {};
+			const body =
+				url.pathname === "/api/files/0/hunks"
+					? opts.hunks
+					: url.pathname === "/api/comments"
+						? { threads: [] }
+						: {};
 			return new Response(JSON.stringify(body), { status: 200 });
 		}),
 	);
@@ -166,6 +179,7 @@ function renderBody(opts: {
 				readOnly={opts.readOnly}
 				onSinceMark={onSinceMark}
 				sinceMarks={opts.sinceMarks}
+				threads={opts.threads}
 			/>
 		</QueryClientProvider>,
 	);
@@ -614,6 +628,7 @@ describe("Ask agent's Comment on lines only the compared patch set had (CAR-233)
 			{
 				rowsOf: (range) => onSinceRows(range, left, early),
 				hunkKeys: keys,
+				offKeys: new Set(),
 				head: "h".repeat(40),
 				file: { binary: false, submodule: false },
 				headUnsure: false,
@@ -1000,6 +1015,585 @@ describe("a cluster in pieces", () => {
 		expect(onToggle).toHaveBeenLastCalledWith(whole);
 	});
 });
+
+describe("orphan lines: changed, unchanged since PS1, never reviewed there (CAR-216)", () => {
+	/**
+	 * k: base line 2 ("old") removed, new lines 2–3 added. The interdiff
+	 * shows new line 2; base line 2 and new line 3 are the orphans, each
+	 * a run of its own: base line 2 before line 2, line 3 after it.
+	 */
+	const k: ClusterView = {
+		key: "k",
+		kind: "lines",
+		oldStart: 2,
+		oldCount: 1,
+		newStart: 2,
+		newCount: 2,
+		removed: ["old"],
+		added: ["x", ""],
+		lines: 3,
+		state: "unreviewed",
+	};
+	const orphan = (l: DiffLine): DiffLine => ({ ...l, orphan: true });
+	const orphanHunks: FileHunks = {
+		newLineCount: 4,
+		hunks: [
+			{
+				oldStart: 1,
+				oldCount: 3,
+				newStart: 1,
+				newCount: 4,
+				lines: [
+					line("context", 1, 1, "a"),
+					orphan({
+						...line("del", undefined, undefined, "old", "k"),
+						baseNo: 2,
+					}),
+					line("add", undefined, 2, "x", "k"),
+					orphan(line("add", undefined, 3, "", "k")),
+					line("context", 2, 4, "d"),
+				],
+			},
+		],
+		pieces: [
+			{
+				hunk: 0,
+				line: 1,
+				key: "k",
+				owns: [[0, 1]],
+				old: [],
+				new: [],
+				orphan: true,
+			},
+			{ hunk: 0, line: 2, key: "k", owns: [[1, 2]], old: [], new: [[2, 3]] },
+			{
+				hunk: 0,
+				line: 3,
+				key: "k",
+				owns: [[2, 3]],
+				old: [],
+				new: [[3, 4]],
+				orphan: true,
+			},
+		],
+	};
+	const kindsOfK = new Map<string, KindEntry>([
+		["k", { key: "k", kind: "new" }],
+	]);
+
+	it("shows each as the change it is, at its place, with a box of its own and a chip naming the patch set", async () => {
+		renderBody({ clusters: [k], hunks: orphanHunks, from: 1, kinds: kindsOfK });
+		const boxes = await screen.findAllByRole("checkbox", {
+			name: "Mark cluster reviewed",
+		});
+		expect(boxes).toHaveLength(3);
+		const rows = [
+			...document.querySelectorAll<HTMLElement>('tr[data-testid="diff-line"]'),
+		].map((r) => `${r.dataset.kind} ${r.dataset.newNo ?? r.dataset.baseNo}`);
+		expect(rows).toEqual(["context 1", "del 2", "add 2", "add 3", "context 4"]);
+		const chips = screen
+			.getAllByTestId("kind-chip")
+			.filter((c) => c.dataset.kind === "unreviewed");
+		expect(chips).toHaveLength(2);
+		for (const chip of chips) {
+			expect(chip).toHaveTextContent("not reviewed in PS1");
+			expect(chip).toHaveAccessibleDescription(
+				"Unchanged since PS1, not reviewed there",
+			);
+		}
+		// The added orphan: its own run, chipped, under the shown line 2.
+		const added = document.querySelector('tr[data-new-no="3"]');
+		expect(added?.getAttribute("data-kind")).toBe("add");
+		const run = added?.closest("tbody") as HTMLElement;
+		expect(within(run).getByTestId("kind-chip")).toHaveTextContent(
+			"not reviewed in PS1",
+		);
+		expect(within(run).queryByText("x")).toBeNull();
+		// Every line has a box: nothing is "only in the full diff".
+		expect(screen.queryByTestId("since-unshown")).toBeNull();
+	});
+
+	it("ticking an orphan's box marks its lines alone, through its cluster's line marks", async () => {
+		const { onToggle, onSinceMark } = renderBody({
+			clusters: [k],
+			hunks: orphanHunks,
+			from: 1,
+			kinds: kindsOfK,
+		});
+		await screen.findAllByRole("checkbox", { name: "Mark cluster reviewed" });
+		const run = document
+			.querySelector('tr[data-new-no="3"]')
+			?.closest("tbody") as HTMLElement;
+		const user = userEvent.setup();
+		await user.click(within(run).getByRole("checkbox"));
+		expect(onToggle).toHaveBeenLastCalledWith(k, [[2, 3]]);
+		const removed = document
+			.querySelector('tr[data-base-no="2"]')
+			?.closest("tbody") as HTMLElement;
+		await user.click(within(removed).getByRole("checkbox"));
+		expect(onToggle).toHaveBeenLastCalledWith(k, [[0, 1]]);
+		expect(onSinceMark).not.toHaveBeenCalled();
+	});
+
+	it("side by side: each orphan its own row and box, the removed one picked by its base line; a tick sends its lines alone", async () => {
+		sideBySide.set(true);
+		onTestFinished(() => sideBySide.set(false));
+		const { onToggle } = renderBody({
+			clusters: [k],
+			hunks: orphanHunks,
+			from: 1,
+			kinds: kindsOfK,
+		});
+		const boxes = await screen.findAllByRole("checkbox", {
+			name: "Mark cluster reviewed",
+		});
+		expect(boxes).toHaveLength(3);
+		const chips = screen
+			.getAllByTestId("kind-chip")
+			.filter((c) => c.dataset.kind === "unreviewed");
+		expect(chips).toHaveLength(2);
+		const removed = screen.getByText("old").closest("tbody") as HTMLElement;
+		// No old number (PS1's) on its old side: its base line picks it (CAR-276).
+		expect(
+			within(removed).queryByRole("button", { name: /^Old line/ }),
+		).toBeNull();
+		expect(
+			within(removed).getByRole("button", { name: "Base line 2" }),
+		).toBeInTheDocument();
+		expect(within(removed).getByTestId("kind-chip")).toHaveTextContent(
+			"not reviewed in PS1",
+		);
+		const added = document
+			.querySelector('tr[data-new-no="3"]')
+			?.closest("tbody") as HTMLElement;
+		expect(added).not.toBe(removed);
+		const user = userEvent.setup();
+		await user.click(within(removed).getByRole("checkbox"));
+		expect(onToggle).toHaveBeenLastCalledWith(k, [[0, 1]]);
+		await user.click(within(added).getByRole("checkbox"));
+		expect(onToggle).toHaveBeenLastCalledWith(k, [[2, 3]]);
+	});
+
+	it("in a whitespace-only cluster: Ignore whitespace on folds it like the cluster's other pieces; off, it shows with its box", async () => {
+		// w: base line 2 (blank) removed, new line 2 (spaces) added; the
+		// removed one is the orphan.
+		const w: ClusterView = {
+			key: "w",
+			kind: "lines",
+			oldStart: 2,
+			oldCount: 1,
+			newStart: 2,
+			newCount: 1,
+			removed: [""],
+			added: ["  "],
+			lines: 2,
+			state: "unreviewed",
+			whitespaceOnly: true,
+		};
+		const wsHunks: FileHunks = {
+			newLineCount: 3,
+			hunks: [
+				{
+					oldStart: 1,
+					oldCount: 3,
+					newStart: 1,
+					newCount: 3,
+					lines: [
+						line("context", 1, 1, "a"),
+						orphan({
+							...line("del", undefined, undefined, "", "w"),
+							baseNo: 2,
+						}),
+						line("add", undefined, 2, "  ", "w"),
+						line("context", 3, 3, "c"),
+					],
+				},
+			],
+			pieces: [
+				{
+					hunk: 0,
+					line: 1,
+					key: "w",
+					owns: [[0, 1]],
+					old: [],
+					new: [],
+					orphan: true,
+					// The server's: an orphan is whitespace-only as its cluster is.
+					whitespaceOnly: true,
+				},
+				{
+					hunk: 0,
+					line: 2,
+					key: "w",
+					owns: [[1, 2]],
+					old: [],
+					new: [[2, 3]],
+					whitespaceOnly: true,
+				},
+			],
+		};
+		const wsKinds = new Map<string, KindEntry>([
+			["w", { key: "w", kind: "new" }],
+		]);
+		ignoreWhitespace.set(true);
+		onTestFinished(() => ignoreWhitespace.set(false));
+		renderBody({ clusters: [w], hunks: wsHunks, from: 1, kinds: wsKinds });
+		// Folded: each piece one quiet row with its box, its lines hidden.
+		const folds = await screen.findAllByRole("button", {
+			name: /^Whitespace only/,
+		});
+		expect(folds).toHaveLength(2);
+		expect(document.querySelector('tr[data-base-no="2"]')).toBeNull();
+		expect(
+			screen.getAllByRole("checkbox", { name: "Mark cluster reviewed" }),
+		).toHaveLength(2);
+		// Off: the orphan row shows, chipped, with its box.
+		cleanup();
+		ignoreWhitespace.set(false);
+		renderBody({ clusters: [w], hunks: wsHunks, from: 1, kinds: wsKinds });
+		await screen.findAllByRole("checkbox", { name: "Mark cluster reviewed" });
+		const row = document.querySelector('tr[data-base-no="2"]');
+		expect(row?.getAttribute("data-kind")).toBe("del");
+		const run = row?.closest("tbody") as HTMLElement;
+		expect(within(run).getByTestId("kind-chip")).toHaveTextContent(
+			"not reviewed in PS1",
+		);
+		expect(within(run).getAllByRole("checkbox")).toHaveLength(1);
+		expect(
+			screen.queryByRole("button", { name: /^Whitespace only/ }),
+		).toBeNull();
+	});
+
+	it("a ticked orphan reads reviewed; the rest of its cluster stays as it is", async () => {
+		renderBody({
+			clusters: [{ ...k, reviewedLines: [[2, 3]] }],
+			hunks: orphanHunks,
+			from: 1,
+			kinds: kindsOfK,
+		});
+		const boxes = await screen.findAllByRole("checkbox", {
+			name: "Mark cluster reviewed",
+		});
+		expect(boxes.map((b) => (b as HTMLInputElement).checked)).toEqual([
+			false,
+			false,
+			true,
+		]);
+	});
+});
+
+describe("a removed orphan row takes comments, on its base line (CAR-276)", () => {
+	const HEAD = "h".repeat(40);
+	/**
+	 * g: PS1's old line 2 ("gone", base 6) removed since PS1. k: base
+	 * lines 2–3 removed and new line 2 added, unchanged since PS1 but never
+	 * reviewed there: the removed lines are orphans, numbered by their
+	 * base lines only. PS1's row 2 and base line 2 are other lines.
+	 */
+	const g: ClusterView = {
+		...cluster("g", "unreviewed"),
+		oldStart: 6,
+		oldCount: 1,
+		newStart: 4,
+		newCount: 0,
+		removed: ["gone"],
+		added: [],
+		lines: 1,
+	};
+	const k: ClusterView = {
+		...cluster("k", "unreviewed"),
+		oldStart: 2,
+		oldCount: 2,
+		newStart: 2,
+		newCount: 1,
+		removed: ["old a", "old b"],
+		added: ["x"],
+		lines: 3,
+	};
+	const orphan = (l: DiffLine, baseNo?: number): DiffLine => ({
+		...l,
+		orphan: true,
+		...(baseNo === undefined ? {} : { baseNo }),
+	});
+	const hunks: FileHunks = {
+		newLineCount: 4,
+		hunks: [
+			{
+				oldStart: 1,
+				oldCount: 3,
+				newStart: 1,
+				newCount: 4,
+				lines: [
+					line("context", 1, 1, "a"),
+					{ ...line("del", 2, undefined, "gone", "g"), baseNo: 6 },
+					orphan(line("del", undefined, undefined, "old a", "k"), 2),
+					orphan(line("del", undefined, undefined, "old b", "k"), 3),
+					orphan(line("add", undefined, 2, "x", "k")),
+					line("context", 3, 3, "d"),
+				],
+			},
+		],
+		pieces: [
+			{ hunk: 0, line: 1, key: "g", owns: [[0, 1]], old: [[2, 3]], new: [] },
+			{
+				hunk: 0,
+				line: 2,
+				key: "k",
+				owns: [[0, 3]],
+				old: [],
+				new: [],
+				orphan: true,
+			},
+		],
+	};
+	const kindsOf = new Map<string, KindEntry>([
+		["g", { key: "g", kind: "new" }],
+		["k", { key: "k", kind: "new" }],
+	]);
+	const threadOnBase = (n: number): ReviewThread => ({
+		id: `T${n}`,
+		loaded: true,
+		path: "src/a.ts",
+		line: n,
+		currentLine: n,
+		excerpt: "why drop it",
+		html: "<p>why drop it</p>",
+		body: "why drop it",
+		createdAt: "2026-01-01T00:00:00Z",
+		lastActivityAt: "2026-01-01T00:00:00Z",
+		author: "rev",
+		avatarUrl: "",
+		participants: [],
+		lastAuthor: { login: "octo", avatarUrl: "", bot: false },
+		bot: false,
+		commentCount: 1,
+		hasReply: false,
+		outdated: false,
+		resolved: false,
+		code: null,
+		anchor: {
+			path: "src/a.ts",
+			commit: HEAD,
+			side: "LEFT",
+			line: n,
+			startSide: "LEFT",
+			startLine: n,
+			at: "2026-01-01T00:00:00Z",
+		},
+		commit: HEAD,
+		subject: "line",
+		attention: [],
+		yourTurn: false,
+		viewerCan: { reply: false, resolve: false, unresolve: false },
+	});
+	async function shown(threads?: ReviewThread[]) {
+		renderBody({
+			clusters: [g, k],
+			hunks,
+			from: 1,
+			kinds: kindsOf,
+			...(threads
+				? { threads: { readId: "r", snapshotHead: HEAD, threads } }
+				: {}),
+		});
+		await screen.findAllByTestId("diff-line");
+		document.body.setAttribute("data-path", "src/a.ts");
+		onTestFinished(() => {
+			document.body.removeAttribute("data-path");
+			setPicks(null);
+		});
+	}
+	const orphanRow = (base: number) =>
+		document.querySelector(
+			`tr[data-kind="del"][data-orphan][data-base-no="${base}"]`,
+		) as HTMLElement;
+	const ps1Row = (oldNo: number) =>
+		document.querySelector(`tr[data-old-no="${oldNo}"]`) as HTMLElement;
+	const press = (el: Element, init: Partial<PointerEventInit> = {}) => {
+		fireEvent.pointerDown(el, {
+			pointerType: "mouse",
+			button: 0,
+			buttons: 1,
+			...init,
+		});
+		fireEvent.pointerUp(window);
+		fireEvent.click(el, { detail: 1, ...init });
+	};
+	const base = (n: number) =>
+		within(orphanRow(n)).getByRole("button", { name: `Base line ${n}` });
+	const picked = () =>
+		[...document.querySelectorAll<HTMLElement>("tr[data-picked]")].map(
+			(r) => r.textContent,
+		);
+	/** The span the picks make, as the selection bar builds it. */
+	const pickedSpan = () => {
+		const p = getPicks();
+		if (!p) return null;
+		const first = p.lines[0];
+		const last = p.lines[p.lines.length - 1];
+		if (!first || !last) return null;
+		return {
+			span: spanOfCells(
+				{ ...first, cell: document.body },
+				{ ...last, cell: document.body },
+				HEAD,
+			),
+			noLine: noLineIn(p.lines),
+		};
+	};
+
+	it("its base line's button picks it alone, never PS1's row of that number; the span is LEFT at the base line on the head", async () => {
+		await shown();
+		// PS1's row 2 is another line: picking base line 2 leaves it be.
+		expect(ps1Row(2)).toHaveTextContent("gone");
+		press(base(2).closest("td") as Element);
+		expect(picked()).toEqual([expect.stringContaining("old a")]);
+		expect(ps1Row(2).hasAttribute("data-picked")).toBe(false);
+		expect(pickedSpan()).toEqual({
+			span: expect.objectContaining({
+				commit: HEAD,
+				startSide: "LEFT",
+				startLine: 2,
+				side: "LEFT",
+				line: 2,
+			}),
+			noLine: null,
+		});
+		// And PS1's row 2 picks itself alone, on its own base line (6).
+		press(
+			within(ps1Row(2))
+				.getByRole("button", { name: "Old line 2" })
+				.closest("td") as Element,
+		);
+		expect(picked()).toEqual([expect.stringContaining("gone")]);
+		expect(pickedSpan()?.span).toMatchObject({ startLine: 6, line: 6 });
+	});
+
+	it("a range within the orphan run goes to GitHub: base lines 2–3, through to the added line", async () => {
+		await shown();
+		press(base(2).closest("td") as Element);
+		press(base(3).closest("td") as Element, { shiftKey: true });
+		expect(picked()).toEqual([
+			expect.stringContaining("old a"),
+			expect.stringContaining("old b"),
+		]);
+		expect(pickedSpan()).toEqual({
+			span: expect.objectContaining({
+				startSide: "LEFT",
+				startLine: 2,
+				side: "LEFT",
+				line: 3,
+			}),
+			noLine: null,
+		});
+		// Its added line too: LEFT 2 to RIGHT 2, as the full diff names it.
+		const added = document.querySelector('tr[data-new-no="2"]') as HTMLElement;
+		press(
+			within(added)
+				.getByRole("button", { name: "Line 2" })
+				.closest("td") as Element,
+			{ shiftKey: true },
+		);
+		expect(pickedSpan()).toEqual({
+			span: expect.objectContaining({
+				startSide: "LEFT",
+				startLine: 2,
+				side: "RIGHT",
+				line: 2,
+			}),
+			noLine: null,
+		});
+	});
+
+	it("a range mixing the orphan run with the since view's other rows is off, with its reason", async () => {
+		await shown();
+		press(base(3).closest("td") as Element);
+		press(
+			within(ps1Row(2))
+				.getByRole("button", { name: "Old line 2" })
+				.closest("td") as Element,
+			{ shiftKey: true },
+		);
+		expect(picked()).toHaveLength(3);
+		expect(pickedSpan()?.noLine).toBe("orphan");
+	});
+
+	it("an added orphan line with a since row outside its run is off too (CAR-276 fix round)", async () => {
+		await shown();
+		const added = document.querySelector('tr[data-new-no="2"]') as HTMLElement;
+		press(
+			within(added)
+				.getByRole("button", { name: "Line 2" })
+				.closest("td") as Element,
+		);
+		press(
+			within(ps1Row(2))
+				.getByRole("button", { name: "Old line 2" })
+				.closest("td") as Element,
+			{ shiftKey: true },
+		);
+		expect(pickedSpan()?.noLine).toBe("orphan");
+		expect(
+			noLineIn([
+				{ side: "RIGHT", base: undefined, orphan: true },
+				{ side: "RIGHT", base: undefined },
+			]),
+		).toBe("orphan");
+	});
+
+	it("orphan removed lines whose base lines aren't one run are off: the range would cover lines the view never showed (CAR-276 fix round)", () => {
+		const left = (base: number) => ({
+			side: "LEFT" as const,
+			base,
+			orphan: true,
+		});
+		expect(noLineIn([left(10), left(13)])).toBe("orphan-split");
+		expect(noLineIn([left(10), left(11)])).toBeNull();
+		// With its added line: the removed ones still one run.
+		expect(
+			noLineIn([left(10), left(11), { side: "RIGHT", orphan: true }]),
+		).toBeNull();
+	});
+
+	it("its blank number button has a tooltip naming it (CAR-276 fix round)", async () => {
+		await shown();
+		fireEvent.focus(base(2));
+		const tip = document.querySelector('[role="tooltip"]:not([hidden])');
+		expect(tip).toHaveTextContent("Base line 2");
+	});
+
+	it("a selection over its text maps to its base line too", async () => {
+		await shown();
+		const cell = orphanRow(3).querySelector(`[${CODE_CELL}]`) as Element;
+		expect(cellLine(cell)).toMatchObject({
+			side: "LEFT",
+			base: 3,
+			orphan: true,
+		});
+		const range = document.createRange();
+		range.setStart(cell, 0);
+		range.setEnd(cell, cell.childNodes.length);
+		const found = spanOfRange(range, HEAD);
+		expect(found?.noLine).toBeNull();
+		expect(found?.span).toMatchObject({ side: "LEFT", line: 3, startLine: 3 });
+	});
+
+	it("a GitHub thread on its base line shows on it, never on PS1's row of that number", async () => {
+		await shown([threadOnBase(2)]);
+		await waitForCommented();
+		expect(orphanRow(2).hasAttribute("data-commented")).toBe(true);
+		expect(ps1Row(2).hasAttribute("data-commented")).toBe(false);
+		expect(orphanRow(3).hasAttribute("data-commented")).toBe(false);
+	});
+});
+
+async function waitForCommented() {
+	await vi.waitFor(() => {
+		if (!document.querySelector("tr[data-commented]")) {
+			throw new Error("no commented row yet");
+		}
+	});
+}
 
 describe("ProgressBar's to-read slot", () => {
 	const sample: Progress = {

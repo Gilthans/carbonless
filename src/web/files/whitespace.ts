@@ -1,3 +1,4 @@
+import type { DiffRow } from "../../shared/hunkPairs";
 import { lineRuns } from "../../shared/pieces";
 import type { DiffLine } from "../../shared/types";
 import { matchDisplayHunk, whitespaceKey } from "../../shared/whitespace";
@@ -18,7 +19,6 @@ import { hunkPairs, type LinePair } from "./wordBlocks";
 
 export {
 	matchSides,
-	type Side,
 	stripWhitespace,
 	whitespaceEqual,
 } from "../../shared/whitespace";
@@ -34,21 +34,12 @@ const keyOf = (line: DiffLine): string =>
 export const linesWhitespaceEqual = (del: DiffLine, add: DiffLine): boolean =>
 	keyOf(del) === keyOf(add);
 
-/**
- * A row of a cluster's run: a line as it is (a context line, or a change),
- * or a whitespace-only row. The whitespace-only row has both sides when a
- * removed line pairs with an added line of the same run; one side when the
- * line's twin is a context line or sits in another run (the twin stays
- * where it is).
- */
-export type DiffRow =
-	| { kind: "line"; line: DiffLine }
-	| { kind: "ws"; del: DiffLine; add?: DiffLine }
-	| { kind: "ws"; del?: DiffLine; add: DiffLine };
+export type { DiffRow } from "../../shared/hunkPairs";
 
 /**
  * Splits a hunk into runs of context lines and runs of one cluster's
- * lines. `starts` (the since view's pieces' first lines, CAR-218): a
+ * lines; a run of orphan lines (CAR-216) stays apart from its cluster's
+ * other lines. `starts` (the since view's pieces' first lines, CAR-218): a
  * changed run is also cut before each line in it, keeping its key, so
  * every piece is a run of its own with its own controls. `shaped`: the
  * run it was cut from is its removed lines, then its added ones (what
@@ -58,10 +49,15 @@ export type DiffRow =
 export function runs(
 	lines: DiffLine[],
 	starts?: ReadonlySet<DiffLine>,
-): { key?: string; lines: DiffLine[]; shaped: boolean }[] {
-	const out: { key?: string; lines: DiffLine[]; shaped: boolean }[] = [];
+): { key?: string; orphan?: true; lines: DiffLine[]; shaped: boolean }[] {
+	const out: {
+		key?: string;
+		orphan?: true;
+		lines: DiffLine[];
+		shaped: boolean;
+	}[] = [];
 	// A changed run without a key stays apart from context (pieces.ts).
-	for (const { key, change, lines: all } of lineRuns(lines)) {
+	for (const { key, change, orphan, lines: all } of lineRuns(lines)) {
 		const firstAdd = all.findIndex((l) => l.kind === "add");
 		const shaped =
 			change &&
@@ -71,7 +67,12 @@ export function runs(
 		let part: DiffLine[] = [];
 		const flush = () => {
 			if (part.length === 0) return;
-			out.push({ ...(key === undefined ? {} : { key }), lines: part, shaped });
+			out.push({
+				...(key === undefined ? {} : { key }),
+				...(orphan ? { orphan } : {}),
+				lines: part,
+				shaped,
+			});
 			part = [];
 		};
 		for (const line of all) {
@@ -147,8 +148,10 @@ export function pairRun(
 }
 
 /** A hunk's run and the rows the view shows for it. */
-export interface ViewRun {
+interface ViewRun {
 	key?: string;
+	/** A run of orphan lines (DiffLine.orphan, CAR-216). */
+	orphan?: true;
 	lines: DiffLine[];
 	rows: DiffRow[];
 }

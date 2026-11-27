@@ -1,0 +1,8 @@
+# CodeQL (.github/workflows/codeql.yml) scans our own source only: test
+# fixtures are recorded data, dist is the build, release-notes are text.
+name: carbonless CodeQL config
+paths-ignore:
+  - test/fixtures
+  - dist
+  - release-notes
+  - node_modules

@@ -126,6 +126,11 @@ export function commentPlace(args: {
 	placing: "in" | "pending" | "failed";
 	/** Another block of the conversation this browser posted or is posting (siblingOf). */
 	sibling?: Sibling;
+	/**
+	 * The since view: the conversation is on lines only its compared patch
+	 * set had (earlierSpan, CAR-264): the target there, or why none.
+	 */
+	earlier?: NewTarget | string;
 }): CommentPlace {
 	const { sibling } = args;
 	const base = ownPlace(args);
@@ -181,6 +186,7 @@ function ownPlace(args: {
 	head: string | undefined;
 	placement: ThreadPlacement | undefined;
 	placing: "in" | "pending" | "failed";
+	earlier?: NewTarget | string;
 }): CommentPlace {
 	const { thread, head, placement, placing } = args;
 	const a = thread.anchor;
@@ -196,6 +202,14 @@ function ownPlace(args: {
 	// before the post (the fold adds it; the join moves it there).
 	if (thread.joined && !thread.orphaned) {
 		return { kind: "reply", thread: thread.joined.thread };
+	}
+	// On lines only the since view's compared patch set had: a new thread
+	// there, on that commit, as a direct comment on them (CAR-264).
+	if (typeof args.earlier === "string") {
+		return { kind: "off", why: args.earlier };
+	}
+	if (args.earlier) {
+		return { kind: "new", changed: false, target: args.earlier };
 	}
 	if (!head) return { kind: "pending" };
 	if (a.commit === head) {
@@ -234,6 +248,8 @@ function ownPlace(args: {
 				changed: false,
 				target: { path: placement.path, commit: head, subject: "file" },
 			};
+		case "pending":
+			return { kind: "pending" };
 		default:
 			return { kind: "off", why: LINES_GONE };
 	}

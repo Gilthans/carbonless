@@ -661,7 +661,7 @@ function Popover(props: { label: string; children: ReactNode }) {
  * A bottom sheet (modal dialog): Close, Escape or the backdrop close it.
  * As tall as what it holds, or `full`: 85% of the window whatever it holds.
  */
-export function Sheet(props: {
+function Sheet(props: {
 	open: boolean;
 	full?: boolean;
 	title: string;

@@ -1,12 +1,15 @@
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
 import { traceFiles } from "./load";
+import { isServerDir } from "./server";
 
 export interface Run {
 	dir: string;
 	name: string;
 	/** The tree it ran in (run.json), when known. */
 	cwd: string | null;
+	/** A crb serve's trace directory ($CRB_TRACE_DIR), not a test run. */
+	server?: boolean;
 }
 
 function runCwd(dir: string): string | null {
@@ -76,6 +79,9 @@ export function resolveRun(
 ): Run {
 	if (arg && (arg.includes("/") || arg.startsWith(".")) && existsSync(arg)) {
 		const dir = resolve(arg);
+		if (isServerDir(dir)) {
+			return { dir, name: basename(dir), cwd: null, server: true };
+		}
 		const isRun =
 			existsSync(join(dir, "run.json")) || traceFiles(dir).length > 0;
 		if (isRun) return { dir, name: basename(dir), cwd: runCwd(dir) };

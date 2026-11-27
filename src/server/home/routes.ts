@@ -1,6 +1,7 @@
-import type { FastifyInstance } from "fastify";
+import type { FastifyInstance, FastifyPluginAsync } from "fastify";
 import type { AnnotationOp } from "../../shared/home.js";
 import { GhError } from "../errors.js";
+import { validOwnerRepo } from "../gh.js";
 import { GitError } from "../git.js";
 import {
 	HomeRequestError,
@@ -21,8 +22,6 @@ export const MAX_NOTE = 500;
 const MAX_REPOS = 100;
 const MAX_QUERY = 300;
 const LOGIN = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$/;
-const OWNER = /^[A-Za-z0-9][A-Za-z0-9-]{0,38}$/;
-const REPO = /^[A-Za-z0-9._-]{1,100}$/;
 const NUMBER = /^[1-9]\d{0,9}$/;
 
 /** The op a request body names, or a HomeRequestError saying what's wrong. */
@@ -78,7 +77,7 @@ export async function registerHomeRoutes(
 	} = {},
 ): Promise<void> {
 	const people = options.people ?? new HomePeople(home);
-	await app.register(async (scope) => {
+	await app.register((async (scope) => {
 		scope.setErrorHandler((error, _request, reply) => {
 			const send = (status: number, message: string) =>
 				reply.status(status).send({ error: message });
@@ -96,22 +95,35 @@ export async function registerHomeRoutes(
 
 		scope.get("/api/home", () => home.view());
 		// A repo's rows (in the view, or picked in its settings: any repo);
-		// `fresh=1` reads GitHub now (Refresh, Retry, a save after a failed pick).
+		// `fresh=1` reads GitHub now (Refresh, Retry, a save after a failed pick);
+		// `seen=N`: a first read's answer after its Nth batch (RepoHome.progress);
+		// `whole=1`: the page shows a whole list, so only a whole one answers.
 		scope.get<{
 			Params: { owner: string; repo: string };
-			Querystring: { fresh?: unknown };
+			Querystring: { fresh?: unknown; seen?: unknown; whole?: unknown };
 		}>("/api/home/repos/:owner/:repo", (request) => {
 			const { owner, repo } = request.params;
-			if (!OWNER.test(owner) || !REPO.test(repo)) {
+			if (!validOwnerRepo(owner, repo)) {
 				throw new HomeRequestError(`Not a repository: ${owner}/${repo}`);
 			}
-			return home.repo(owner, repo, { fresh: request.query.fresh === "1" });
+			const { seen } = request.query;
+			if (
+				seen !== undefined &&
+				(typeof seen !== "string" || !/^(0|[1-9]\d{0,8})$/.test(seen))
+			) {
+				throw new HomeRequestError("seen must be a whole number");
+			}
+			return home.repo(owner, repo, {
+				fresh: request.query.fresh === "1",
+				whole: request.query.whole === "1",
+				...(seen === undefined ? {} : { seen: Number(seen) }),
+			});
 		});
 		scope.post<{ Params: { owner: string; repo: string; number: string } }>(
 			"/api/home/prs/:owner/:repo/:number/annotations",
 			(request) => {
 				const { owner, repo, number } = request.params;
-				if (!OWNER.test(owner) || !REPO.test(repo) || !NUMBER.test(number)) {
+				if (!validOwnerRepo(owner, repo) || !NUMBER.test(number)) {
 					throw new HomeRequestError(`Not a PR: ${owner}/${repo}#${number}`);
 				}
 				return home.annotate(
@@ -163,5 +175,5 @@ export async function registerHomeRoutes(
 				return people.people(q);
 			},
 		);
-	});
+	}) satisfies FastifyPluginAsync);
 }

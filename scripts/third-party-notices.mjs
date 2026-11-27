@@ -12,7 +12,7 @@ import { createRequire } from "node:module";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-export const FILE_NAME = "THIRD-PARTY-NOTICES.md";
+const FILE_NAME = "THIRD-PARTY-NOTICES.md";
 
 /** The committed texts (overrides, extra notices): licenses/ in the repo. */
 export const LICENSES_DIR = fileURLToPath(
@@ -22,7 +22,7 @@ export const LICENSES_DIR = fileURLToPath(
 /**
  * Packages offered under a choice of licenses, and the one we use.
  */
-export const LICENSE_CHOICES = {
+const LICENSE_CHOICES = {
 	// "MPL-2.0 OR Apache-2.0"
 	dompurify: "Apache-2.0",
 };
@@ -33,7 +33,7 @@ export const LICENSE_CHOICES = {
  * authors than its own license names. Each says where the text came from.
  * Keep it short and explain every line.
  */
-export const LICENSE_OVERRIDES = {
+const LICENSE_OVERRIDES = {
 	// The TextMate grammars it bundles were converted from other projects
 	// (VS Code's, a TextMate bundle): one row per grammar we ship.
 	"@shikijs/langs": {
@@ -46,7 +46,7 @@ export const LICENSE_OVERRIDES = {
  * Packages whose shipped modules each need a row in their override file:
  * `@shikijs/langs/dist/<grammar>.mjs` needs a `| <grammar> |` row.
  */
-export const ROWS_PER_MODULE = {
+const ROWS_PER_MODULE = {
 	"@shikijs/langs": /\/dist\/([^/]+)\.mjs$/,
 };
 
@@ -57,7 +57,7 @@ export const ROWS_PER_MODULE = {
  * into it, the modulepreload polyfill and preload helper, are Vite's own
  * code).
  */
-export const LICENSE_CUTS = {
+const LICENSE_CUTS = {
 	vite: { file: "LICENSE.md", before: "# Licenses of bundled dependencies" },
 };
 
@@ -65,7 +65,7 @@ export const LICENSE_CUTS = {
  * Virtual modules the bundler writes into the output (`\0<prefix>/...`), and
  * the package their code comes from. An unknown one fails the build.
  */
-export const VIRTUAL_PACKAGES = {
+const VIRTUAL_PACKAGES = {
 	vite: "vite", // modulepreload polyfill, preload helper
 	rolldown: "rolldown", // the chunks' runtime
 };
@@ -96,7 +96,7 @@ export function virtualPackageFile(id, root) {
  * (THIRD-PARTY-LICENSE, THIRD-PARTY-NOTICES, ThirdPartyNotices), with any
  * extension or suffix.
  */
-export const LICENSE_FILE =
+const LICENSE_FILE =
 	/^((third[-_ ]?party[-_ ]?)?(licen[cs]es?|notices?)|copying)([.-].*)?$/i;
 
 /**
@@ -281,7 +281,7 @@ export function renderNotices(packages) {
 }
 
 /** The specifiers of a CSS text's `@import`s. */
-export function cssImports(css) {
+function cssImports(css) {
 	const out = [];
 	for (const m of css.matchAll(/@import\s+(?:url\(\s*)?["']([^"']+)["']/g)) {
 		if (m[1]) out.push(m[1]);

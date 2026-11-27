@@ -20,7 +20,9 @@ import {
 	COMMENT_POSTS,
 	COMMENT_WHICH,
 	JOINED_PREAMBLE,
+	OPEN_SUGGEST_RESOLVE,
 	REVIEW_PREAMBLE,
+	SUGGEST_RESOLVE,
 } from "../../shared/agent";
 import type { ReviewView } from "../../shared/types";
 import { buildApp } from "../app";
@@ -164,6 +166,8 @@ describe("/mcp", () => {
 		expect(tools.map((t) => t.name).sort()).toEqual([
 			"attach",
 			"detach",
+			"diff",
+			"file",
 			"next",
 			"open",
 			"progress",
@@ -186,6 +190,14 @@ describe("/mcp", () => {
 		expect(desc("reply")).toContain(COMMENT_WHICH);
 		expect(desc("open")).not.toContain(COMMENT_WHICH);
 		expect(desc("open")).toContain(COMMENT_OPENED);
+		// open on a GitHub thread may suggest resolving it, as reply may (CAR-265).
+		expect(desc("open")).toContain(OPEN_SUGGEST_RESOLVE);
+		expect(OPEN_SUGGEST_RESOLVE).toContain(SUGGEST_RESOLVE);
+		// Judged at the question's comparison (progress's head), never
+		// review's newest head: a fix only in a later push never suggests.
+		expect(desc("open")).toMatch(
+			/resolved at the head `progress` gives .*not `review`'s newest head\), never for a fix that exists only in a later commit/,
+		);
 		const fake = `${id}.${"A".repeat(43)}`;
 		for (const name of ["next", "threads", "review", "progress", "detach"]) {
 			const r = await call(client, name, { token: fake });
@@ -541,6 +553,14 @@ describe("/mcp", () => {
 						{ author: "rev", body: "Fix this" },
 						{ author: "octo-author", body: "Done" },
 					],
+					atHead: {
+						kind: "placed",
+						path: "a.txt",
+						side: "RIGHT",
+						startSide: "RIGHT",
+						startLine: 2,
+						line: 2,
+					},
 				},
 			]);
 		});

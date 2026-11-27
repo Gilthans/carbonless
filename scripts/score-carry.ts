@@ -256,6 +256,8 @@ export function describePlacement(p: ThreadPlacement): string {
 			return `outside ${p.fate}`;
 		case "file":
 			return `file ${p.path}`;
+		case "pending":
+			return `pending ${p.path}`;
 	}
 }
 

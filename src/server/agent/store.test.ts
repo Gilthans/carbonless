@@ -637,6 +637,51 @@ describe("GitHub thread conversations", () => {
 		expect(fresh[0]?.messages[0]?.origin).toBeUndefined();
 	});
 
+	it("an origin opening or message carries suggests and keeps it on a fresh read (CAR-265)", async () => {
+		const req = await store.open({
+			anchor: gh("PRRT_1"),
+			text: "Review it",
+			by: "human",
+			clientId: "c1",
+		});
+		const origin = { thread: req.id, message: req.messages[0]?.id as string };
+		const opened = await store.open({
+			anchor: gh("PRRT_9"),
+			text: "Fixed.",
+			by: "ai",
+			agent,
+			origin,
+			suggests: "resolve",
+		});
+		const added = await store.message(opened.id, {
+			by: "ai",
+			text: "Still fixed.",
+			agent,
+			origin,
+			key: "k",
+			suggests: "resolve",
+		});
+		const plain = await store.message(opened.id, {
+			by: "ai",
+			text: "Note.",
+			agent,
+			origin,
+		});
+		expect(added.messages.map((m) => m.suggests)).toEqual([
+			"resolve",
+			"resolve",
+		]);
+		expect(plain.messages[2]?.suggests).toBeUndefined();
+		const fresh = await new AgentThreadStore(
+			new RefStore(repo),
+			REVIEW,
+			"dan",
+		).read();
+		expect(
+			fresh.find((t) => t.id === opened.id)?.messages.map((m) => m.suggests),
+		).toEqual(["resolve", "resolve", undefined]);
+	});
+
 	it("agent-thread-resolved still folds for a thread anchor", async () => {
 		const t = await askOn("PRRT_1", "Why?", "c1");
 		expect((await store.setResolved(t.id, true)).resolved).toBe(true);

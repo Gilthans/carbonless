@@ -14,7 +14,7 @@ import type { KindEntry } from "./since";
  * compared patch set, unchanged since). The line view (DiffBody) and the
  * Rendered view (MarkdownView) both say so (SinceNotes).
  */
-export function unshownToRead(
+function unshownToRead(
 	clusters: readonly ClusterView[],
 	kinds: Map<string, KindEntry> | undefined,
 	hunks: FileHunks | undefined,
@@ -59,6 +59,8 @@ export function unshownToRead(
  * file the author left alone with nothing else to show, "Nothing to read
  * since PSn" (never an empty body that reads as "nothing changed" by
  * mistake). `unshown`: when false, that note is left to another view.
+ * `fileLevel`: the since view's file-level pieces shown (SincePiece.file,
+ * CAR-297), something to read, so never "nothing".
  */
 export function SinceNotes(props: {
 	from: number;
@@ -66,6 +68,7 @@ export function SinceNotes(props: {
 	kinds: Map<string, KindEntry> | undefined;
 	hunks: FileHunks;
 	unshown?: boolean;
+	fileLevel?: number;
 }) {
 	const { from, clusters, hunks } = props;
 	const toRead = unshownToRead(clusters, props.kinds, hunks);
@@ -85,14 +88,17 @@ export function SinceNotes(props: {
 					<span className="text-muted">{carried} carried</span>
 				</p>
 			)}
-			{hunks.hunks.length === 0 && fileRows === 0 && toRead === 0 && (
-				<p
-					data-testid="since-empty"
-					className="flex min-h-10 items-center gap-2 px-3 text-xs text-muted"
-				>
-					Nothing to read since PS{from} · {carried} carried
-				</p>
-			)}
+			{hunks.hunks.length === 0 &&
+				fileRows === 0 &&
+				(props.fileLevel ?? 0) === 0 &&
+				toRead === 0 && (
+					<p
+						data-testid="since-empty"
+						className="flex min-h-10 items-center gap-2 px-3 text-xs text-muted"
+					>
+						Nothing to read since PS{from} · {carried} carried
+					</p>
+				)}
 		</>
 	);
 }

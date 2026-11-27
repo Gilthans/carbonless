@@ -145,7 +145,7 @@ export function marksOf(cluster: ClusterView): {
 }
 
 /** The cluster's reviewed lines. */
-export const reviewedLines = (cluster: ClusterView): LineRanges =>
+const reviewedLines = (cluster: ClusterView): LineRanges =>
 	marksOf(cluster).reviewed;
 
 /** How many of the cluster's lines are reviewed (all, some, or none). */
@@ -256,27 +256,37 @@ export function fitRanges(
  * A hunk's lines in runs: context runs, and runs of changed lines with one
  * cluster key (or none) and one `blockPiece` (cutRunsAtBlocks). A changed
  * run is never merged into context, so an unkeyed removal shows, and is
- * marked, as a piece of its own.
+ * marked, as a piece of its own; nor are orphan lines (DiffLine.orphan,
+ * CAR-216) merged with other changed lines of their cluster: a run of them
+ * is a piece of its own.
  */
 export function lineRuns(
 	lines: readonly DiffLine[],
-): { key?: string; change: boolean; lines: DiffLine[] }[] {
-	const out: { key?: string; change: boolean; lines: DiffLine[] }[] = [];
+): { key?: string; change: boolean; orphan?: true; lines: DiffLine[] }[] {
+	const out: {
+		key?: string;
+		change: boolean;
+		orphan?: true;
+		lines: DiffLine[];
+	}[] = [];
 	for (const line of lines) {
 		const change = line.kind !== "context";
 		const key = change ? line.clusterKey : undefined;
+		const orphan = change && line.orphan === true;
 		const last = out.at(-1);
 		if (
 			last &&
 			last.change === change &&
 			last.key === key &&
-			last.lines[0]?.blockPiece === line.blockPiece
+			last.lines[0]?.blockPiece === line.blockPiece &&
+			(last.orphan === true) === orphan
 		) {
 			last.lines.push(line);
 		} else {
 			out.push({
 				...(key === undefined ? {} : { key }),
 				change,
+				...(orphan ? { orphan: true as const } : {}),
 				lines: [line],
 			});
 		}
@@ -306,7 +316,9 @@ export function cutRunsAtBlocks<H extends { lines: readonly DiffLine[] }>(
 	return hunks.map((hunk) => {
 		let cut = false;
 		const lines = lineRuns(hunk.lines).flatMap((run) => {
-			if (!run.change) return run.lines;
+			// An orphan run (CAR-216) is a piece of its own already, and its
+			// removed lines have no old number here to find their block by.
+			if (!run.change || run.orphan) return run.lines;
 			const removed = run.lines.filter((l) => l.kind === "del");
 			const added = run.lines.filter((l) => l.kind === "add");
 			const sorted = run.lines.every((l, i) =>
@@ -379,10 +391,37 @@ export interface SincePiece {
 	 * (its display hunk's one matching, `whitespaceLines`) and held a human
 	 * mark at the compared patch set (`SinceWhitespace.marked`). "Ignore
 	 * whitespace" on leaves it out of the counts. Any doubt leaves it unset
-	 * (principle 2: it counts).
+	 * (principle 2: it counts). An orphan piece (CAR-216) isn't on the
+	 * interdiff: its cluster's (Cluster.whitespaceOnly, against the base).
 	 */
 	whitespaceOnly?: true;
+	/**
+	 * A run of orphan lines (DiffLine.orphan, CAR-216): changed lines of
+	 * its cluster unchanged since the compared patch set but no change
+	 * reviewed there, nothing carried; it owns exactly them.
+	 */
+	orphan?: true;
+	/**
+	 * A file-level change of the interdiff (a mode, a binary file, a
+	 * submodule pointer: its label, as the full diff labels it) that no
+	 * reworked or new file-level cluster of the viewed snapshot shows
+	 * (CAR-297: the author reverted it since, say). It has no lines and
+	 * no row (`hunk` -1): it is marked on its own, on the since mark's
+	 * old-side line 0, which no line has (fileLevelSides), and counts as one
+	 * unit of no lines.
+	 */
+	file?: string;
 }
+
+/**
+ * The since mark's sides a file-level piece (SincePiece.file) is marked
+ * by: old-side line 0, which no real line has (they start at 1). A fresh
+ * copy each call: nothing shares its arrays.
+ */
+export const fileLevelSides = (): { old: LineRanges; new: LineRanges } => ({
+	old: [[0, 1]],
+	new: [],
+});
 
 /**
  * What sincePieces needs to cut whitespace-only runs (CAR-218): the
@@ -423,6 +462,7 @@ export function sincePieces(
 					hunk: h,
 					line: at,
 					...(run.key === undefined ? {} : { key: run.key }),
+					...(run.orphan ? { orphan: true as const } : {}),
 					owns: null,
 					old: fromIndexes(
 						run.lines.flatMap((l) =>
@@ -435,7 +475,14 @@ export function sincePieces(
 						),
 					),
 				};
-				if (ws && run.lines.every((l) => ws.lines.has(l) && ws.marked(l))) {
+				// An orphan run (CAR-216) isn't on the interdiff: it is read
+				// against the base, so it is whitespace-only as its cluster is.
+				const cluster = run.key === undefined ? undefined : byKey.get(run.key);
+				if (
+					run.orphan
+						? cluster?.kind === "lines" && cluster.whitespaceOnly === true
+						: ws && run.lines.every((l) => ws.lines.has(l) && ws.marked(l))
+				) {
 					piece.whitespaceOnly = true;
 				}
 				out.push(piece);
@@ -468,19 +515,23 @@ export function sincePieces(
 		});
 	}
 	// A cluster's own piece is chipped only when it shows nothing but
-	// removals (the author took lines out there): "removed".
+	// removals (the author took lines out there): "removed"; an orphan
+	// piece by a chip of its own.
 	for (const piece of out) {
 		if (!piece.owns) continue;
-		if (piece.new.length === 0) piece.kind = "removed";
+		if (piece.new.length === 0 && !piece.orphan) piece.kind = "removed";
 		else delete piece.kind;
 	}
-	return out;
+	// An orphan piece that owns none of its cluster's lines would mark
+	// nothing: none (its lines stay to read, in the full diff).
+	return out.filter((piece) => !piece.orphan || piece.owns);
 }
 
 /**
  * Changed runs cut where membership in `ws.lines` changes (each piece all
- * whitespace-only lines, or none); context runs and, without `ws`, every
- * run as it is.
+ * whitespace-only lines, or none); context runs, orphan runs (CAR-216:
+ * whitespace-only as their cluster is) and, without `ws`, every run as it
+ * is.
  */
 function wsRuns(
 	runs: ReturnType<typeof lineRuns>,
@@ -489,7 +540,7 @@ function wsRuns(
 	if (!ws) return runs;
 	const out: ReturnType<typeof lineRuns> = [];
 	for (const run of runs) {
-		if (!run.change) {
+		if (!run.change || run.orphan) {
 			out.push(run);
 			continue;
 		}
@@ -749,7 +800,14 @@ export function sinceUnits(
 		const owned = new Map<string, LineRanges>();
 		const base = { index: file.index, path: file.path };
 		for (const p of file.pieces ?? []) {
-			const lines = size(p.old) + size(p.new);
+			// An orphan's removed lines have no number here: its own lines.
+			// A file-level piece has none (its line 0 is the change itself).
+			const lines =
+				p.file !== undefined
+					? 0
+					: p.orphan && p.owns
+						? size(p.owns)
+						: size(p.old) + size(p.new);
 			const cluster = p.key === undefined ? undefined : clusters.get(p.key);
 			if (p.owns && cluster && p.key !== undefined) {
 				owned.set(p.key, union(owned.get(p.key) ?? [], p.owns));

@@ -7,7 +7,13 @@
  * counted as unsent by Resolve's close), the comparison a question is sent
  * in, and the seen marks.
  */
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import {
+	matchQuery,
+	type Query,
+	type QueryCache,
+	useQuery,
+	useQueryClient,
+} from "@tanstack/react-query";
 import {
 	createContext,
 	createElement,
@@ -37,7 +43,7 @@ import {
 export type SendView = Omit<AgentView, "left" | "right">;
 
 /** The live conversation of GitHub thread `threadId` in `list` (an orphan is a span thread). */
-export function threadConversation(
+function threadConversation(
 	list: readonly AgentThread[] | undefined,
 	threadId: string,
 ): AgentThread | undefined {
@@ -48,19 +54,10 @@ export function threadConversation(
 }
 
 /** The conversation for a GitHub thread id, from agentThreadsQuery. */
-export function useThreadConversation(
-	threadId: string,
-): AgentThread | undefined {
+function useThreadConversation(threadId: string): AgentThread | undefined {
 	const on = useAgentOn();
 	const list = useQuery({ ...agentThreadsQuery, enabled: on }).data?.threads;
 	return threadConversation(list, threadId);
-}
-
-/** The agent threads are asked and not in yet: a spinner, never "none". */
-export function useAgentThreadsLoading(): boolean {
-	const on = useAgentOn();
-	const query = useQuery({ ...agentThreadsQuery, enabled: on });
-	return on && query.isPending && !query.isError;
 }
 
 /**
@@ -81,6 +78,78 @@ export function useAgentThreadsFailed(): {
 	const { refetch } = query;
 	const retry = useCallback(() => void refetch(), [refetch]);
 	return { failed, retry };
+}
+
+/**
+ * The last error of each agent threads query, kept from its failure until
+ * it answers: a read out again with nothing in hand is "pending" (TanStack
+ * clears the error), and whether it follows a failure, and which, is read
+ * here. Per query, so a card mounted during a retry agrees with the rest.
+ * Filled by one subscriber per query cache (useThreadsErrorStore).
+ */
+const threadsErrors = new WeakMap<Query, unknown>();
+const watchedCaches = new WeakSet<QueryCache>();
+
+function watchThreadsErrors(cache: QueryCache): void {
+	if (watchedCaches.has(cache)) return;
+	watchedCaches.add(cache);
+	cache.subscribe((event) => {
+		if (event.type !== "updated") return;
+		if (
+			!matchQuery(
+				{ queryKey: agentThreadsQuery.queryKey, exact: true },
+				event.query,
+			)
+		)
+			return;
+		if (event.action.type === "error") {
+			threadsErrors.set(event.query, event.action.error);
+		} else if (event.action.type === "success") {
+			threadsErrors.delete(event.query);
+		}
+	});
+}
+
+/**
+ * How the agent threads' read stands for a view that shows a thread's
+ * conversation (its handle, panel and composer): "loading" until the
+ * first answer, "failed" once a read failed with nothing in hand (not a
+ * 404, which is "no agent"), kept while it reads again, else "in".
+ * `retrying`: failed, and a read is out again (a press, or a refetch of
+ * its own): the error stays, with a spinner, never swapped out from
+ * under a press. A later refetch that fails keeps the answer in hand: "in".
+ */
+export function useAgentThreadsRead(): {
+	state: "loading" | "failed" | "in";
+	retrying: boolean;
+	retry: () => void;
+} {
+	const on = useAgentOn();
+	const client = useQueryClient();
+	const cache = client.getQueryCache();
+	useEffect(() => watchThreadsErrors(cache), [cache]);
+	const query = useQuery({ ...agentThreadsQuery, enabled: on });
+	const { refetch } = query;
+	const retry = useCallback(() => void refetch(), [refetch]);
+	let state: "loading" | "failed" | "in" = "in";
+	if (on && query.data === undefined) {
+		const cached = cache.find({
+			queryKey: agentThreadsQuery.queryKey,
+			exact: true,
+		});
+		const error = query.isError
+			? query.error
+			: query.errorUpdateCount > 0
+				? ((cached && threadsErrors.get(cached)) ?? query.failureReason)
+				: undefined;
+		if (query.errorUpdateCount > 0 || query.isError) {
+			// A 404 is "no agent": no conversations, never an error or a spinner.
+			if (!(error instanceof ApiError && error.status === 404)) {
+				state = "failed";
+			}
+		} else if (query.isPending) state = "loading";
+	}
+	return { state, retrying: state === "failed" && query.isFetching, retry };
 }
 
 /**
@@ -117,6 +186,9 @@ export function agentButtonName(
  * finished answer, when it suggests resolving, while the GitHub thread is
  * open and still there. A later answer that doesn't suggest it retracts
  * it; one that failed or was stopped doesn't, nor does a question alone.
+ * A message from `open` counts as an answer here (CAR-265): it may
+ * suggest, and one that doesn't retracts, so an older opinion never
+ * outlives a newer one (principle 2).
  */
 export function standingSuggestion(
 	conversation: AgentThread | undefined,
@@ -125,14 +197,9 @@ export function standingSuggestion(
 	if (!conversation || conversation.orphaned || thread.resolved) {
 		return undefined;
 	}
-	const latest = [...conversation.messages].reverse().find(
-		(m) =>
-			m.by === "ai" &&
-			// A message from `open` answers nothing: it never retracts one.
-			!m.origin &&
-			m.stop !== "error" &&
-			m.stop !== "cancelled",
-	);
+	const latest = [...conversation.messages]
+		.reverse()
+		.find((m) => m.by === "ai" && m.stop !== "error" && m.stop !== "cancelled");
 	return latest?.suggests === "resolve" ? latest : undefined;
 }
 

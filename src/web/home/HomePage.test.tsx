@@ -716,8 +716,9 @@ describe("HomePage", () => {
 		await waitFor(() =>
 			expect(calls.map((c) => c.url).sort()).toEqual([
 				"/api/home",
-				"/api/home/repos/acme/api",
-				"/api/home/repos/acme/console",
+				// Restored whole lists: only whole answers replace them (CAR-290).
+				"/api/home/repos/acme/api?whole=1",
+				"/api/home/repos/acme/console?whole=1",
 			]),
 		);
 		act(() => gate.release());

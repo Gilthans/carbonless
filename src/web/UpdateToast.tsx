@@ -27,13 +27,13 @@ import { WhatsNewModal } from "./WhatsNew";
 export { Command };
 
 /** How often the page asks whether an update is on offer, when none is. */
-export const UPDATE_POLL_MS = 10 * 60_000;
+const UPDATE_POLL_MS = 10 * 60_000;
 /**
  * How often, while one is on offer: often enough to see another tab's (or
  * device's) Update while crb still answers (the server waits
  * RESTART_GRACE_MS before it stops).
  */
-export const UPDATE_WATCH_MS = 5_000;
+const UPDATE_WATCH_MS = 5_000;
 /** How often an updating page asks whether crb is back. */
 export const BACK_POLL_MS = 1_000;
 /** How long crb may take to install and come back before the page calls it failed. */

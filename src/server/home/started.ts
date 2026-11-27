@@ -31,7 +31,7 @@ const reposDir = () => join(cacheDir(), "repos");
  * mode changes) are left, clusters stand in, so nothing unreviewed looks
  * done (principle 2).
  */
-export function coverageOf(
+function coverageOf(
 	snapshot: Snapshot,
 	progress: ReturnType<typeof foldProgress>,
 ): Coverage {

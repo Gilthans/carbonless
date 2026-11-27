@@ -59,6 +59,11 @@ const specs = readdirSync("e2e")
 const E2E_MAP = [
 	// The Markdown renderer's Rendered view (CAR-167): its own spec.
 	[/^src\/web\/files\/renderers\/markdown\//, ["markdown-renderer"]],
+	// A message's long press and its menu (CAR-280).
+	[
+		/^src\/web\/(longPress|messageCopy)\.tsx?$|^e2e\/long-press-copy\.spec\.ts$/,
+		["long-press-copy"],
+	],
 	// Marks carried onto split pieces (CAR-156). The split and the counted
 	// progress (src/shared/whitespace.ts, progress.ts) feed every page:
 	// left unmapped, they run every spec.
@@ -66,13 +71,18 @@ const E2E_MAP = [
 		/^src\/server\/review\/(splitCarry|fold|events|reviews)\.ts$|^src\/server\/home\/started\.ts$|^e2e\/ws-split\.spec\.ts$/,
 		["ws-split", "whitespace"],
 	],
+	// The page's spans, only while crb serve traces (CAR-288).
+	[
+		/^src\/web\/trace\/|^src\/server\/browserTrace\.ts$|^e2e\/browser-trace\.spec\.ts$/,
+		["browser-trace"],
+	],
 	// Pure (hunks and texts in, placements out), but where threads sit on
 	// the re-review and agent pages follows it (CAR-95).
 	[/^src\/shared\/tracer\//, ["rereview", "agent"]],
 	// The similarity pairing: the side-by-side view's pairs and the
 	// tracer's (CAR-95).
 	[
-		/^src\/shared\/(linePairing|tokenize)\.ts$/,
+		/^src\/shared\/(linePairing|tokenize|hunkPairs)\.ts$/,
 		["linePairing", "inlineDiff", "rereview", "agent"],
 	],
 	// Release notes' formats and text rule (CAR-192): pure, its unit tests
@@ -115,6 +125,7 @@ const E2E_MAP = [
 			"thread-agent",
 			"agent-join",
 			"agent-open",
+			"agent-reads",
 			"review-conversation",
 			"agent-comment",
 			"agent-comment-github",
@@ -253,13 +264,15 @@ const E2E_MAP = [
 	[/^src\/server\/pinnedHead\.ts$/, ["pinned-head"]],
 	[/^src\/server\/agent\/|^test\/fake-acp\//, ["agent", "agent-join"]],
 	// crb's MCP (joined sessions, and the spawned agent's tools and bridge).
-	[/^src\/server\/mcp\//, ["agent", "agent-join"]],
+	[/^src\/server\/mcp\//, ["agent", "agent-join", "agent-reads"]],
 	[
 		/^src\/web\/(brand\/|Tooltip\.tsx$|theme)|^src\/web\/index\.css$/,
 		["design", "mobile"],
 	],
 	[/^src\/web\/pageActive\.ts$/, ["keepalive"]],
 	[/^src\/server\/access\.ts$|^src\/web\/accessKey\.ts$/, ["cli", "keepalive"]],
+	// The server log's failure line (CAR-271): placements failing.
+	[/^src\/server\/errorLog\.ts$/, ["thread-placement"]],
 	[/^test\/methodology-fixture\.ts$/, ["methodology"]],
 	// Only src/cli.test.ts preloads it.
 	[/^test\/module-log\.mjs$/, []],

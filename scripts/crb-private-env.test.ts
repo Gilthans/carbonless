@@ -9,6 +9,7 @@ import { createServer, type Server } from "node:http";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { quietFor } from "../test/sleep";
 import {
 	envrc,
 	privateDirs,
@@ -101,7 +102,11 @@ describe("a worktree's private crb state and config", () => {
 			void waited.then(() => {
 				settled = true;
 			});
-			await new Promise((r) => setTimeout(r, 400));
+			// Real time, not a fake clock: each of its 200 ms polls is a real
+			// connect to the port, which a fake clock can't move past (CAR-295).
+			// A wait that wrongly settles does so on its first, refused,
+			// connect, well inside these two polls.
+			await quietFor(400, "a wait that settled before crb answers");
 			expect(settled).toBe(false);
 			server = createServer((_req, res) => {
 				res.setHeader("content-type", "application/json");

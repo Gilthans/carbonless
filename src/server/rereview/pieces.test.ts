@@ -341,10 +341,18 @@ describe("identical text: a shown removed line is placed in the base by position
 		const { baseLine: _, ...keys } = traced.lineKeys;
 		const stale = { ...traced, lineKeys: keys };
 		const merged = b.files[0]?.clusters.find((c) => c.removed.length === 3);
-		const own = (interdiffFileHunks(stale, b, answer, 0).pieces ?? []).filter(
-			(p) => p.key === merged?.key && p.owns,
+		const pieces = interdiffFileHunks(stale, b, answer, 0).pieces ?? [];
+		const own = pieces.filter(
+			(p) => p.key === merged?.key && p.owns && !p.orphan,
 		);
 		expect(own).toEqual([]);
+		// Those lines are orphans then (CAR-216): boxes of their own, by the
+		// cluster's own base numbers, so still markable.
+		expect(
+			pieces
+				.filter((p) => p.key === merged?.key && p.orphan)
+				.flatMap((p) => p.owns ?? []),
+		).not.toEqual([]);
 	});
 
 	it("PS1's removal crossed off carries as crossed off; reviewed, as reviewed", async () => {
@@ -466,7 +474,8 @@ describe("a Markdown file's since view: pieces cut at its blocks (CAR-167)", () 
 				if (
 					l.kind === "context" ||
 					l.clusterKey !== first?.clusterKey ||
-					l.blockPiece !== first?.blockPiece
+					l.blockPiece !== first?.blockPiece ||
+					(l.orphan === true) !== (first?.orphan === true)
 				) {
 					break;
 				}
@@ -485,7 +494,14 @@ describe("a Markdown file's since view: pieces cut at its blocks (CAR-167)", () 
 		// The interdiff's removals are keyed by its first added line's
 		// cluster (the first item's): "- two" is cut off that piece, and
 		// "- two!" is the second item's cluster's (the full diff cut it).
-		expect(shown).toEqual([["-- one", "+- one!"], ["-- two"], ["+- two!"]]);
+		// "- three" and its blank line: unreviewed on PS1 and unchanged
+		// since, an orphan run of their own (CAR-216).
+		expect(shown).toEqual([
+			["-- one", "+- one!"],
+			["-- two"],
+			["+- two!"],
+			["+- three", "+"],
+		]);
 		const [one, two, twoNew] = hunks.pieces ?? [];
 		expect(two?.key).toBe(one?.key);
 		expect(two).toMatchObject({ owns: null, kind: "removed" });
@@ -496,7 +512,10 @@ describe("a Markdown file's since view: pieces cut at its blocks (CAR-167)", () 
 		const { entry, hunks, shown } = await sinceOf("list.txt");
 		expect(entry?.markdownBlocks).toBeUndefined();
 		expect(hunks.markdownBlocks).toBeUndefined();
-		expect(shown).toEqual([["-- one", "-- two", "+- one!", "+- two!"]]);
+		expect(shown).toEqual([
+			["-- one", "-- two", "+- one!", "+- two!"],
+			["+- three", "+"],
+		]);
 	});
 });
 
@@ -583,15 +602,19 @@ describe("a Markdown since view whose patch sets the full diff cut differently (
 		return { entry: answer.files[index], hunks };
 	}
 
-	/** Every changed line, on both sides, is in exactly one piece; returns how many. */
+	/**
+	 * Every changed line, on both sides, is in exactly one piece; returns how
+	 * many. Orphan lines (CAR-216: nothing reviewed on PS1, unchanged since)
+	 * are left out: their pieces own them by cluster, with no numbers here.
+	 */
 	const coveredOnce = (hunks: Awaited<ReturnType<typeof sinceOf>>["hunks"]) => {
-		const pieces = hunks.pieces ?? [];
+		const pieces = (hunks.pieces ?? []).filter((p) => !p.orphan);
 		const inRanges = (ranges: [number, number][], n: number) =>
 			ranges.some(([f, t]) => f <= n && n < t);
 		let changed = 0;
 		for (const hunk of hunks.hunks) {
 			for (const l of hunk.lines) {
-				if (l.kind === "context") continue;
+				if (l.kind === "context" || l.orphan) continue;
 				changed++;
 				const holders = pieces.filter((p) =>
 					l.kind === "del"
@@ -611,7 +634,7 @@ describe("a Markdown since view whose patch sets the full diff cut differently (
 	const runsOf = (hunks: Awaited<ReturnType<typeof sinceOf>>["hunks"]) =>
 		hunks.hunks.flatMap((h) =>
 			lineRuns(h.lines)
-				.filter((run) => run.change)
+				.filter((run) => run.change && !run.orphan)
 				.map((run) =>
 					run.lines.map((l) => `${l.kind === "add" ? "+" : "-"}${l.text}`),
 				),
@@ -653,10 +676,14 @@ describe("a Markdown since view whose patch sets the full diff cut differently (
 				h.lines.every((l) => l.blockPiece === undefined),
 			),
 		).toBe(true);
+		// The base's "- one" and "- two" (unreviewed on PS1) sit between
+		// the removals and the additions as an orphan run (CAR-216), which
+		// parts the cluster's lines into two runs, two pieces.
 		expect(runsOf(hunks)).toEqual([
-			["-- one!", "-- two!", "+- one?", "+- two?"],
+			["-- one!", "-- two!"],
+			["+- one?", "+- two?"],
 		]);
-		expect(hunks.pieces).toHaveLength(1);
+		expect(hunks.pieces?.filter((p) => !p.orphan)).toHaveLength(2);
 	});
 });
 
@@ -764,7 +791,9 @@ describe("since pieces judged on the interdiff (CAR-218)", () => {
 	it("an unread re-indent still counts", async () => {
 		const { pieces } = await since(null);
 		expect(pieces.length).toBeGreaterThan(0);
-		expect(pieces.filter((p) => p.whitespaceOnly)).toEqual([]);
+		// PS1's own unread changes are orphan pieces (CAR-216), whitespace-
+		// only as their cluster is against the base: not the re-indent.
+		expect(pieces.filter((p) => p.whitespaceOnly && !p.orphan)).toEqual([]);
 	});
 
 	it("a real edit since counts though its cluster is whitespace-only against the base", async () => {
@@ -822,12 +851,17 @@ function expectAgree(hunks: FileHunks, cut: boolean, label: string) {
 		wsRows += tilde.size;
 		const covered = new Set<number>();
 		for (const p of mine) {
-			const n = size(p.old) + size(p.new);
+			// An orphan piece (CAR-216) owns exactly its lines; its removed
+			// ones have no number here.
+			const n = p.orphan && p.owns ? size(p.owns) : size(p.old) + size(p.new);
 			const lines = hk.lines.slice(p.line, p.line + n);
 			for (let k = p.line; k < p.line + n; k++) {
 				expect(covered.has(k)).toBe(false);
 				covered.add(k);
 			}
+			// Not on the interdiff: never cut at whitespace runs, and
+			// whitespace-only as its cluster is (against the base).
+			if (p.orphan) continue;
 			const rows = lines.map((l) => tilde.has(l));
 			if (cut) {
 				expect(new Set(rows).size, `${label} ${h}:${p.line}`).toBe(1);
@@ -947,7 +981,8 @@ describe("since pieces and the view's `~` rows agree (CAR-218)", () => {
 					// no cluster of PS1 added (itself, or an added line's twin).
 					const addedThen = view.traced.lineKeys.old[f.path] ?? {};
 					for (const p of hunks.pieces ?? []) {
-						if (!p.whitespaceOnly) continue;
+						// An orphan's flag is its cluster's (CAR-216), not a twin's.
+						if (!p.whitespaceOnly || p.orphan) continue;
 						const all = hunks.hunks[p.hunk]?.lines ?? [];
 						const twins = matchDisplayHunk(all);
 						const n = size(p.old) + size(p.new);
@@ -1026,6 +1061,9 @@ describe("a Markdown file's since view: the block cut, then the whitespace cut (
 			expect(hunks.markdownBlocks, f.path).toBe(true);
 			flagged += expectAgree(hunks, cut, f.path).flagged;
 			for (const p of hunks.pieces ?? []) {
+				// An orphan run (CAR-216) isn't block cut here: its lines are
+				// one cluster's, which the full diff cut at the blocks.
+				if (p.orphan) continue;
 				const lines = (hunks.hunks[p.hunk]?.lines ?? []).slice(
 					p.line,
 					p.line + size(p.old) + size(p.new),
@@ -1300,13 +1338,17 @@ describe("a base line PS1 left alone, only re-indented since (CAR-218)", () => {
 	});
 	afterAll(() => r.cleanup());
 
+	// The re-indents' pieces: PS1's own unread change (a.ts's `old();`)
+	// is an orphan piece (CAR-216), checked on its own.
 	const shape = (hunks: FileHunks) =>
-		(hunks.pieces ?? []).map((p) => [
-			hunks.hunks[p.hunk]?.lines
-				.slice(p.line, p.line + size(p.old) + size(p.new))
-				.map((l) => `${l.kind === "add" ? "+" : "-"}${l.text}`),
-			p.whitespaceOnly === true,
-		]);
+		(hunks.pieces ?? [])
+			.filter((p) => !p.orphan)
+			.map((p) => [
+				hunks.hunks[p.hunk]?.lines
+					.slice(p.line, p.line + size(p.old) + size(p.new))
+					.map((l) => `${l.kind === "add" ? "+" : "-"}${l.text}`),
+				p.whitespaceOnly === true,
+			]);
 	const at = (path: string) => b.files.findIndex((f) => f.path === path);
 
 	it("nothing marked in PS1: the re-indent is whitespace-only, as in the full diff", async () => {
@@ -1314,6 +1356,12 @@ describe("a base line PS1 left alone, only re-indented since (CAR-218)", () => {
 		expect(shape(view.hunks(at("a.ts")))).toEqual([
 			[["-load();", "+  load();"], true],
 		]);
+		// PS1's change, never reviewed: an orphan piece of its own, counted.
+		const orphans = (view.hunks(at("a.ts")).pieces ?? []).filter(
+			(p) => p.orphan,
+		);
+		expect(orphans).toHaveLength(1);
+		expect(orphans[0]?.whitespaceOnly).toBeUndefined();
 		expectAgree(view.hunks(at("a.ts")), true, "a.ts");
 		// A file PS1 never touched: the same.
 		expect(shape(view.hunks(at("b.ts")))).toEqual([
@@ -1335,7 +1383,7 @@ describe("a base line PS1 left alone, only re-indented since (CAR-218)", () => {
 			);
 			expect(hunks.pieces?.length, path).toBeGreaterThan(0);
 			expect(
-				hunks.pieces?.filter((p) => p.whitespaceOnly),
+				hunks.pieces?.filter((p) => p.whitespaceOnly && !p.orphan),
 				path,
 			).toEqual([]);
 		}

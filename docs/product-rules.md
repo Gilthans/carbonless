@@ -35,6 +35,10 @@ both right after `crb` starts and when it has been running a while. Never block
 a page on slow data: render what is ready, show skeletons per section, and load
 long lists in stages (what's visible plus one "load more" page first). Caching
 for reloads is secondary.
+`CRB_TRACE_DIR=<dir> crb serve` measures these on a real server: the page's
+own spans (`browser.ui.header`, `browser.ui.threads_code`, Home's
+`browser.ui.repo_done`, ...) with the server's requests under them
+(`docs/test-profiling.md`, "Browser spans").
 The skeletons and spinners follow "Loading never looks empty" below.
 
 Fewer GitHub calls never at the cost of the first paint (the owner,
@@ -49,6 +53,26 @@ more), so merging them would make the thread list later. The gh login is kept
 per server for 10 minutes (`src/server/viewerCache.ts`), and the page's
 first head check answers from the open's read when it is under 10 s old
 (`HEAD_REUSE_MS`).
+Commits the threads sit on that the clone lacks (a force-push dropped them)
+come in one `git fetch` for the whole read, not one per commit (CAR-289: five
+such commits took 10.7 s one by one on a real PR).
+
+A repo's first open waits on crb's clone of it (`gh repo clone --bare`: 27 s
+of a 29 s open on a large repo), which no later open pays. The owner,
+2026-11-24: "If the backend is cloning the repo, UI should show a message
+[...] so the user knows this is irregular." While the server clones a repo
+for the first time (`isCloning`, `src/server/clone.ts`: from the clone's
+start to its end, never while an existing clone only fetches), every open
+waiting on that repo says "Cloning <owner/repo> for the first time, this
+might take a while": under the opening page's spinner (`/pr/...`, where
+Home's open box, its rows and a bare number all go), and once on `crb
+<pr>`'s stderr. Both poll `GET /api/clones/<owner>/<repo>` while their open
+is pending (the page every second, the CLI every half second): the answer
+is the repo's, so an open that joined another's, or waits on another
+open's clone, says it too, and the open's own request stays one JSON
+answer. A clone shorter than a poll goes unsaid. The review page
+(`/r/<id>`) never waits on a clone: a review lives in its repo's clone, so
+a reopen finds one there.
 
 ## Loading never looks empty
 
@@ -70,11 +94,52 @@ result should always be easily distinguishable for a still loading result."
   (Files changed: "Loading comments" in the progress bar, the file tree and
   the open file's bubble; the Timeline: "Loading threads" on a review run
   and its comments).
+  A thread's agent panel, before the agent threads are first read,
+  shows a spinner in place of the messages; a failed read with nothing in
+  hand shows "Agent messages couldn't load" with Retry, kept while it reads
+  again (a spinner in Retry's slot, never swapped for a full spinner by a
+  refetch; the thread's red agent handle likewise stays, a spinner in its
+  icon's place); Send to agent waits until the read answers (a conversation may
+  exist unseen); an empty conversation only once the answer has none for
+  the thread (CAR-124).
 - **In place, never moving the page.** A spinner appears in place:
   showing or hiding it never moves anything (owner, 2026-11-02: "Make sure
   spinners appear somewhere static so the UI doesn't jitter"). It takes a
   slot kept whether or not it spins, replaces something of its size, or is
   laid over; tested by comparing bounding boxes before, while and after.
+- **A slow wait says what it waits on (CAR-296).** The owner, 2026-11-24:
+  "when possible, I'd like the loading to say what it's doing. So that I
+  can know what's blocking me if something is slow". Once a load has been
+  pending 1.5 s, one short muted line beside its spinner says the step its
+  requests are on, with the seconds spent on it: "GitHub: pr view · 4s",
+  "git fetch · 12s", "Fetching dropped commits", "GitHub: PR details 3 of
+  13". A fast load looks as before: the page asks nothing until then. The
+  line sits in a kept slot or is laid over the skeleton (nothing moves),
+  in an `aria-live="polite"` region outside the `aria-busy` one; only the
+  label is read out (the seconds are `aria-hidden`), and many panes of one
+  wait have one live region. A line whose requests are gone for two asks
+  in a row clears, though the load is still pending: a step that ended
+  never stays. Where: the opening page (under its spinner; the first
+  clone keeps its own wording), the overview's frames (over the first
+  one), a thread's code still being built (over its frame's foot), and
+  Home's repo chips (in the spinner's tooltip and accessible name, every
+  repo in the same asks, 16 requests an ask: a chip has no room for a line; the spinner's tap
+  target is 40px around it, so a tap opens the tooltip). `crb <pr>`
+  prints each new step on stderr once an open has taken 2 s.
+  How: every API request of the page (`src/web/loadingStep.ts`) and of
+  `crb <pr>` carries an id (`x-crb-req`); the server keeps each tagged
+  request's steps while it runs (`src/server/activity.ts`: every gh and
+  git call, and named phases); `GET /api/activity?req=<id>,…` (at most 16,
+  checked) answers each one's innermost step and never waits. A request
+  waiting on work another started (an open, an overview read, a commit
+  batch, a Home repo read, the repo lock) shows that work's step; work in
+  parts side by side (an overview read's overview, summaries, texts, code
+  and timeline; the lock's work beside its holder's other calls) keeps
+  each part apart, so a wait shows a part it waits on. A wait whose work
+  shows nothing reads "Working…", never another step. The
+  labels are crb's words, mapped from the span names
+  ([test-profiling.md](test-profiling.md), "Loading steps"): no paths,
+  OIDs, branches or logins.
 - **Errors are a third state.** A failed read shows its error (red; or a
   `warn` notice where only a part is missing, per "Flag uncertainty", like
   Files changed's "Threads not shown"; with Retry where it can), never the
@@ -120,7 +185,14 @@ would be; a full-diff-only feature is a gap with a ticket. Numbers the since
 view shows on its old side are the compared patch set's: anything stored
 or sent (a move, a comment, a link) goes through the full diff's lines,
 never the interdiff's own numbers (thread moves: `moveEnd`,
-`src/web/files/threadMove.tsx`).
+`src/web/files/threadMove.tsx`). Whether a line takes a GitHub comment
+is GitHub's diff's call too, never the interdiff's: a line the since view
+shows as changed that reads as the base (a later patch set put it back)
+isn't in GitHub's diff, so Comment, the agent's Comment on GitHub and a
+suggested comment are off there ("Same as the base: GitHub can't take a
+comment here"), and the server refuses it before calling GitHub
+(`DiffLine.offGithub`, CAR-293). A GitHub refusal of lines that check
+out says the PR moved on, with refresh.
 
 ## Re-review never hides a change
 
@@ -128,7 +200,9 @@ The since view, the "needs eyes" filter, carried marks, thread placement
 and the verdict's since line organise what changed; none of them removes
 anything. Every unreviewed cluster stays countable and in the full diff,
 one drag of the comparison base away; a reviewed cluster the author
-removed shows as `gone`; a thread that can't be placed is listed under its
+removed shows as `gone`, a file-level one (a mode, a binary file, a
+submodule pointer or a rename reverted since) too, with its label and a box of its
+own (CAR-297); a thread that can't be placed is listed under its
 file or under "Not in this comparison" until it is resolved; a failure
 says so where the answer would be. "Nothing to read" and "nothing to
 re-read" show only when the engine's answer says so: an identical diff
@@ -180,6 +254,21 @@ the review": no history was followed). With no line from GitHub either,
 it is listed under its file as `outdated` when GitHub says so, else
 `untraced`. `rewritten` is only ever a real trace's answer. A placement
 from GitHub's line carries `source: "github"` in `GET /placements`.
+
+A review thread on an old-side line is checked against GitHub's
+`diff_hunk` (owner, 2026-11-23, CAR-8: "do both"): it is traced from the
+old side whose text the hunk shows (the merge base then or now, or the
+hunk's own run of lines found once in one of them), and when none holds
+it, it is unplaced as `base unknown` under its file, never placed on its
+line number. A run found elsewhere moves the line only when it tells
+enough (3 rows or more, 2 of them not blank or punctuation alone). A
+hunk that couldn't be read (even read again) is `couldn't check`, never
+"no hunk". An empty hunk is no evidence either way: the base as it stood
+at the comment's time is traced from (unknown after a retarget), with an
+`unchecked` mark when that isn't today's merge base; when it can't be
+told, today's merge base, as before. While its hunk is on its way the
+thread is `pending`: a spinner under its file, on no line. A reviewer's
+move wins over all of it.
 
 ## Every visible cluster is individually markable
 
@@ -347,8 +436,15 @@ switch wouldn't happen.
   which puts the comment into the viewer's pending review. What is sent is
   what the thread then reads back: the answer is the thread as GitHub's
   GraphQL lists it, mapped like any other. Only on the head the page shows
-  (else 409 `stale`: refresh). A line or file GitHub's diff doesn't have
-  (its 422 "could not be resolved") is 404 `gone`; a pending review refuses
+  (else 409 `stale`: refresh). A `RIGHT` line outside the snapshot's
+  diff (its hunks' lines, within the file) is refused before gh, 400
+  `invalid` "Same as the base: GitHub can't take a comment here"
+  (CAR-293), but only while GitHub's merge base is the snapshot's
+  (`commentLeft`; else GitHub decides). GitHub's 422 "could not be
+  resolved" on lines that check passed means its diff moved on since:
+  409 `stale`, refresh. Any other line or file GitHub's diff doesn't have
+  (that 422 on `LEFT` lines, a file, or unchecked lines) is 404 `gone`;
+  a pending review refuses
   it as it refuses replies (409 `pending-review`). `LEFT` lines take
   comments only when GitHub's merge base for the snapshot's head (REST
   compare of the PR's base commit, `baseRefOid`, and the head: what GitHub
@@ -710,6 +806,21 @@ placeholder rows stand in until every repo has answered (owner,
 a still loading result"). A repo never read successfully is unknown, not
 empty: the counts carry an alert naming it, and no section says "none".
 
+A repo's first read shows its rows as they land (owner, 2026-11-24: "as
+soon as anything is loaded we show it"): its PRs' facts are read newest
+`updatedAt` first, open and closed together, in batches (10, then 20),
+and each batch shows once those before it are in, so later rows are older
+and land below the ones shown. Until the last batch the repo's chip spins
+and Home counts nothing (the same spinners, placeholders and no "none" as
+above). A read that fails mid-way keeps the rows so far and says why; the
+spinner stops; a retry spins again (never the last read's alert) as its
+rows land. A refresh of a repo read before keeps its rows whole until it
+is done (`RepoHome.complete`, `progress`; the page's next ask sends
+`seen` and the server answers at the next batch). A page that already
+shows a whole list (the server restarted, or forgot the repo) asks with
+`whole` and gets only a whole answer: a list never shrinks to a batch;
+if that read fails, the list stays with the failure on it.
+
 ## "Side by side" is a view
 
 Settings' "Side by side" (`src/web/files/sideBySide.ts`) lays the same
@@ -760,6 +871,18 @@ question would be on someone else's behalf, or about a past moment.
 - **Setting the agent is running a command.** `PUT /api/config/agent` and
   its Check run any command as the server's user, for whoever holds the
   access key (on a loopback bind with no key, any local process).
+- **The agent's env never reaches the page (CAR-59).** It holds tokens.
+  `GET /api/config/agent` (and the PUT's answer) gives each env name with
+  a mask (`AGENT_ENV_MASK`), never its value. A Save or Check carrying the
+  mask, or no `env` at all, keeps the stored value; a mask with nothing
+  stored under its name is refused (400), so the mask is never run or
+  written to `config.json`. Only for the stored command: another command
+  starts with no env, and a mask for it is refused. The agent's own text
+  (its stderr tail and JSON-RPC errors, in Check, the status and a failed
+  turn's stored stop) has each env value of 8 or more characters masked
+  too, except absolute paths (not secrets, and a wrong one is what a
+  failed Check must show); its log file keeps them. Env is edited in
+  `config.json` by hand.
 - **One agent per review per machine.** Another server with the review
   open shows `elsewhere` and leaves the answering to the holder.
 - **Agent threads are traced like comments (owner, 2026-11-09).** One
@@ -816,7 +939,14 @@ question would be on someone else's behalf, or about a past moment.
   is no base line (only the earlier patch set had it) is no drop target and Place
   here is off on it, never stored under the interdiff's own number. A
   thread on a removed base line shows on that removed row in the since
-  view when it shows one.
+  view when it shows one. When it shows none (the compared patch set had
+  already deleted the line), the thread stays in the file's header and
+  its card says why, never as a tracer fate: "deleted before PSn" (its
+  tooltip adds when the file is unchanged since PSn), or "not in this
+  comparison" when that can't be told (a removed row's base line isn't
+  known, or the two diffs pair twin lines differently); a link opens the
+  full diff on its line with its card open (CAR-255). Agent threads the
+  same.
 - **The agent opens conversations only while answering, and they answer
   nothing (spec 2026-11-15, CAR-80).** While it holds a question `next`
   handed it, the agent may call MCP `open` to put a conversation on the
@@ -826,7 +956,8 @@ question would be on someone else's behalf, or about a past moment.
   makes, never posted to GitHub. Its message records the request it came
   from (`origin`) and shows a Re row pointing back; the request shows
   Started N. `open` writes only that agent-thread event: no reviewed
-  state, no resolve, no GitHub write (principle 2), and an origin message
+  state, no resolve (on a thread it may only suggest one, as `reply`
+  does), no GitHub write (principle 2), and an origin message
   answers no question, so one waiting on that thread stays waiting
   (principle 8). It is refused with no question held, past the question's
   time limit, on code outside the PR or lines out of range, on a
@@ -834,6 +965,42 @@ question would be on someone else's behalf, or about a past moment.
   the request's own thread, and past 25 from one request. A citation in
   the agent's reply (`crb:c/<id>`) links only a conversation of this
   review, labelled by crb, never with an href the agent wrote.
+- **The agent reads the review as the reviewer sees it, and only reads
+  (CAR-182).** crb's MCP `diff`, `file`, `progress` and `review` serve
+  crb's clone and caches, never the reviewer's working copy, the same for
+  a spawned and a joined agent. They write no review mark, agent thread
+  or resolved state. One write can happen, the page's own: building a
+  patch set's snapshot for a read may run the split carry the page runs
+  when it opens that patch set (#carrySplits), which carries the
+  reviewer's own marks on a whole hunk onto its pieces and never marks
+  anything the reviewer didn't; the agent and the page then see the
+  same pieces. `diff` gives the full diff of the review's head, of a
+  patch set, or of the PR's head (`to: "head"`, the page's head dot),
+  and the since view from a patch set (`"last"`: the newest before the
+  compared head, the page's default; `"last"` to `"head"` is what the
+  author pushed since the reviewer's last pass, or, with nothing pushed,
+  an explicit `nothingPushed` and no files, never the last pass itself), with the page's own
+  analysis (whitespace-only lines, paired lines with "Ignore whitespace"
+  off; never a second computation) and file-level changes labelled as
+  crb labels them (a mode, a binary file; in the since view, what changed
+  since). An unchanged file in the since view can still hold lines to
+  read (`progress` says). The since view lists every file the
+  page's since view shows: one its engine says the author changed (never
+  decided from the hunks' count), and one with lines left unreviewed at
+  that patch set that nothing carries (CAR-216's "not reviewed in PSn"
+  pieces), each file saying `changed` and those lines as
+  `notReviewedThen`, so the agent never presents them as new code. crb
+  detects no moved blocks yet, and `diff` says so rather than guess.
+  Past its budget, the remaining files are named (`omitted`, `unread`,
+  with no hunk count or analysis) without being read; a since view crb can't build, or a file it can't read, is
+  an error, never an empty diff. `file` reads only commits `review`
+  names (base, merge base, head, the PR's head, a patch set's head or
+  merge base), paths checked (relative, no `..`, never an option),
+  refuses a blob over 4 MiB before reading it, and decodes as the page
+  does (UTF-8, else latin1). `review`'s threads each carry `atHead`, the
+  page's placement on the review's head, or `unknown` with why (never
+  absent); GitHub's line is kept beside it, never offered as where the
+  thread is now.
 - **A question never waits on the agent to be sent.** Ask agent writes
   the thread at once; it waits (yellow) until an agent answers, whether
   none is set up, it is starting, busy, crashed or elsewhere.
@@ -872,7 +1039,16 @@ question would be on someone else's behalf, or about a past moment.
   suggests with a final `[suggest-resolve]` line, stripped and stored as
   data (`suggests: "resolve"`), and only for a fix in the patch set the
   reviewer is viewing (a fix found only in a later push is said plainly,
-  "fixed later, in PS m", and never suggests). The suggestion shows, inside the reply,
+  "fixed later, in PS m", and never suggests). A message the agent
+  writes with MCP `open` on a GitHub thread (a new conversation, or one
+  added to its conversation) may suggest it the same way, on the same rule
+  (CAR-265); `open` on code refuses the marker, as code has nothing to
+  resolve. An `open` message counts like an answer here: one that
+  suggests stands, and one that doesn't withdraws a standing suggestion,
+  so an older opinion never outlives a newer one (principle 2). On a
+  review-conversation request the agent judges at the head `progress`
+  gives (the comparison the reviewer asked in), never `review`'s newest
+  head. The suggestion shows, inside the reply,
   "Resolve By Agent Suggestion" and rings Resolve in `ok`; only the
   reviewer's press resolves, through the same GitHub write as Resolve. A
   thread conversation has no resolved state of its own: it folds and

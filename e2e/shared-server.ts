@@ -50,7 +50,7 @@ const RESET_TIMEOUT_MS = 20_000;
 export const FINISH_BOUND_MS = RESET_TIMEOUT_MS + GH_SETTLE_MS + 5_000;
 
 /** A sha256 over the files under `dir` (paths and contents); "" when none. */
-export function dirHash(dir: string): string {
+function dirHash(dir: string): string {
 	if (!existsSync(dir)) return "";
 	const hash = createHash("sha256");
 	const files = (readdirSync(dir, { recursive: true }) as string[])
@@ -65,7 +65,7 @@ export function dirHash(dir: string): string {
 }
 
 /** The last `n` lines of `text`, for a message (a server's output grows all its life). */
-export function tail(text: string, n = 200): string {
+function tail(text: string, n = 200): string {
 	const lines = text.trimEnd().split("\n");
 	return lines.length <= n
 		? lines.join("\n")
@@ -228,7 +228,11 @@ export class SharedServer {
 	}
 
 	/** POST /api/_test/reset (or GET /state) on the running server. */
-	async #hook(path: string, method: "POST" | "GET"): Promise<unknown> {
+	async #hook(
+		path: string,
+		method: "POST" | "GET",
+		body?: unknown,
+	): Promise<unknown> {
 		const served = this.#served as Served;
 		const headers: Record<string, string> = {
 			[TEST_HOOK_HEADER]: this.#token,
@@ -239,10 +243,12 @@ export class SharedServer {
 		const abort = new AbortController();
 		const cancel = deadline(RESET_TIMEOUT_MS, () => abort.abort());
 		try {
+			if (body !== undefined) headers["content-type"] = "application/json";
 			const res = await fetch(`${new URL(served.url).origin}${path}`, {
 				method,
 				headers,
 				signal: abort.signal,
+				...(body !== undefined ? { body: JSON.stringify(body) } : {}),
 			});
 			if (!res.ok) throw new Error(`${method} ${path} answered ${res.status}`);
 			return await res.json();
@@ -259,6 +265,14 @@ export class SharedServer {
 		return (await this.#hook("/api/_test/reset", "POST")) as {
 			leftovers: string[];
 		};
+	}
+
+	/**
+	 * The server's POST /api/_test/placing: every placement job fails with
+	 * `fail` (a GitError), or runs again (null). A reset lets them run.
+	 */
+	async failPlacing(fail: string | null): Promise<void> {
+		await this.#hook("/api/_test/placing", "POST", { fail });
 	}
 
 	/** The server's GET /api/_test/state (which also writes its buffered spans). */

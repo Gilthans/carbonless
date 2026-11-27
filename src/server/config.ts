@@ -5,7 +5,7 @@ import { writeFileAtomic } from "./atomicFile.js";
 import { configDir } from "./paths.js";
 
 /** A Home view: a name and the repos it lists. */
-export interface ViewConfig {
+interface ViewConfig {
 	name: string;
 	/** "owner/repo", lowercased. */
 	repos: string[];
@@ -55,7 +55,7 @@ const isObject = (v: unknown): v is Json =>
 	typeof v === "object" && v !== null && !Array.isArray(v);
 
 /** An http(s) origin as written (no path, query or credentials), else null. */
-export function parsePublicUrl(value: unknown): string | null {
+function parsePublicUrl(value: unknown): string | null {
 	if (typeof value !== "string") return null;
 	let url: URL;
 	try {

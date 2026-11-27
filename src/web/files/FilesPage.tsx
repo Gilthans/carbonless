@@ -58,7 +58,7 @@ import { useShortcut } from "../shortcuts";
 import { FindSlot, useAppHeaderHeight, useHeight, visualTop } from "../sticky";
 import { Tooltip } from "../Tooltip";
 import { PeopleProvider } from "../threads/people";
-import { dropLosesText, useThreadWrites } from "../threads/threadWrites";
+import { useThreadWrites } from "../threads/threadWrites";
 import { usePrefetchComments } from "../threads/useThreadComments";
 import { useThreads } from "../threads/useThreads";
 import { ErrorMessage } from "../ui";
@@ -74,6 +74,7 @@ import {
 } from "./comparison";
 import type { DiffThreads } from "./DiffBody";
 import { FileDiff, GoneFile, UNDO_ARM_MS } from "./FileDiff";
+import { FilesFab } from "./FilesFab";
 import { FileTree, type SidebarTab } from "./FileTree";
 import { fileLeft, nextFile } from "./fileFinish";
 import { treeOrder } from "./fileOrder";
@@ -105,6 +106,7 @@ import {
 	countedFileUnits,
 	countedUnits,
 	eyesOf,
+	fullDiffToRead,
 	goneFiles,
 	goneFileView,
 	liveToRead,
@@ -456,9 +458,13 @@ function useDiffThreads(
 		() => (visible ? outsideThreads(visible, placements) : []),
 		[visible, placements],
 	);
+	// The reviewer's Retry is under way (the asks the page makes by itself
+	// after a failure, CAR-271, show no spinner: the failure stays shown).
+	const [retryAsked, setRetryAsked] = useState(false);
 	useEffect(() => {
 		if (placed.error) setLastFailure({ key: placingKey, error: placed.error });
 		else if (served !== null) setLastFailure(null);
+		if (placed.error || served !== null) setRetryAsked(false);
 	}, [placed.error, served, placingKey]);
 	const failedPlacing =
 		asked && answer === null
@@ -467,7 +473,9 @@ function useDiffThreads(
 			: null;
 	failedBefore.current = failedPlacing !== null;
 	const retryingPlacing =
-		failedPlacing !== null && (placed.isFetching || placed.error === null);
+		failedPlacing !== null &&
+		retryAsked &&
+		(placed.isFetching || placed.error === null);
 	const unplacedOnError = useMemo(
 		() =>
 			failedPlacing && visible && snapshotHead
@@ -484,9 +492,15 @@ function useDiffThreads(
 	const placement = useMemo<PlacementInfo>(
 		() => ({
 			placements,
-			pending: asked && answer === null && !placed.error,
+			// A failure stays shown while the page asks again by itself.
+			pending: asked && answer === null && failedPlacing === null,
 			error: failedPlacing,
-			retry: () => void refetchPlacements(),
+			// A partial answer kept while asking again failed (CAR-8).
+			stalled: answer !== null ? (placed.error ?? null) : null,
+			retry: () => {
+				setRetryAsked(true);
+				void refetchPlacements();
+			},
 			retrying: retryingPlacing,
 			readId: readId ?? null,
 			to,
@@ -531,29 +545,6 @@ function useDiffThreads(
 		unplacedOnError,
 		placement,
 	};
-}
-
-/** A text box on the page has focus (a comment or a reply being written). */
-function useWritingHere(): boolean {
-	const [writing, setWriting] = useState(false);
-	useEffect(() => {
-		let timer: ReturnType<typeof setTimeout> | undefined;
-		const update = () =>
-			setWriting(document.activeElement instanceof HTMLTextAreaElement);
-		// Focus moving between two boxes: read where it lands.
-		const left = () => {
-			clearTimeout(timer);
-			timer = setTimeout(update, 0);
-		};
-		document.addEventListener("focusin", update);
-		document.addEventListener("focusout", left);
-		return () => {
-			clearTimeout(timer);
-			document.removeEventListener("focusin", update);
-			document.removeEventListener("focusout", left);
-		};
-	}, []);
-	return writing;
 }
 
 /**
@@ -786,6 +777,8 @@ export function FilesPage() {
 	const [unit, saveUnit] = useUnit();
 	const wide = useMedia(WIDE);
 	const [sheetOpen, setSheetOpen] = useState(false);
+	// Stable: the floating button (FilesFab) re-renders on its own.
+	const openSheet = useCallback(() => setSheetOpen(true), []);
 
 	// One file open at a time, by snapshot and index: a new snapshot starts
 	// with every file closed.
@@ -1082,6 +1075,9 @@ export function FilesPage() {
 					? asked.anchor.thread
 					: undefined;
 			requestConversationOpen(search.conversation, search.message, card);
+		} else if (search.thread) {
+			// A review thread's link (the since view's NotHereNote): its card opens.
+			threadFocus.request({ id: search.thread });
 		}
 		const file = landingFile(data.files, search);
 		landingSeq.current += 1;
@@ -1410,14 +1406,6 @@ export function FilesPage() {
 		[agentShown, data, agentPlacements],
 	);
 
-	// The floating Files button makes way while a comment is being written
-	// (a box has focus) or one was refused: it would cover its buttons.
-	const writing = useWritingHere();
-	const refused = useThreadWrites().refused.some(
-		(f) => dropLosesText(f) && !f.retrying,
-	);
-	const filesButton = !writing && !refused;
-
 	// Folded folders are kept per PR, once it's known.
 	const pr = session?.pr;
 	// The tree's Threads tab: every conversation, People's and AI's, each
@@ -1724,14 +1712,24 @@ export function FilesPage() {
 		return out;
 	}, [units, ignoreWs]);
 	const progressPending = since !== null && sinceView.pending;
-	// The connector of the comparison on screen counts what is left here.
+	// The connector of the comparison on screen counts what is left here,
+	// as this view's bar does: the since view its units, the full diff
+	// (a viewed head against the latest patch set) its clusters (CAR-266).
 	const live =
-		since !== null && byFile && comparison.viewing
-			? {
-					from: since,
-					to: comparison.viewing,
-					toRead: liveToRead(byFile, sinceCounted.units),
-				}
+		byFile && comparison.viewing
+			? since !== null
+				? {
+						from: since,
+						to: comparison.viewing,
+						toRead: liveToRead(byFile, sinceCounted.units),
+					}
+				: sinceView.from !== null && sinceView.answer && data
+					? {
+							from: sinceView.from,
+							to: comparison.viewing,
+							toRead: fullDiffToRead(sinceView.answer, data, byFile, ignoreWs),
+						}
+					: undefined
 			: undefined;
 	const emptySince =
 		since !== null &&
@@ -2101,17 +2099,7 @@ export function FilesPage() {
 											/>
 											{!wide && (data.files.length > 0 || gone.length > 0) && (
 												<>
-													<button
-														hidden={!filesButton}
-														type="button"
-														aria-label="Files"
-														aria-haspopup="dialog"
-														onClick={() => setSheetOpen(true)}
-														className="fixed right-[calc(1rem+var(--drawer-push,0px))] bottom-4 z-30 flex h-12 items-center gap-2 cta rounded-full px-5 text-sm font-semibold text-ink hover:brightness-110 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
-													>
-														<span aria-hidden>☰</span>
-														Files
-													</button>
+													<FilesFab onOpen={openSheet} />
 													<FilesSheet
 														open={sheetOpen}
 														onClose={() => setSheetOpen(false)}

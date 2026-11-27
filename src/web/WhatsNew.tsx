@@ -39,8 +39,7 @@ import { Command } from "./UpdateCommand";
 import { NOT_PHONE, useMedia } from "./useMedia";
 
 /** The notes of the version on offer (`/api/update/notes`), by version. */
-export const notesKey = (version: string) =>
-	["update", "notes", version] as const;
+const notesKey = (version: string) => ["update", "notes", version] as const;
 
 const KIND: Record<NoteKind, { label: string; Icon: typeof PlusCircleIcon }> = {
 	new: { label: "New", Icon: PlusCircleIcon },
@@ -54,7 +53,7 @@ const TEXT_BUTTON =
 	"flex h-10 shrink-0 items-center gap-1 rounded-md px-3 text-sm font-semibold text-ink hover:bg-pressed focus-visible:outline-2 focus-visible:outline-accent";
 
 /** A note's text: plain text and `code` spans, as React text (never HTML). */
-export function NoteText(props: { text: string }) {
+function NoteText(props: { text: string }) {
 	let at = 0;
 	const parts = noteParts(props.text).map((part) => {
 		const key = at;
@@ -200,7 +199,7 @@ const DAY = /^(\d{4})-(\d{2})-(\d{2})$/;
  * or focus ("2026 Nov 15"), never a clock time it doesn't have. A full
  * timestamp falls back to RelativeTime.
  */
-export function ReleaseDate(props: { date: string; className?: string }) {
+function ReleaseDate(props: { date: string; className?: string }) {
 	const now = useNow();
 	const m = DAY.exec(props.date);
 	if (!m) return <RelativeTime iso={props.date} className={props.className} />;
@@ -248,7 +247,7 @@ export function ReleaseDate(props: { date: string; className?: string }) {
 }
 
 /** Whether `text` is a version crb links (`0.4.0`, `0.4.0-rc.5`). */
-export const isVersion = (text: string): boolean =>
+const isVersion = (text: string): boolean =>
 	text.length <= 64 &&
 	/^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$/.test(
 		text,

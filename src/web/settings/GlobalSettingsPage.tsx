@@ -42,7 +42,7 @@ import {
 } from "../WhatsNew";
 
 /** Why crb never checks, in a few words. */
-export const OFF_REASON: Record<ChecksOff, string> = {
+const OFF_REASON: Record<ChecksOff, string> = {
 	"local-build": "local build",
 	env: "CRB_NO_UPDATE_CHECK",
 	config: "updates.check off",
@@ -213,9 +213,9 @@ const ownNotesQuery = {
 } as const;
 
 /** How many of a version's notes show before its Show more. */
-export const NOTES_FOLDED = 3;
+const NOTES_FOLDED = 3;
 /** How many earlier releases Show more opens, and Show more versions adds. */
-export const OLDER_STEP = 5;
+const OLDER_STEP = 5;
 
 /** Notes that show more once unfolded: past NOTES_FOLDED, or a note past its first sentence. */
 const foldable = (notes: ReleaseNote[]) =>

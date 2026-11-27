@@ -11,12 +11,13 @@ import type {
 import type { Mark } from "../code/Invisibles";
 import { type SpanRange, spanMarks } from "../threads/spanMarks";
 import { fileGaps } from "./gaps";
+import { type LeftRow, leftNo } from "./orphanLeft";
 
 /** A diff row by its number on one side: `RIGHT:12` is the row whose new number is 12. */
 export type LineKey = `${DiffSide}:${number}`;
 
 /** Where a thread hidden in a gap will show once its lines are loaded. */
-export interface GapTarget {
+interface GapTarget {
 	/** New-side lines `[from, to]` of its range, inside its gap. */
 	show: [number, number];
 	/** The row it ends on, as `FilePlacement.end` will key it. */
@@ -57,8 +58,12 @@ export interface FilePlacement<T extends Placeable = ReviewThread> {
 	 * are loaded (what to open).
 	 */
 	gapTargets: Map<T, GapTarget>;
-	/** File comments ("file") and lines that couldn't be placed ("unplaced"). */
-	header: { thread: T; reason: "file" | "unplaced" }[];
+	/**
+	 * File comments ("file") and lines that couldn't be placed ("unplaced");
+	 * in the since view, an unplaced line its comparison doesn't hold says
+	 * why (`notHere`, CAR-255).
+	 */
+	header: { thread: T; reason: "file" | "unplaced"; notHere?: NotHere }[];
 	/**
 	 * Threads the tracer couldn't place in this file, with their fate: the
 	 * list under the file's header.
@@ -67,6 +72,59 @@ export interface FilePlacement<T extends Placeable = ReviewThread> {
 		thread: T;
 		placement: Extract<ThreadPlacement, { kind: "unplaced" }>;
 	}[];
+	/**
+	 * Threads still being placed (`pending`, CAR-8): listed under the
+	 * header with a spinner, never on a line meanwhile.
+	 */
+	waiting: T[];
+}
+
+/**
+ * The since view: why a thread's line has no row in it (CAR-255), and the
+ * line it is on in the full diff (its base line, LEFT), to open there.
+ * Not a tracer fate: the line is where the thread says, only outside this
+ * comparison.
+ * - "deleted-before": the compared patch set had already deleted it (no
+ *   removed row of the interdiff is it, and every removed row is a known
+ *   base line the full diff deletes too).
+ * - "unchanged": the same, and the file isn't changed between these patch
+ *   sets at all (said as "deleted before" too; notHereText).
+ * - "unknown": some removed row's base line isn't known, or the two diffs
+ *   pair twin lines differently: only that this comparison doesn't show it.
+ */
+export interface NotHere {
+	why: "deleted-before" | "unchanged" | "unknown";
+	side: "LEFT";
+	line: number;
+}
+
+/**
+ * Why the since view's `hunks` don't show base line `line` (NotHere),
+ * which `left` (SinceLeft) found the full diff deleted. "deleted-before"
+ * only when every removed row is a base line the full diff deletes too:
+ * one whose base line isn't known could be it, and one on a line the full
+ * diff keeps means the two diffs paired twin lines differently (the
+ * compared patch set may well have had this one): "unknown" for both.
+ */
+export function notHereOf(
+	hunks: FileHunks,
+	line: number,
+	left: SinceLeft,
+): NotHere {
+	const removed = hunks.hunks
+		.flatMap((h) => h.lines)
+		.filter((l) => l.kind === "del");
+	const doubtful = removed.some(
+		(l) =>
+			l.baseNo === undefined ||
+			(typeof l.baseNo === "number" && left(l.baseNo)?.side === "RIGHT"),
+	);
+	const why: NotHere["why"] = doubtful
+		? "unknown"
+		: hunks.wholeGap || hunks.hunks.length === 0
+			? "unchanged"
+			: "deleted-before";
+	return { why, side: "LEFT", line };
 }
 
 /** Each unresolved thread's place in the viewed snapshot, by thread id (GET /placements). */
@@ -95,7 +153,7 @@ export function shownThread(
 	moved?: ReadonlyMap<string, unknown> | null,
 ): ReviewThread | null {
 	const p = placements?.get(t.id);
-	if (!p) return t.commit !== "" && t.commit === snapshotHead ? t : null;
+	if (!p) return madeOnHead(t, snapshotHead) ? t : null;
 	if (p.kind === "outside") return null;
 	let copies = shownCopies.get(t);
 	if (!copies) {
@@ -133,6 +191,15 @@ export function shownThread(
 				...cols,
 			},
 		};
+	} else if (p.kind === "pending") {
+		// Still being placed (CAR-8): on no line of this head meanwhile.
+		shown = {
+			...t,
+			madeOn: t.madeOn ?? t.commit,
+			path: p.path,
+			commit: snapshotHead,
+			anchor: null,
+		};
 	} else {
 		shown = {
 			...t,
@@ -144,6 +211,21 @@ export function shownThread(
 	copies.set(p, shown);
 	return shown;
 }
+
+/**
+ * A thread made on the viewed head (`viewedHead`): shown where it was
+ * made, so it needs no placing, and never reads "place unknown" when the
+ * placements fail (CAR-271). A copy shown as if made on the head (its
+ * `madeOn` the commit it was made on) wasn't. One on no known commit ("")
+ * is on no head.
+ */
+export const madeOnHead = (
+	t: Pick<ReviewThread, "commit" | "madeOn">,
+	viewedHead: string | null | undefined,
+): boolean => {
+	const made = t.madeOn ?? t.commit;
+	return !!viewedHead && made !== "" && made === viewedHead;
+};
 
 /** Copies of threads made on the since view's compared patch set's head (CAR-233). */
 const earlierCopies = new WeakMap<ReviewThread, ReviewThread>();
@@ -174,7 +256,8 @@ export function earlierPending(
 		}
 		let copy = earlierCopies.get(t);
 		if (copy?.commit !== snapshotHead) {
-			copy = { ...t, commit: snapshotHead };
+			// Shown on the viewed head, made on the earlier one (madeOnHead).
+			copy = { ...t, madeOn: t.madeOn ?? t.commit, commit: snapshotHead };
 			earlierCopies.set(t, copy);
 		}
 		return [copy];
@@ -215,7 +298,7 @@ export function outsideThreads(
  * The threads made on the viewed head, in their order. One on no known
  * commit ("") is on no head. Agent threads, never traced, show this way.
  */
-export function threadsOnHead<T extends Placeable>(
+function threadsOnHead<T extends Placeable>(
 	threads: T[],
 	snapshotHead: string,
 ): T[] {
@@ -244,12 +327,12 @@ export function threadOrder(t: ReviewThread, hunks: FileHunks | null): number {
 	return newNumberOf(t.anchor.side, t.anchor.line, hunks?.hunks ?? []);
 }
 
-/** The row a line key names: RIGHT matches `newNo`, LEFT matches `oldNo`. */
+/** The row a line key names: RIGHT matches `newNo`, LEFT matches `leftNo`. */
 export function lineKey(
 	side: DiffSide,
-	line: Pick<DiffLine, "oldNo" | "newNo">,
+	line: Pick<DiffLine, "newNo"> & LeftRow,
 ): LineKey | null {
-	const n = side === "RIGHT" ? line.newNo : line.oldNo;
+	const n = side === "RIGHT" ? line.newNo : leftNo(line);
 	return n === undefined ? null : `${side}:${n}`;
 }
 
@@ -316,7 +399,8 @@ function newNumberOf(side: DiffSide, n: number, hunks: DisplayHunk[]): number {
  * head): through the full diff's line clusters (base → head), the head
  * line it became, as the full diff shows it; only when the full diff
  * deleted it, the removed row the since view shows it on (its `baseNo`,
- * keyed by its own old number there); null when neither. Never a removed
+ * keyed by its own old number there, an orphan's by leftNo); null when
+ * neither. Never a removed
  * row for a base line the full diff keeps (a twin git aligns otherwise in
  * the interdiff): both views put a thread on the same line.
  */
@@ -334,8 +418,9 @@ export function sinceLeft(
 	const removed = new Map<number, number>();
 	for (const h of hunks ?? []) {
 		for (const l of h.lines) {
-			if (typeof l.baseNo === "number" && l.oldNo !== undefined) {
-				removed.set(l.baseNo, l.oldNo);
+			const n = leftNo(l);
+			if (typeof l.baseNo === "number" && n !== undefined) {
+				removed.set(l.baseNo, n);
 			}
 		}
 	}
@@ -476,6 +561,7 @@ export function placeThreads<T extends Placeable = ReviewThread>(args: {
 		gapTargets: new Map(),
 		header: [],
 		fates: [],
+		waiting: [],
 	};
 	const mine = fileThreads(args.threads, args.path, args.snapshotHead);
 	const spans = args.spans ?? [];
@@ -510,7 +596,7 @@ export function placeThreads<T extends Placeable = ReviewThread>(args: {
 		let startRow = endRow;
 		for (let i = 0; i < endRow; i++) {
 			const row = rows[i] as DiffLine;
-			const n = range.startSide === "RIGHT" ? row.newNo : row.oldNo;
+			const n = range.startSide === "RIGHT" ? row.newNo : leftNo(row);
 			if (n !== undefined && n >= range.startLine) {
 				startRow = i;
 				break;
@@ -577,6 +663,10 @@ export function placeThreads<T extends Placeable = ReviewThread>(args: {
 	}
 	for (const t of mine) {
 		const traced = t.id === undefined ? undefined : args.placements?.get(t.id);
+		if (traced?.kind === "pending") {
+			placement.waiting.push(t);
+			continue;
+		}
 		if (traced?.kind === "unplaced") {
 			// Made on the compared patch set's head on a line only it had
 			// (CAR-233): on the since view's removed row that shows it.
@@ -592,8 +682,19 @@ export function placeThreads<T extends Placeable = ReviewThread>(args: {
 		const anchor = t.anchor && onSinceRows(t.anchor, args.sinceLeft);
 		if (anchor === null && t.anchor) {
 			// A LEFT line the full diff deleted that the since view doesn't
-			// show: no row of it is that line.
-			placement.header.push({ thread: t, reason: "unplaced" });
+			// show: no row of it is that line. Which removed rows are base
+			// lines is known once the hunks are in: till then it waits, as
+			// any line thread does.
+			if (args.noLines) {
+				placement.header.push({ thread: t, reason: "unplaced" });
+			} else if (hunks) {
+				placement.header.push({
+					thread: t,
+					reason: "unplaced",
+					// sinceLeft is set: only it gives a null anchor.
+					notHere: notHereOf(hunks, t.anchor.line, args.sinceLeft as SinceLeft),
+				});
+			}
 			continue;
 		}
 		if (!anchor) {

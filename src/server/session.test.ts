@@ -24,6 +24,7 @@ import {
 import { ghCallKinds, ghCallsOf } from "../../test/gh-log";
 import { GIT_TEST_TIMEOUTS, testGitEnv } from "../../test/git-fixture";
 import { createPrFixture, type PrFixture } from "../../test/pr-fixture";
+import { quietFor } from "../../test/sleep";
 import { MAX_MOVES_PER_THREAD } from "../shared/rereview/moves";
 import type { Snapshot } from "../shared/types";
 import { agentsDir } from "./agent/checkout";
@@ -36,7 +37,7 @@ import { registerMcp } from "./mcp/routes";
 import { parseHead } from "./pinnedHead";
 import type { SessionRegistry } from "./registry";
 import { answerRereview, traceRereview } from "./rereview/engine";
-import { DeadMoveError, MoveCapError } from "./rereview/threads";
+import { DeadMoveError, MoveCapError, ThreadPlacer } from "./rereview/threads";
 import { newEvent } from "./review/events";
 import { RefStore } from "./review/refStore";
 import { ReviewService, StaleSnapshotError } from "./review/reviews";
@@ -828,7 +829,7 @@ describe("Session", () => {
 			release(process.env.CRB_FAKE_GH ?? "", "threads");
 			await expect(s.threads(readId, "full")).rejects.toThrow();
 			const calls = pr.ghLog();
-			await new Promise((r) => setTimeout(r, 200));
+			await quietFor(200, "a gh call after close");
 			expect(pr.ghLog()).toBe(calls);
 			await expect(s.overview(0)).rejects.toThrow(/closed/);
 		});
@@ -858,7 +859,7 @@ describe("Session", () => {
 			// any of them.
 			const calls = pr.ghLog();
 			release(process.env.CRB_FAKE_GH ?? "", "threads");
-			await new Promise((r) => setTimeout(r, 1800));
+			await quietFor(300, "a gh call from a read pushed out or closed");
 			expect(pr.ghLog()).toBe(calls);
 		});
 
@@ -1965,6 +1966,157 @@ describe("Session", () => {
 				]),
 			);
 
+		describe("old-side threads and GitHub's hunk (CAR-8)", () => {
+			const HUNK = "@@ -1,2 +1,2 @@\n line 1\n-line 2";
+			const serve = (over: Partial<Parameters<typeof pr.scenario>[0]> = {}) =>
+				pr.scenario({
+					...over,
+					prs: {
+						12: {
+							view: prView({ headRefOid: pr.head(), baseRefName: "main" }),
+							graphql: {
+								reviewThreads: [
+									reviewThread({ path: "a.txt", line: 2, diffSide: "LEFT" }, [
+										threadComment({
+											login: "rev1",
+											text: "Old 2",
+											commit: pr.head(),
+											diffHunk: HUNK,
+										}),
+									]),
+									reviewThread({ path: "a.txt", line: 2, diffSide: "RIGHT" }, [
+										threadComment({
+											login: "rev1",
+											text: "New 2",
+											commit: pr.head(),
+										}),
+									]),
+								],
+								reviews: [],
+							},
+						},
+					},
+				});
+			const answerOf = async (
+				s: Session,
+				readId: string,
+				done: (a: { complete?: boolean }) => boolean = () => true,
+			) => {
+				for (;;) {
+					const answer = await s.placements({ head: pr.head() }, readId);
+					if (!("pending" in answer) && done(answer)) return answer;
+					await new Promise((r) => setTimeout(r, 20));
+				}
+			};
+			const LEFT2 = {
+				path: "a.txt",
+				startSide: "LEFT" as const,
+				startLine: 2,
+				side: "LEFT" as const,
+				line: 2,
+			};
+
+			it("waits for its hunk as pending (never on a line), the others placed meanwhile; a hand move wins in every phase", async () => {
+				serve({ hold: ["threadContent"] });
+				const s = await Session.open(pr.arg, process.cwd());
+				const { readId } = await s.overview();
+				const [left, right] = (await s.threads(readId, "summary")).threads;
+				if (!left || !right) throw new Error("no threads");
+				const first = await answerOf(s, readId);
+				expect(first.complete).toBe(false);
+				const of = (a: typeof first, id: string) =>
+					a.threads.find((t) => t.id === id);
+				expect(of(first, left.id)?.placement).toEqual({
+					kind: "pending",
+					path: "a.txt",
+				});
+				expect(of(first, right.id)?.placement.kind).toBe("placed");
+				// A hand move on the waiting thread wins at once, and after.
+				const to = {
+					path: "a.txt",
+					startSide: "RIGHT" as const,
+					startLine: 5,
+					side: "RIGHT" as const,
+					line: 5,
+				};
+				await s.moveThread({
+					thread: { source: "github", id: left.id },
+					to: { head: pr.head() },
+					anchor: to,
+				});
+				const moved = await answerOf(s, readId);
+				expect(of(moved, left.id)?.placement).toMatchObject({
+					kind: "placed",
+					anchor: to,
+				});
+				release(process.env.CRB_FAKE_GH ?? "", "threadContent");
+				const done = await answerOf(s, readId, (a) => a.complete === true);
+				expect(of(done, left.id)?.placement).toMatchObject({
+					kind: "placed",
+					anchor: to,
+				});
+			});
+
+			it("one git can't trace gets a final answer of its own (untraced), and the answer completes: never pending for good", async () => {
+				serve();
+				const original = ThreadPlacer.prototype.inputs;
+				const spy = vi
+					.spyOn(ThreadPlacer.prototype, "inputs")
+					.mockImplementation(function (
+						this: ThreadPlacer,
+						...args: Parameters<ThreadPlacer["inputs"]>
+					) {
+						if (args[1].some((t) => t.anchor?.side === "LEFT")) {
+							return Promise.reject(new Error("git failed"));
+						}
+						return original.apply(this, args);
+					});
+				try {
+					const s = await Session.open(pr.arg, process.cwd());
+					const { readId } = await s.overview();
+					const [left, right] = (await s.threads(readId, "summary")).threads;
+					const done = await answerOf(s, readId, (a) => a.complete === true);
+					const of = (id: string | undefined) =>
+						done.threads.find((t) => t.id === id)?.placement;
+					expect(of(left?.id)).toMatchObject({
+						kind: "unplaced",
+						fate: "untraced",
+					});
+					expect(of(right?.id)?.kind).toBe("placed");
+				} finally {
+					spy.mockRestore();
+				}
+			});
+
+			it("once its hunk is in, it is placed where the hunk shows it", async () => {
+				serve();
+				const s = await Session.open(pr.arg, process.cwd());
+				const { readId } = await s.overview();
+				const [left] = (await s.threads(readId, "summary")).threads;
+				const done = await answerOf(s, readId, (a) => a.complete === true);
+				expect(
+					done.threads.find((t) => t.id === left?.id)?.placement,
+				).toMatchObject({ kind: "placed", anchor: LEFT2 });
+			});
+
+			it("a comment text GitHub won't give, even read again, leaves it unplaced as couldn't check, never on its number", async () => {
+				serve({ failGraphql: "diffHunk" });
+				const s = await Session.open(pr.arg, process.cwd());
+				const { readId } = await s.overview();
+				const [left] = (await s.threads(readId, "summary")).threads;
+				const done = await answerOf(s, readId, (a) => a.complete === true);
+				expect(
+					done.threads.find((t) => t.id === left?.id)?.placement,
+				).toMatchObject({ kind: "unplaced", fate: "check-failed" });
+				// Read again once after the background read failed.
+				const reads = pr
+					.ghLog()
+					.split("\n")
+					.filter((l) => l.includes("diffHunk"));
+				expect(reads.length).toBeGreaterThanOrEqual(2);
+			});
+		});
+
 		it("a thread with no commit sits on GitHub's line counted on the head of the same answer, never on a head checked later (CAR-116)", async () => {
 			const noCommit = () =>
 				reviewThread({ path: "a.txt", line: 20, diffSide: "RIGHT" }, [
@@ -2021,6 +2173,113 @@ describe("Session", () => {
 			serve(h3);
 			expect(await s.checkHead()).toMatchObject({ currentHead: h3 });
 			expect(await placed(h3)).toEqual(on(25));
+		});
+
+		it("an added lock file stays one cluster; one mark finishes it, beside a cut source file (CAR-235)", async () => {
+			pr.moveHead({
+				"web/pnpm-lock.yaml": "a:\n  b: 1\n\nc:\n  d: 2\n",
+				"web/src/x.ts": "one\n\ntwo\n",
+			});
+			const s = await Session.open(pr.arg, process.cwd());
+			const fileOf = (path: string) =>
+				s.snapshot().files.find((f) => f.path === path);
+			expect(fileOf("web/src/x.ts")?.clusters).toHaveLength(2);
+			const lock = fileOf("web/pnpm-lock.yaml");
+			expect(lock?.clusters).toHaveLength(1);
+			const key = lock?.clusters[0]?.key as string;
+			const view = await s.setStates(s.snapshot().revision, [
+				{ key, state: "crossed-off", reason: "generated" },
+			]);
+			expect(
+				view.files
+					.find((f) => f.path === "web/pnpm-lock.yaml")
+					?.clusters.map((c) => c.state),
+			).toEqual(["crossed-off"]);
+		});
+
+		it("an added file reviewed whole before the blank-line cut (one cluster, an older crb) reads reviewed on every piece, and its next patch set carries every piece and nothing more (CAR-235)", async () => {
+			pr.moveHead({ "blocks.txt": "one\n\ntwo\n\nthree\n" });
+			const s = await Session.open(pr.arg, process.cwd());
+			const ps1 = s.snapshot();
+			const blocks = (snap: Snapshot) =>
+				snap.files.find((f) => f.path === "blocks.txt")?.clusters ?? [];
+			const pieces = blocks(ps1);
+			expect(pieces.map((c) => c.added)).toEqual([
+				["one", ""],
+				["two", ""],
+				["three"],
+			]);
+			// As an older crb wrote it: the whole file one cluster, reviewed.
+			const whole = {
+				key: pieces[0]?.split?.key as string,
+				kind: "lines" as const,
+				oldStart: 0,
+				oldCount: 0,
+				newStart: 1,
+				newCount: 5,
+				removed: [],
+				added: pieces.flatMap((c) => c.added),
+				lines: 5,
+			};
+			expect(pieces.every((c) => c.split?.key === whole.key)).toBe(true);
+			await new ReviewService(
+				new RefStore(clonePath("acme", "widget")),
+			).recordStates(
+				s.id,
+				"octo-cat",
+				{
+					...ps1,
+					files: ps1.files.map((f) =>
+						f.path === "blocks.txt" ? { ...f, clusters: [whole] } : f,
+					),
+				},
+				[{ key: whole.key, state: "reviewed" }],
+			);
+			// The next open writes the split carry: every piece reviewed.
+			const again = await Session.open(pr.arg, process.cwd());
+			const view1 = await again.review();
+			expect(
+				view1.files
+					.find((f) => f.path === "blocks.txt")
+					?.clusters.map((c) => c.state),
+			).toEqual(["reviewed", "reviewed", "reviewed"]);
+			expect(await splitCarried(s.id)).toHaveLength(1);
+			expect(view1.progress.clusters.reviewed).toBe(3);
+
+			// A push: PS2's comparison carries the three pieces, exact.
+			const newHead = pr.moveHead({ "later.txt": "later\n" });
+			await again.checkHead();
+			const answer = await settled(again, 1, { head: newHead });
+			expect(kinds(answer)["blocks.txt"]).toEqual([
+				"carried:1",
+				"carried:1",
+				"carried:1",
+			]);
+			const view = await again.viewHead(newHead);
+			const laterKey = view.files.find((f) => f.path === "later.txt")
+				?.clusters[0]?.key;
+			if (!laterKey) throw new Error("no cluster in later.txt");
+			// The first mark starts PS2 with the carries.
+			const after = await again.setStates(view.revision, [
+				{ key: laterKey, state: "reviewed" },
+			]);
+			expect(after.patchset).toBe(2);
+			expect(
+				after.files
+					.find((f) => f.path === "blocks.txt")
+					?.clusters.map((c) => [c.state, c.carried?.from]),
+			).toEqual([
+				["reviewed", 1],
+				["reviewed", 1],
+				["reviewed", 1],
+			]);
+			// Nothing else reads reviewed: the PR's own a.txt and new.txt
+			// were never marked.
+			expect(after.progress.clusters).toEqual({
+				total: blocks(again.snapshot()).length + 4,
+				reviewed: 4,
+				crossedOff: 0,
+			});
 		});
 
 		it("answers pending at once, then the answer; the viewed head carries provisionally; the first mark starts PS2 with the carries", async () => {
@@ -2111,11 +2370,47 @@ describe("Session", () => {
 					},
 				],
 			});
-			// a.txt is untouched since PS1: one whole-file gap.
+			// a.txt is untouched since PS1, but its line-26 cluster was never
+			// reviewed there: its lines alone, a box of their own (CAR-216),
+			// the rest of the file gaps around them.
+			const lineKey = view.files[0]?.clusters[1]?.key;
 			expect(await s.interdiffHunks(1, view.revision, 0)).toEqual({
-				hunks: [],
+				hunks: [
+					{
+						oldStart: 25,
+						oldCount: 0,
+						newStart: 26,
+						newCount: 1,
+						lines: [
+							{
+								kind: "del",
+								text: "line 26",
+								clusterKey: lineKey,
+								baseNo: 26,
+								orphan: true,
+							},
+							{
+								kind: "add",
+								newNo: 26,
+								text: "line 26 changed",
+								clusterKey: lineKey,
+								orphan: true,
+							},
+						],
+					},
+				],
 				newLineCount: 30,
-				wholeGap: true,
+				pieces: [
+					{
+						hunk: 0,
+						line: 0,
+						key: lineKey,
+						orphan: true,
+						owns: [[0, 2]],
+						old: [],
+						new: [[26, 27]],
+					},
+				],
 			});
 
 			// The first mark starts PS2, carrying PS1's mark.
@@ -2178,7 +2473,11 @@ describe("Session", () => {
 			const s = await Session.open(pr.arg, process.cwd());
 			const ps1 = s.snapshot();
 			await s.setStates(ps1.revision, [
-				{ key: firstKey(s), state: "reviewed" },
+				...s
+					.snapshot()
+					.files.flatMap((f) =>
+						f.clusters.map((c) => ({ key: c.key, state: "reviewed" as const })),
+					),
 			]);
 			// PS2 changes a.txt's line 15 and adds a line after it (the new
 			// side shifts by one below it); new.txt is untouched since PS1.
@@ -2283,9 +2582,13 @@ describe("Session", () => {
 		const sinceAfter = async (push: () => string) => {
 			const s = await Session.open(pr.arg, process.cwd());
 			const ps1 = s.snapshot();
-			await s.setStates(ps1.revision, [
-				{ key: firstKey(s), state: "reviewed" },
-			]);
+			// All of it: a cluster left unreviewed would be shown (CAR-216).
+			await s.setStates(
+				ps1.revision,
+				ps1.files.flatMap((f) =>
+					f.clusters.map((c) => ({ key: c.key, state: "reviewed" as const })),
+				),
+			);
 			const newHead = push();
 			await s.checkHead();
 			const answer = await settled(s, 1, { head: newHead });
@@ -3031,6 +3334,301 @@ describe("Session", () => {
 			await expect(s.agentPlacements(host, { patchset: 9 })).rejects.toThrow(
 				RangeError,
 			);
+			await s.close();
+		});
+
+		/** An approved outside join of session `s`'s agent host: its token. */
+		const joinAgent = async (host: NonNullable<Session["agent"]>) => {
+			const { request } = host.join.request({
+				name: "carbonless · main",
+				machine: "devbox",
+				harness: "cc 2.1",
+			});
+			await host.join.answer(request, true);
+			return ((await host.join.outcome(request, 0)) as { token: string }).token;
+		};
+		/** A RIGHT line anchor on a.txt at `commit`. */
+		const onA = (commit: string, line: number) =>
+			({
+				subject: "line",
+				path: "a.txt",
+				commit,
+				side: "RIGHT",
+				line,
+				startSide: "RIGHT",
+				startLine: line,
+			}) as const;
+		/** The question, its answer, a follow-up: both questions. */
+		const askTwice = async (
+			host: NonNullable<Session["agent"]>,
+			token: string,
+			thread: string,
+		) => {
+			const q1 = await host.sessionNext(token);
+			expect(q1?.thread).toBe(thread);
+			await host.sessionReply(token, {
+				thread,
+				replyTo: q1?.replyTo as string,
+				text: "Because.",
+			});
+			await host.message(thread, { clientId: "q2", text: "And now?" });
+			const q2 = await host.sessionNext(token);
+			expect(q2?.thread).toBe(thread);
+			return [q1, q2] as const;
+		};
+		const originGit = (...args: string[]) =>
+			execFileSync("git", args, {
+				cwd: pr.repo.path,
+				encoding: "utf8",
+				env: testGitEnv(),
+			}).trim();
+		/** A commit on origin with a.txt as `text` on `parent`'s tree. */
+		const commitOnOrigin = (parent: string, text: string, msg: string) => {
+			const blob = execFileSync("git", ["hash-object", "-w", "--stdin"], {
+				cwd: pr.repo.path,
+				encoding: "utf8",
+				env: testGitEnv(),
+				input: text,
+			}).trim();
+			const entries = originGit("ls-tree", parent)
+				.split("\n")
+				.filter((l) => !l.endsWith("\ta.txt"));
+			const tree = execFileSync("git", ["mktree"], {
+				cwd: pr.repo.path,
+				encoding: "utf8",
+				env: testGitEnv(),
+				input: `${[...entries, `100644 blob ${blob}\ta.txt`].join("\n")}\n`,
+			}).trim();
+			return originGit("commit-tree", tree, "-p", parent, "-m", msg);
+		};
+		const numbered = (edit: (lines: string[]) => void) => {
+			const lines = Array.from({ length: 30 }, (_, i) => `line ${i + 1}`);
+			edit(lines);
+			return `${lines.join("\n")}\n`;
+		};
+		/** A session's patch sets and where it is (not the counts filled in later). */
+		const where = (s: Session) => ({
+			patchset: s.info().patchset,
+			patchsets: s.info().patchsets.map((p) => ({
+				number: p.number,
+				head: p.head,
+				mergeBase: p.mergeBase,
+				revision: p.revision,
+			})),
+			revision: s.snapshot().revision,
+		});
+		const inClone = (oid: string) => {
+			try {
+				execFileSync("git", ["cat-file", "-e", `${oid}^{commit}`], {
+					cwd: clonePath("acme", "widget"),
+					env: testGitEnv(),
+					stdio: "ignore",
+				});
+				return true;
+			} catch {
+				return false;
+			}
+		};
+
+		it("a follow-up in a conversation opened on patch set 1 gets patch set 1's hunk, after patch set 2 moved and changed its line and crb restarted (CAR-53)", async () => {
+			const s = await Session.open(pr.arg, process.cwd());
+			const host = s.agent;
+			if (!host) throw new Error("no agent");
+			await s.setStates((await s.review()).revision, [
+				{ key: firstKey(s), state: "reviewed" },
+			]);
+			const h1 = pr.head();
+			const x = await host.open({
+				clientId: "q1",
+				text: "Why?",
+				span: {
+					subject: "line",
+					path: "a.txt",
+					commit: h1,
+					side: "RIGHT",
+					line: 2,
+					startSide: "RIGHT",
+					startLine: 2,
+				},
+			});
+			// Patch set 2: two lines on top, line 2 changed again.
+			const lines = Array.from({ length: 30 }, (_, i) => `line ${i + 1}`);
+			lines[1] = "line 2 changed again";
+			lines[25] = "line 26 changed";
+			const h2 = pr.moveHead({
+				"a.txt": `top 1\ntop 2\n${lines.join("\n")}\n`,
+			});
+			await s.checkHead();
+			const v2 = await s.viewHead(h2);
+			const key = v2.files[0]?.clusters[0]?.key;
+			if (!key) throw new Error("no cluster");
+			await s.setStates(v2.revision, [{ key, state: "reviewed" }]);
+			expect(s.info().patchset).toBe(2);
+			await s.close();
+			// A new server: patch set 1's snapshot isn't kept any more.
+			const s2 = await Session.open(pr.arg, process.cwd());
+			expect(s2.snapshot().head).toBe(h2);
+			const agent = s2.agent;
+			if (!agent) throw new Error("no agent");
+			const before = where(s2);
+			const [q1, q2] = await askTwice(agent, await joinAgent(agent), x.id);
+			for (const q of [q1, q2]) {
+				expect(q?.hunk?.split("\n")).toEqual([
+					"@@ -1,5 +1,5 @@",
+					" line 1",
+					"-line 2",
+					"+line 2 changed",
+					" line 3",
+					" line 4",
+					" line 5",
+				]);
+				expect(q?.envelope).toMatchObject({
+					thread: { anchor: { commit: h1, line: 2 } },
+				});
+			}
+			// The agent's read built no snapshot and started nothing: the
+			// session is where it was, and a write still lands on PS2.
+			expect(where(s2)).toEqual(before);
+			await expect(s2.reviewAt(2)).resolves.toMatchObject({
+				revision: before.revision,
+			});
+			await s2.close();
+		});
+
+		it("after a rebase, a conversation on a viewed head no patch set has gets that head's own diff (its merge base with the base branch), and a mark there still starts the patch set on it (CAR-53)", async () => {
+			const s = await Session.open(pr.arg, process.cwd());
+			const host = s.agent;
+			if (!host) throw new Error("no agent");
+			await s.setStates((await s.review()).revision, [
+				{ key: firstKey(s), state: "reviewed" },
+			]);
+			// main moves (line 6), the PR is rebased onto it: H2, merge base M2.
+			const m2 = commitOnOrigin(
+				pr.mergeBase,
+				numbered((l) => {
+					l[5] = "line 6 from main";
+				}),
+				"main moves",
+			);
+			pr.moveMain(m2);
+			const h2 = commitOnOrigin(
+				m2,
+				numbered((l) => {
+					l[1] = "line 2 rebased";
+					l[5] = "line 6 from main";
+					l[25] = "line 26 changed";
+				}),
+				"PR rebased",
+			);
+			originGit("update-ref", "refs/pull/12/head", h2);
+			pr.scenario({
+				prs: {
+					12: { view: prView({ headRefOid: h2, baseRefName: "main" }) },
+				},
+			});
+			await s.checkHead();
+			const viewed = await s.viewHead(h2);
+			const x = await host.open({
+				clientId: "q1",
+				text: "Why?",
+				span: onA(h2, 2),
+			});
+			const before = where(s);
+			const [q1, q2] = await askTwice(host, await joinAgent(host), x.id);
+			for (const q of [q1, q2]) {
+				// M2..H2, as the page showed it: main's line 6 is context, not
+				// a change of the PR's (M1..H2 would show it removed and added).
+				expect(q?.hunk?.split("\n")).toEqual([
+					"@@ -1,5 +1,5 @@",
+					" line 1",
+					"-line 2",
+					"+line 2 rebased",
+					" line 3",
+					" line 4",
+					" line 5",
+				]);
+			}
+			expect(where(s)).toEqual(before);
+			// A mark on the viewed head starts patch set 2 on M2..H2.
+			const key = viewed.files.find((f) => f.path === "a.txt")?.clusters[0]
+				?.key;
+			if (!key) throw new Error("no cluster");
+			await s.setStates(viewed.revision, [{ key, state: "reviewed" }]);
+			expect(s.info().patchsets.at(-1)).toMatchObject({
+				number: 2,
+				head: h2,
+				mergeBase: m2,
+			});
+			await s.close();
+		});
+
+		it("a conversation on a commit a force-push dropped, missing from crb's clone: fetched by OID for its hunk; one that can't be fetched gives the notice and no hunk (CAR-53)", async () => {
+			const s = await Session.open(pr.arg, process.cwd());
+			const host = s.agent;
+			if (!host) throw new Error("no agent");
+			// Pushed and force-pushed away before crb ever fetched it: only
+			// origin has it, by OID (GitHub keeps it).
+			const dropped = commitOnOrigin(
+				pr.mergeBase,
+				numbered((l) => {
+					l[1] = "line 2 then";
+				}),
+				"dropped",
+			);
+			originGit("update-ref", "refs/keep/dropped", dropped);
+			originGit("config", "uploadpack.allowAnySHA1InWant", "true");
+			expect(inClone(dropped)).toBe(false);
+			const x = await host.open({
+				clientId: "q1",
+				text: "Why?",
+				span: onA(dropped, 2),
+			});
+			const token = await joinAgent(host);
+			const [q1, q2] = await askTwice(host, token, x.id);
+			for (const q of [q1, q2]) {
+				expect(q?.hunk?.split("\n")).toEqual([
+					"@@ -1,5 +1,5 @@",
+					" line 1",
+					"-line 2",
+					"+line 2 then",
+					" line 3",
+					" line 4",
+					" line 5",
+				]);
+			}
+			expect(inClone(dropped)).toBe(true);
+			await host.sessionReply(token, {
+				thread: x.id,
+				replyTo: q2?.replyTo as string,
+				text: "Done.",
+			});
+
+			// GitHub doesn't have this one: the notice, no hunk, never the
+			// PR's current code; the follow-up doesn't fetch again.
+			const gone = "7".repeat(40);
+			const y = await host.open({
+				clientId: "q3",
+				text: "And this?",
+				span: onA(gone, 2),
+			});
+			const r1 = await host.sessionNext(token);
+			expect(r1?.thread).toBe(y.id);
+			expect(r1?.hunk).toBeNull();
+			const notice = (r1?.envelope as { notice?: string } | undefined)?.notice;
+			expect(notice).toContain(
+				`The diff this conversation was opened on (a.txt, its merge base..${gone}) can't be read now (commit ${gone} is not in crb's clone and can't be fetched)`,
+			);
+			await host.sessionReply(token, {
+				thread: y.id,
+				replyTo: r1?.replyTo as string,
+				text: "Can't see it.",
+			});
+			await host.message(y.id, { clientId: "q4", text: "Try again?" });
+			const r2 = await host.sessionNext(token);
+			expect(r2?.hunk).toBeNull();
+			expect(
+				(r2?.envelope as { notice?: string } | undefined)?.notice,
+			).toContain(`commit ${gone} can't be fetched (tried just now)`);
 			await s.close();
 		});
 

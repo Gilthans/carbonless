@@ -182,3 +182,30 @@ export function contextLines(
 	}
 	return lines;
 }
+
+/**
+ * Whether new-side line `newNo` is a line of the hunks buildDisplayHunks
+ * makes of `clusters` with `contextSize` (GitHub's diff: its hunks, three
+ * lines of context, where GitHub takes a RIGHT comment): a cluster's added
+ * line, or one of the unchanged lines around one. `newLineCount`, the new
+ * side's length, clips the context at the file's end (unknown: not
+ * clipped). File-level clusters have no lines.
+ */
+export function inDiffHunks(
+	clusters: readonly Cluster[],
+	newNo: number,
+	newLineCount = Number.POSITIVE_INFINITY,
+	contextSize = 3,
+): boolean {
+	if (newNo < 1 || newNo > newLineCount) return false;
+	for (const c of clusters) {
+		if (c.kind !== "lines") continue;
+		// As spans(): the last unchanged line above, the first below.
+		const above = c.newCount === 0 ? c.newStart : c.newStart - 1;
+		const below = above + c.newCount + 1;
+		if (newNo >= above - contextSize + 1 && newNo <= below + contextSize - 1) {
+			return true;
+		}
+	}
+	return false;
+}

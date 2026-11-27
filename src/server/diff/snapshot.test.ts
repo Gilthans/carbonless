@@ -1,7 +1,7 @@
 import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { bestCpuRatio } from "../../../test/cpu.js";
+import { bestCpuRatio, repeat } from "../../../test/cpu.js";
 import { createDiffFixture } from "../../../test/diff-fixture.js";
 import {
 	createGitFixture,
@@ -1161,6 +1161,40 @@ describe("the block cut and cluster identity (CAR-167)", () => {
 	const hunksOf = (patch: string) =>
 		parseU0Patch(patch).map((c) => ({ ...c, kind: "lines" as const }));
 
+	it("cuts an added Markdown file at its blocks and then at blank lines (CAR-235)", () => {
+		// A fence holding a blank line: the block cut keeps it one piece,
+		// the blank-line cut ends a piece after that blank line too.
+		const newLines = ["# T", "", "```", "a", "", "b", "```", "", "- x"];
+		const hunks = hunksOf(
+			`@@ -0,0 +1,9 @@\n${newLines.map((l) => `+${l}`).join("\n")}\n`,
+		);
+		const text = { oldLines: [], newLines, noNewlineAtEnd: false };
+		const md = cutClusters(hunks, keyed(newLines), text, { markdown: true });
+		const both = cutClusters(hunks, keyed(newLines), text, {
+			markdown: true,
+			blankLines: true,
+		});
+		expect(md.map((c) => c.added)).toEqual([
+			["# T", ""],
+			["```", "a", "", "b", "```", ""],
+			["- x"],
+		]);
+		expect(both.map((c) => c.added)).toEqual([
+			["# T", ""],
+			["```", "a", ""],
+			["b", "```", ""],
+			["- x"],
+		]);
+		// Every piece is the git hunk's, at its place in it (the split carry).
+		const [whole] = keyed(newLines)(hunks);
+		expect(both.map((c) => [c.split?.key, c.split?.addedAt])).toEqual([
+			[whole, 0],
+			[whole, 2],
+			[whole, 5],
+			[whole, 8],
+		]);
+	});
+
 	it("keeps the key a hunk the block cut leaves whole had before it", () => {
 		// A two-line paragraph edited, and a list item: one block each.
 		const oldLines = ["Para one", "goes on.", "", "- item"];
@@ -1177,7 +1211,7 @@ describe("the block cut and cluster identity (CAR-167)", () => {
 			hunks,
 			keyed(newLines),
 			{ oldLines, newLines, noNewlineAtEnd: false },
-			true,
+			{ markdown: true },
 		);
 		expect(after).toEqual(before);
 		expect(after.map((c) => c.key)).toEqual(
@@ -1206,7 +1240,7 @@ describe("the block cut and cluster identity (CAR-167)", () => {
 			hunks,
 			keyed(newLines),
 			{ oldLines, newLines, noNewlineAtEnd: false },
-			true,
+			{ markdown: true },
 		);
 		expect(ws.map((c) => c.whitespaceOnly ?? false)).toEqual([
 			false,
@@ -1280,7 +1314,7 @@ describe("the block cut and cluster identity (CAR-167)", () => {
 					hunks,
 					keysOf,
 					{ oldLines, newLines, noNewlineAtEnd: false },
-					true,
+					{ markdown: true },
 				);
 		};
 		const big = readme(300 * 1024);
@@ -1290,6 +1324,146 @@ describe("the block cut and cluster identity (CAR-167)", () => {
 		});
 		console.info(
 			`cutClusters of a 300 KiB README: ${best} µs, ${ratio.toFixed(2)}x four cuts of its quarter (${ref} µs)`,
+		);
+		expect(ratio).toBeLessThan(2);
+	});
+});
+
+describe("added files cut at blank lines (CAR-235)", () => {
+	const added =
+		"import x\n\nfunction a() {\n  return 1;\n}\n\n\nfunction b() {}\n";
+	const edited = "one\n";
+	let repo: GitFixture;
+	let snap: Snapshot;
+	beforeAll(async () => {
+		repo = createGitFixture([
+			{ message: "base", files: { "edit.ts": edited } },
+			{
+				message: "head",
+				files: {
+					"edit.ts": `${edited}\nmore\n\nand more\n`,
+					"new.ts": added,
+					"blank.txt": "\n \n",
+					"deps/pnpm-lock.yaml": "a:\n  b: 1\n\nc:\n  d: 2\n",
+				},
+			},
+		]);
+		snap = await buildSnapshot(
+			repo.path,
+			repo.shas[0] as string,
+			repo.shas[1] as string,
+		);
+	});
+	afterAll(() => repo.cleanup());
+	const fileOf = (path: string) => {
+		const f = snap.files.find((x) => x.path === path);
+		if (!f) throw new Error(`no ${path}`);
+		return f;
+	};
+
+	it("gives an added file one cluster per blank-line-ended block, every line once", () => {
+		const f = fileOf("new.ts");
+		expect(f.clusters.map((c) => c.added)).toEqual([
+			["import x", ""],
+			["function a() {", "  return 1;", "}", "", ""],
+			["function b() {}"],
+		]);
+		expect(f.clusters.map((c) => [c.newStart, c.newCount])).toEqual([
+			[1, 2],
+			[3, 5],
+			[8, 1],
+		]);
+		// Totals unchanged (principle 2): every added line in one cluster.
+		expect(f.clusters.reduce((n, c) => n + c.lines, 0)).toBe(f.additions);
+		expect(f.clusters.flatMap((c) => c.added).join("\n")).toBe(
+			added.slice(0, -1),
+		);
+		expect(new Set(f.clusters.map((c) => c.key)).size).toBe(3);
+	});
+
+	it("remembers the whole hunk's key on each piece, so marks on it carry", () => {
+		const f = fileOf("new.ts");
+		const whole = clusterKeys(
+			"new.ts",
+			[
+				{
+					...(parseU0Patch(
+						`@@ -0,0 +1,8 @@\n${added
+							.split("\n")
+							.slice(0, -1)
+							.map((l) => `+${l}`)
+							.join("\n")}\n`,
+					)[0] as Omit<Cluster, "key" | "kind">),
+					kind: "lines",
+				},
+			],
+			added.split("\n").slice(0, -1),
+		)[0];
+		expect(f.clusters.map((c) => c.split)).toEqual([
+			{ key: whole, removedAt: 0, addedAt: 0, removed: 0 },
+			{ key: whole, removedAt: 0, addedAt: 2, removed: 0 },
+			{ key: whole, removedAt: 0, addedAt: 7, removed: 0 },
+		]);
+	});
+
+	it("leaves an added lock file whole, as before (owner 2026-11-24)", () => {
+		const lock = fileOf("deps/pnpm-lock.yaml");
+		expect(lock.clusters).toHaveLength(1);
+		expect(lock.clusters[0]?.split).toBeUndefined();
+		expect(lock.clusters[0]?.lines).toBe(5);
+	});
+
+	it("leaves an added file of only blank lines whole, and an edited file's hunks as git cuts them", () => {
+		expect(fileOf("blank.txt").clusters).toHaveLength(1);
+		expect(fileOf("blank.txt").clusters[0]?.split).toBeUndefined();
+		const e = fileOf("edit.ts");
+		expect(e.clusters).toHaveLength(1);
+		expect(e.clusters[0]?.added).toEqual(["", "more", "", "and more"]);
+	});
+});
+
+describe("the blank-line cut of a big added file scales linearly (CAR-235)", () => {
+	/** An added file of `blocks` five-line blocks, each ended by a blank line. */
+	const addedFile = (blocks: number) => {
+		const lines = Array.from({ length: blocks }, (_, b) => [
+			`export function f${b}(x: number) {`,
+			`\tconst y = x * ${b};`,
+			"\treturn y + 1;",
+			"}",
+			"",
+		]).flat();
+		const hunk: Omit<Cluster, "key"> = {
+			kind: "lines",
+			oldStart: 0,
+			oldCount: 0,
+			newStart: 1,
+			newCount: lines.length,
+			removed: [],
+			added: lines,
+			lines: lines.length,
+		};
+		return () =>
+			cutClusters(
+				[hunk],
+				(cs) => clusterKeys("big.ts", cs, lines),
+				{ oldLines: [], newLines: lines, noNewlineAtEnd: false },
+				{ blankLines: true },
+			);
+	};
+
+	it("cuts and keys a 4x larger file in about 4x the CPU, not 16x", () => {
+		const large = addedFile(1600);
+		const small = addedFile(400);
+		expect(large()).toHaveLength(1600);
+		expect(small()).toHaveLength(400);
+		// The whole snapshot's cost of the cut: the pieces' keys (each hashed
+		// with its context) and the whole hunk's key for the split carry.
+		// Linear is about 1x; a per-piece pass over the file would be 4x:
+		// measured 1.00-1.14x on the dev machine, and 3.56x with such a pass
+		// put in splitAtBlankLines as a probe.
+		const { best, ratio } = bestCpuRatio(large, repeat(4, small));
+		console.info(
+			`blank-line cut of an 8,000-line added file: ${(best / 1000).toFixed(1)} ms CPU, ${ratio.toFixed(2)}x four 2,000-line ones`,
 		);
 		expect(ratio).toBeLessThan(2);
 	});
