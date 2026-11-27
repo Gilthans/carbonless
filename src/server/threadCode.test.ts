@@ -641,10 +641,10 @@ describe("ThreadCodeSource's reads, batched (CAR-320)", () => {
 
 describe("ThreadCodeSource's batched diffs stay within a command line", () => {
 	// Long paths, more than one command line holds (Windows: 32 767
-	// characters): 180 of about 200 bytes, 36 KB in all.
+	// characters): 190 of about 180 bytes, over 34 KB in all.
 	const long = (i: number) =>
 		`${"deep/".repeat(18)}${"segment-name-".repeat(6)}/file-${String(i).padStart(3, "0")}.txt`;
-	const files = Array.from({ length: 180 }, (_, i) => long(i));
+	const files = Array.from({ length: 190 }, (_, i) => long(i));
 	const many = createGitFixture([
 		{
 			message: "base",
@@ -692,7 +692,7 @@ describe("ThreadCodeSource's batched diffs stay within a command line", () => {
 		expect(
 			windows.every((w) => w?.some((r) => r.text === "line 4 changed")),
 		).toBe(true);
-		for (const i of [0, 77, 179]) {
+		for (const i of [0, 77, 189]) {
 			expect(windows[i]).toEqual(
 				await new ThreadCodeSource(many.path).window(
 					anchor(files[i] as string),
