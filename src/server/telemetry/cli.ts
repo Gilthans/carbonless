@@ -50,7 +50,11 @@ const ago = (iso: string, now = Date.now()): string => {
 	return `${Math.round(s / 86400)} d ago`;
 };
 
-const mb = (bytes: number) => `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+/** A size as people read it: KB under a megabyte (a fresh device's few KB isn't "0.0 MB"). */
+const mb = (bytes: number) =>
+	bytes < 1024 * 1024
+		? `${Math.max(0.1, bytes / 1024).toFixed(1)} KB`
+		: `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 
 function describe(status: MailboxStatus): string[] {
 	const lines = [

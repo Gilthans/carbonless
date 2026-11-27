@@ -60,7 +60,7 @@ describe("crb telemetry", () => {
 			`on: ${remote.path}, branch device/test-box, every 15 min`,
 		);
 		expect(out.join("\n")).toMatch(/last push: .*ok/);
-		expect(out.join("\n")).toMatch(/snapshot: \d+ files/);
+		expect(out.join("\n")).toMatch(/snapshot: \d+ files, \d+\.\d KB, /);
 
 		expect(await run("send")).toBe(0);
 
