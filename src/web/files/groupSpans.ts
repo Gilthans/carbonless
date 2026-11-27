@@ -41,16 +41,28 @@ export function groupSpans(
 	return out;
 }
 
-/** A line's number on its own side. */
+/**
+ * A line's number on its own side: a removed line of the since view
+ * without an old number (an orphan, CAR-216) by its base number; none when
+ * it has neither.
+ */
 const numberOf = (line: DiffLine): number | undefined =>
-	line.kind === "del" ? line.oldNo : line.newNo;
+	(line.kind === "del" ? (line.oldNo ?? line.baseNo) : line.newNo) ?? undefined;
 
-/** "Line 12 split into 12–16" | "Lines 7–9 joined into 7". */
+/**
+ * "Line 12 split into 12–16" | "Lines 7–9 joined into 7". A line without a
+ * number reads "A line" (the one line) or "N lines" (a run), never
+ * `undefined`.
+ */
 export function groupLabel(group: LineGroup): string {
 	const one = numberOf(group.one);
 	const from = numberOf(group.run[0] as DiffLine);
 	const to = numberOf(group.run[group.run.length - 1] as DiffLine);
-	return group.one.kind === "del"
-		? `Line ${one} split into ${from}–${to}`
-		: `Lines ${from}–${to} joined into ${one}`;
+	const lines =
+		from !== undefined && to !== undefined
+			? `${from}–${to}`
+			: `${group.run.length} lines`;
+	if (group.one.kind === "del")
+		return `${one === undefined ? "A line" : `Line ${one}`} split into ${lines}`;
+	return `${from !== undefined && to !== undefined ? `Lines ${lines}` : lines} joined into ${one ?? "one line"}`;
 }

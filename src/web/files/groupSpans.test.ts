@@ -36,6 +36,33 @@ describe("groupLabel", () => {
 	});
 });
 
+describe("groupLabel without old numbers (the since view's orphans, CAR-216)", () => {
+	/** An orphan removed line: its base number, no `oldNo`. */
+	const orphan = (baseNo: number | null): DiffLine => ({
+		kind: "del",
+		baseNo,
+		text: `o${baseNo}`,
+		clusterKey: "k",
+		orphan: true,
+	});
+	it("a split or join of orphan lines reads their base numbers", () => {
+		expect(
+			groupLabel({ one: orphan(5), run: [add(1), add(2), add(3), add(4)] }),
+		).toBe("Line 5 split into 1–4");
+		expect(groupLabel({ one: add(9), run: [orphan(7), orphan(8)] })).toBe(
+			"Lines 7–8 joined into 9",
+		);
+	});
+	it("with no number at all, a numberless form, never `undefined`", () => {
+		expect(groupLabel({ one: orphan(null), run: [add(1), add(2)] })).toBe(
+			"A line split into 1–2",
+		);
+		expect(
+			groupLabel({ one: add(9), run: [orphan(null), orphan(null), orphan(3)] }),
+		).toBe("3 lines joined into 9");
+	});
+});
+
 describe("groupSpans", () => {
 	it("unified: each line's place in its group's rows, and the label", () => {
 		const s = split(12, 12, 14);

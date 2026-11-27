@@ -795,23 +795,16 @@ describe("hunkView's groups (CAR-130)", () => {
 		];
 		const lines = [ctx(0, 0, "a"), one, ...run, ctx(2, 5, "b")];
 		expect(hunkView(lines, false).items.groups).toEqual([{ one, run }]);
-		// A piece starts at the third added line: a group stays in one.
+		// A piece starts at the third added line: the group stays in the
+		// first piece, its run cut there.
 		const starts = new Set([one, run[2] as DiffLine]);
 		for (const ws of [false, true]) {
 			const v = hunkView(lines, ws, starts);
-			const pieceOf = new Map(
-				v.runs.flatMap((r, i) => r.lines.map((l) => [l, i] as const)),
-			);
-			for (const g of v.items.groups)
-				for (const l of g.run)
-					expect(pieceOf.get(l)).toBe(pieceOf.get(g.run[0] as DiffLine));
-			expect(
-				v.items.groups.every(
-					(g) =>
-						!g.run.includes(run[2] as DiffLine) ||
-						!g.run.includes(run[1] as DiffLine),
-				),
-			).toBe(true);
+			expect(v.items.groups).toEqual([{ one, run: run.slice(0, 2) }]);
+			// A piece starting at the one line only: the whole group.
+			expect(hunkView(lines, ws, new Set([one])).items.groups).toEqual([
+				{ one, run },
+			]);
 		}
 	});
 });
