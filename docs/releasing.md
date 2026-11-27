@@ -104,11 +104,13 @@ It also lists the withdrawn versions (`withdrawn: X.Y.Z (<reason>)`).
 **Withdrawing a bad version** (a vulnerability, a serious bug; CAR-212),
 the owner's alone, like publish: `pnpm release withdraw <version>...
 "<why>" [--deprecate-only]`. It lists every version published since the
-first one named (to add any that carry the same bug), shows the plan and
-asks y/N; then `npm deprecate carbonless-review@<v> "withdrawn: <why>"`
-for each (npm asks for the OTP) and `npm dist-tag add` moving `latest` to
-the newest good release below it and `rc` to the newest good version at
-or below it. A rerun finishes only what is left. It refuses when a tag
+first one named and a named release's other RCs (to add any that carry
+the same bug), adds the RC a named release was promoted from (its tag on
+the same commit), shows the plan and asks y/N; then `npm deprecate
+carbonless-review@<v> "withdrawn: <why>"` for each (npm asks for the OTP)
+and `npm dist-tag add` moving `latest` to the newest good release below
+it and `rc` to the newest good version at or below it, never an RC of a
+release being withdrawn (usually the previous release). A rerun finishes only what is left. It refuses when a tag
 would have no good version left; `--deprecate-only` then deprecates and
 moves no tag. Never `npm unpublish`. What crb then shows: "Withdrawn
 versions" under "Updating an installed crb".

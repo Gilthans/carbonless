@@ -232,34 +232,53 @@ export type NpmState = {
 	versions: string[];
 } | null;
 
-/** The package's dist-tags and versions on npm; null before its first publish. */
-async function npmState(io: Io): Promise<NpmState> {
+/**
+ * `npm view <spec> <fields...> --json`, fresh from the registry
+ * (`--prefer-online`, not npm's cache: a publish may have just happened),
+ * parsed; null on a 404 (nothing published). The one reader of `npm view`
+ * for status, publish and withdraw.
+ */
+export async function npmView(
+	io: Io,
+	spec: string,
+	fields: readonly string[],
+): Promise<unknown> {
 	const r = await io.run("npm", [
 		"view",
-		PACKAGE,
-		"dist-tags",
-		"versions",
+		spec,
+		...fields,
 		"--json",
-		// Fresh from the registry, not npm's cache: a publish may have just happened.
 		"--prefer-online",
 	]);
 	if (r.code !== 0) {
 		if (/E404|404 Not Found/.test(r.stderr + r.stdout)) return null;
-		throw new Error(`npm view ${PACKAGE} failed: ${r.stderr.trim()}`);
+		throw new Error(`npm view ${spec} failed: ${r.stderr.trim()}`);
 	}
-	type View = {
-		"dist-tags"?: Record<string, string>;
-		versions?: string[] | string;
-	};
+	return r.stdout.trim() === "" ? undefined : (JSON.parse(r.stdout) as unknown);
+}
+
+/** The package's dist-tags and versions on npm; null before its first publish. */
+export async function npmState(io: Io): Promise<NpmState> {
+	const parsed = await npmView(io, PACKAGE, ["dist-tags", "versions"]);
+	if (parsed === null) return null;
 	// An object, or (npm 12, a package with a non-semver-ordered version
 	// such as 0.0.0-stage) an array of one.
-	const parsed = JSON.parse(r.stdout) as View | View[];
-	const data = (Array.isArray(parsed) ? parsed[0] : parsed) ?? {};
-	const versions = data.versions ?? [];
-	return {
-		distTags: data["dist-tags"] ?? {},
-		versions: Array.isArray(versions) ? versions : [versions],
-	};
+	const data = ((Array.isArray(parsed) ? parsed[0] : parsed) ?? {}) as Record<
+		string,
+		unknown
+	>;
+	const distTags: Record<string, string> = {};
+	const tags = data["dist-tags"];
+	if (typeof tags === "object" && tags !== null) {
+		for (const [k, v] of Object.entries(tags)) {
+			if (typeof v === "string") distTags[k] = v;
+		}
+	}
+	const raw = data.versions ?? [];
+	const versions = (Array.isArray(raw) ? raw : [raw]).filter(
+		(v): v is string => typeof v === "string",
+	);
+	return { distTags, versions };
 }
 
 /** master's package.json version on GitHub. */

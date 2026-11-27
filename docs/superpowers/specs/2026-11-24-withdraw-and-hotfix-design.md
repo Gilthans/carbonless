@@ -52,17 +52,25 @@ would be the fastest path".
 machine (npm asks for their OTP; agents never run it, never handle the OTP).
 
 It takes several versions at once **(call)**: a bad change in 0.4.0 usually
-also sits in the 0.5.0-rc.N builds on `rc`, so the command shows every version published since the first one named,
-for the owner to add any that carry the same bug. An RC user's fix is a new RC from master (the fix's PR to master),
-not the hotfix, which is older by semver.
+also sits in the 0.5.0-rc.N builds on `rc`, so the command shows every version
+published since the first one named, and a named release's other
+`X.Y.Z-rc.*` builds, for the owner to add any that carry the same bug. The RC
+a named release was promoted from (the `vX.Y.Z-rc.N` tag on the same commit as
+`vX.Y.Z`: the same code) is withdrawn with it without being named, and the
+plan says so (coordinator, 2026-11-27). An RC user's fix is a new RC from
+master (the fix's PR to master), not the hotfix, which is older by semver.
 
 It:
 
 1. Checks the version exists on npm and isn't withdrawn already, and finds the
    newest good version for each dist-tag that points at it: `latest` goes back
    to the newest release before it that isn't deprecated; `rc` goes back to
-   the newest non-deprecated version at or below it (an RC or a release).
-   It prints the plan and asks y/N.
+   the newest non-deprecated version at or below it (an RC or a release), but
+   never an `X.Y.Z-rc.*` of a release being withdrawn: right after a release
+   `rc` and `latest` are both on X.Y.Z, and its RCs carry the same code, so
+   `rc` goes below them (usually the previous release). It refuses a reason
+   that is a version (the reason was forgotten). It prints the plan and asks
+   y/N.
 2. `npm deprecate carbonless-review@X.Y.Z "<why>"`: npm then warns anyone who
    installs it by hand. The message starts with a fixed prefix (e.g.
    `withdrawn: `) so crb can tell a withdrawal from any other deprecation
@@ -70,7 +78,7 @@ It:
 3. `npm dist-tag add carbonless-review@<good> latest` (and `rc`), so a fresh
    `npm i -g carbonless-review` never lands on it.
 4. Prints what changed and the next step: "now ship a fix: `pnpm release
-   hotfix vX.Y.Z`".
+   hotfix vX.Y.Z`", with the withdrawn release.
 
 It is idempotent (a rerun after a half-done run finishes the job), and it
 refuses when no good version is left for a tag (e.g. withdrawing 0.1.0): it
@@ -109,9 +117,11 @@ Mockups: the spec artifact (desktop and phone, with and without a fix).
 Commands (agents may run the first two on the owner's word, like `next` and
 `promote`; `publish` stays the owner's):
 
-1. `pnpm release hotfix [vX.Y.Z]` (default: the release `latest` points at;
-   only that one is accepted, see "Which release lines"): creates
-   `hotfix/X.Y.Z+1` on origin at that release tag's commit. It starts from a
+1. `pnpm release hotfix [vX.Y.Z]` (default: the newest release tag by
+   semver, normally the one `latest` points at, or after a withdraw the
+   withdrawn one, so 0.4.1 is offered to a crb on 0.4.0; only that line is
+   accepted, see "Which release lines"): creates `hotfix/X.Y.Z+1` on origin
+   at that release tag's commit. It starts from a
    release tag, never another commit (owner, 2026-11-24, choosing release
    tags only: "If it's simpler, let's do (b)"), so a hotfix carries nothing
    but its fix. A second hotfix of the same line starts from the first
@@ -151,9 +161,11 @@ the branch run the branch's own CI (which tests that tree), plus master's
 
 ### Which release lines **(call)**
 
-Only the line `latest` is on: a hotfix of the newest release. Older lines
-(0.3.1 while `latest` is 0.4.0) are out of scope: they would need per-line
-dist-tags and a different update check.
+Only the newest release line: a hotfix of the newest release tag by semver
+(normally the one `latest` points at; after a withdraw, `latest` has moved
+back but the withdrawn release is still the newest, and its hotfix is what
+crbs running it are offered). Older lines (0.3.1 while 0.4.0 is out) are out
+of scope: they would need per-line dist-tags and a different update check.
 
 ### Protection for hotfix branches (security, owner review)
 

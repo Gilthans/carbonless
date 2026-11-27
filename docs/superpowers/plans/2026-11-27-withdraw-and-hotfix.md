@@ -15,7 +15,7 @@
 - The deprecation message prefix is exactly `withdrawn: ` (lower case, colon, one space). A deprecation without it is not a withdrawal.
 - Never `npm unpublish`. Never a real npm or registry write in tests; release commands take the existing injected `Io` (`scripts/release-lib.ts`).
 - `withdraw` and `publish` are the owner's (npm OTP); agents never run them. `hotfix` and `promote --hotfix` run on the owner's word.
-- A hotfix branch starts only at a `vX.Y.Z` release tag's commit: the release `latest` points at, or the newest hotfix tag of that line (`v0.4.1` → `hotfix/0.4.2`). Any other start is refused.
+- A hotfix branch starts only at a `vX.Y.Z` release tag's commit: the newest release tag by semver (normally the one `latest` points at; after a withdraw, the withdrawn one), or the newest hotfix tag of that line (`v0.4.1` → `hotfix/0.4.2`). Any other start is refused.
 - No RC step for hotfixes; the `npm` environment stays master-only; release.yml / release-finish.yml are dispatched on master and get the hotfix branch as an input.
 - The banner: red (failing) tokens only, pushes the page down and stays pinned (never covers the header), can't be dismissed, works at 360px with 40px tap targets, icon with tooltip and accessible name, the reason as escaped plain text.
 - Loading never looks empty (principle 8): no banner and no "fix coming" text before the check answered.
@@ -129,7 +129,7 @@ PR 1 body: `Part of CAR-212`, release note `new: A version the maintainer withdr
 **Interfaces:**
 - Produces: `hotfixStart(io: Io, from?: string): Promise<{ branch: string; version: string; sha: string }>`; `hotfixVersion(fromTag: string, tags: string[]): string` (the next patch of the line not yet tagged).
 
-- [ ] **Step 1: Failing tests**: default start = the tag of npm `latest`; `v0.4.0` with `v0.4.1` existing → refuses (start from `v0.4.1`); `v0.4.1` → `hotfix/0.4.2` at `v0.4.1`'s commit; a non-tag, an RC tag, or a release older than `latest`'s line → refused with the reason; the branch already on origin at the same commit → no-op; at another commit → refused. Pushes only `refs/heads/hotfix/X.Y.Z` (never master, never a tag).
+- [ ] **Step 1: Failing tests**: default start = the newest release tag by semver (normally npm `latest`'s; after a withdraw, `latest` on 0.3.0 and `v0.4.0` withdrawn → `hotfix/0.4.1` from `v0.4.0`); `v0.4.0` with `v0.4.1` existing → refuses (start from `v0.4.1`); `v0.4.1` → `hotfix/0.4.2` at `v0.4.1`'s commit; a non-tag, an RC tag, or a release older than the newest release line → refused with the reason; the branch already on origin at the same commit → no-op; at another commit → refused. Pushes only `refs/heads/hotfix/X.Y.Z` (never master, never a tag).
 - [ ] **Step 2–4:** run → FAIL, implement, run → PASS.
 - [ ] **Step 5: Commit.**
 

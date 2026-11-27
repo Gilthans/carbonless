@@ -9,6 +9,9 @@ import {
 	compareVersions,
 	formatVersion,
 	type Io,
+	must,
+	npmState,
+	npmView,
 	PACKAGE,
 	type PublishIo,
 	parseVersion,
@@ -28,7 +31,12 @@ export interface WithdrawPlan {
 	deprecate: { version: string; message: string }[];
 	/** The dist-tags still on a withdrawn version, and where each goes. */
 	tags: { tag: string; from: string; to: string }[];
-	/** Versions named that are withdrawn already (a rerun). */
+	/**
+	 * RCs withdrawn with a named release without being named: the one it
+	 * was promoted from (the same commit, the same code).
+	 */
+	alongside: { version: string; release: string }[];
+	/** Versions to withdraw that are withdrawn already (a rerun). */
 	skipped: string[];
 	/** Why nothing may be done; null: the plan can run. */
 	refused: string | null;
@@ -51,24 +59,35 @@ function newestFirst(versions: readonly string[]): Version[] {
 		.sort((a, b) => compareVersions(b, a));
 }
 
+/** `X.Y.Z-rc.N` is a candidate for the release `X.Y.Z`. */
+const rcOf = (v: Version, release: Version) =>
+	v.rc !== undefined &&
+	release.rc === undefined &&
+	v.major === release.major &&
+	v.minor === release.minor &&
+	v.patch === release.patch;
+
 /**
  * What `pnpm release withdraw` does for `versions`: deprecate each not yet
- * withdrawn, and move each dist-tag that points at a withdrawn or
- * deprecated version: `latest` to the newest good release below it, any
- * other tag (`rc`) to the newest good version at or below it (an RC or a
- * release). Refuses a version npm doesn't have, an empty or multi-line
- * reason, and a tag with no good version left (unless `deprecateOnly`,
- * which moves no tag at all).
+ * withdrawn, with each named release's promoted RC (`opts.promoted`:
+ * release → the RC tagged on its commit), and move each dist-tag that
+ * points at a withdrawn or deprecated version: `latest` to the newest good
+ * release below it, any other tag (`rc`) to the newest good version at or
+ * below it (an RC or a release), never an RC of a release being withdrawn
+ * (the same code, or older). Refuses a version npm doesn't have, an empty,
+ * multi-line or version-like reason, and a tag with no good version left
+ * (unless `deprecateOnly`, which moves no tag at all).
  */
 export function planWithdraw(
 	state: RegistryState,
 	versions: string[],
 	why: string,
-	opts: { deprecateOnly: boolean },
+	opts: { deprecateOnly: boolean; promoted?: Record<string, string> },
 ): WithdrawPlan {
 	const plan: WithdrawPlan = {
 		deprecate: [],
 		tags: [],
+		alongside: [],
 		skipped: [],
 		refused: null,
 	};
@@ -84,6 +103,11 @@ export function planWithdraw(
 	if (Array.from(reason).length > MAX_WHY) {
 		return refuse(`the reason must be at most ${MAX_WHY} characters`);
 	}
+	if (parseVersion(reason.replace(/^v/, ""))) {
+		return refuse(
+			`the reason (the last argument) is a version, ${reason}: give the reason after the versions`,
+		);
+	}
 	const published = new Set(state.versions);
 	const targets = new Set<string>();
 	for (const v of versions) {
@@ -94,6 +118,17 @@ export function planWithdraw(
 		if (!published.has(v)) return refuse(`${v} is not on npm`);
 		targets.add(v);
 	}
+	for (const v of [...targets]) {
+		const rc = opts.promoted?.[v];
+		if (rc && published.has(rc) && !targets.has(rc)) {
+			targets.add(rc);
+			plan.alongside.push({ version: rc, release: v });
+		}
+	}
+	// The releases withdrawn: none of their RCs is a tag's fallback.
+	const releases = [...targets]
+		.map((v) => parseVersion(v))
+		.filter((v): v is Version => v !== null && v.rc === undefined);
 	const message = `${WITHDRAWN_PREFIX}${reason}`;
 	for (const v of targets) {
 		if (withdrawnReason(state.deprecated[v]) !== null) plan.skipped.push(v);
@@ -109,6 +144,7 @@ export function planWithdraw(
 		const to = all.find(
 			(v) =>
 				!bad(formatVersion(v)) &&
+				!releases.some((r) => rcOf(v, r)) &&
 				(at === null || compareVersions(v, at) <= 0) &&
 				// latest only ever takes a release.
 				(tag !== "latest" || v.rc === undefined),
@@ -134,15 +170,77 @@ export function laterVersions(state: RegistryState, first: string): string[] {
 }
 
 /**
+ * The versions that may carry the same bug as `named`, oldest first:
+ * every one published after the oldest named, and each named release's
+ * own RCs; none of `named`.
+ */
+export function sameBugCandidates(
+	state: RegistryState,
+	named: readonly string[],
+): string[] {
+	const first = newestFirst(named).at(-1);
+	if (!first) return [];
+	const releases = newestFirst(named).filter((v) => v.rc === undefined);
+	const skip = new Set(named);
+	return newestFirst(state.versions)
+		.reverse()
+		.filter(
+			(v) => compareVersions(v, first) > 0 || releases.some((r) => rcOf(v, r)),
+		)
+		.map(formatVersion)
+		.filter((v) => !skip.has(v));
+}
+
+/**
+ * Each release's promoted RC from the tags on GitHub (read only): the
+ * `vX.Y.Z-rc.N` tag on the same commit as `vX.Y.Z` (an annotated tag by
+ * the commit it points at). Releases without a tag are left out.
+ */
+export async function promotedRcs(
+	io: Io,
+	releases: readonly string[],
+): Promise<Record<string, string>> {
+	const wanted = releases.filter((v) => parseVersion(v)?.rc === undefined);
+	if (wanted.length === 0) return {};
+	const out = await must(io, "git", [
+		"ls-remote",
+		"--tags",
+		"origin",
+		...wanted.flatMap((v) => [`v${v}`, `v${v}-rc.*`]),
+	]);
+	// name → commit: a peeled line (`^{}`) wins over the tag object's.
+	const commits = new Map<string, string>();
+	for (const line of out.split("\n")) {
+		const [sha, ref] = line.trim().split(/\s+/);
+		if (!sha || !ref?.startsWith("refs/tags/")) continue;
+		const peeled = ref.endsWith("^{}");
+		const name = ref.slice("refs/tags/".length).replace(/\^\{\}$/, "");
+		if (peeled || !commits.has(name)) commits.set(name, sha);
+	}
+	const result: Record<string, string> = {};
+	for (const release of wanted) {
+		const at = commits.get(`v${release}`);
+		const r = parseVersion(release);
+		if (!at || !r) continue;
+		const rcs = newestFirst(
+			[...commits]
+				.filter(([name, sha]) => sha === at && name !== `v${release}`)
+				.map(([name]) => name.slice(1)),
+		).filter((v) => rcOf(v, r));
+		const rc = rcs[0];
+		if (rc) result[release] = formatVersion(rc);
+	}
+	return result;
+}
+
+/**
  * `npm view <pkg>@<v1 || v2 ...> deprecated version --json`: an array of
  * `{deprecated?, version}` when any matched version is deprecated, of
  * plain versions when none is, or one value for one version. A deprecated
  * field that isn't a string is not a deprecation.
  */
-export function parseDeprecated(json: string): Record<string, string> {
+export function parseDeprecated(data: unknown): Record<string, string> {
 	const out: Record<string, string> = {};
-	if (json.trim() === "") return out;
-	const data = JSON.parse(json) as unknown;
 	for (const item of Array.isArray(data) ? data : [data]) {
 		if (typeof item !== "object" || item === null) continue;
 		const { version, deprecated } = item as Record<string, unknown>;
@@ -153,49 +251,21 @@ export function parseDeprecated(json: string): Record<string, string> {
 	return out;
 }
 
-/** `npm view --json`'s answer: an object, or (newer npm) an array of one. */
-const unwrap = (data: unknown): Record<string, unknown> =>
-	((Array.isArray(data) ? data[0] : data) ?? {}) as Record<string, unknown>;
-
 /**
- * The package as npm has it now (`--prefer-online`: not npm's cache).
- * Deprecations come from one `npm view` over every version by name (an
- * exact version matches a prerelease, which a range like `*` leaves out).
+ * The package as npm has it now (release-lib's npmView). Deprecations
+ * come from one `npm view` over every version by name (an exact version
+ * matches a prerelease, which a range like `*` leaves out).
  */
 async function registryState(io: Io): Promise<RegistryState> {
-	const view = async (spec: string, fields: string[]) => {
-		const r = await io.run("npm", [
-			"view",
-			spec,
-			...fields,
-			"--json",
-			"--prefer-online",
-		]);
-		if (r.code !== 0) {
-			throw new Error(`npm view ${spec} failed: ${r.stderr.trim()}`);
-		}
-		return r.stdout;
-	};
-	const top = unwrap(
-		JSON.parse(await view(PACKAGE, ["dist-tags", "versions"])),
-	);
-	const raw = top.versions;
-	const versions = (Array.isArray(raw) ? raw : raw ? [raw] : []).filter(
-		(v): v is string => typeof v === "string",
-	);
-	const distTags: Record<string, string> = {};
-	const tags = top["dist-tags"];
-	if (typeof tags === "object" && tags !== null) {
-		for (const [k, v] of Object.entries(tags)) {
-			if (typeof v === "string") distTags[k] = v;
-		}
-	}
+	const npm = await npmState(io);
+	if (npm === null) throw new Error(`${PACKAGE} is not on npm`);
+	const { versions, distTags } = npm;
 	const named = versions.filter((v) => parseVersion(v) !== null);
 	const deprecated =
 		named.length === 0
 			? {}
 			: parseDeprecated(
-					await view(`${PACKAGE}@${named.join(" || ")}`, [
+					await npmView(io, `${PACKAGE}@${named.join(" || ")}`, [
 						"deprecated",
 						"version",
 					]),
@@ -231,18 +301,21 @@ export async function withdraw(
 	const state = await registryState(io);
 	const plan = planWithdraw(state, args.versions, args.why, {
 		deprecateOnly: args.deprecateOnly,
+		promoted: await promotedRcs(io, args.versions),
 	});
 	if (plan.refused) throw new Error(`not withdrawing: ${plan.refused}`);
-	const named = new Set(args.versions);
-	const first = newestFirst(args.versions).at(-1);
-	const later = first
-		? laterVersions(state, formatVersion(first)).filter((v) => !named.has(v))
-		: [];
-	if (later.length > 0) {
+	const candidates = sameBugCandidates(state, [
+		...args.versions,
+		...plan.alongside.map((a) => a.version),
+	]);
+	if (candidates.length > 0) {
+		io.log("May carry the same bug (name any that do too):");
+		io.log(`  ${candidates.join(", ")}`);
+	}
+	for (const a of plan.alongside) {
 		io.log(
-			`Published since ${first ? formatVersion(first) : ""} (name any that carry the same bug too):`,
+			`  ${a.version}: ${a.release} was promoted from it, withdrawn with it`,
 		);
-		io.log(`  ${later.join(", ")}`);
 	}
 	for (const v of plan.skipped) io.log(`  ${v}: withdrawn already, skipped`);
 	for (const d of plan.deprecate) {

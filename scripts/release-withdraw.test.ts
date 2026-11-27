@@ -5,6 +5,7 @@ import {
 	parseDeprecated,
 	planWithdraw,
 	type RegistryState,
+	sameBugCandidates,
 } from "./release-withdraw";
 
 const state = (over: Partial<RegistryState> = {}): RegistryState => ({
@@ -69,10 +70,89 @@ describe("planWithdraw", () => {
 		]);
 		expect(plan.tags).toEqual([
 			{ tag: "latest", from: "0.4.0", to: "0.3.0" },
-			// rc takes the newest good version at or below it: an RC is fine.
-			{ tag: "rc", from: "0.4.0", to: "0.4.0-rc.1" },
+			// Never onto 0.4.0's own RCs (the same code): below them.
+			{ tag: "rc", from: "0.4.0", to: "0.3.0" },
 		]);
 		expect(plan.skipped).toEqual([]);
+		expect(plan.alongside).toEqual([]);
+	});
+
+	it("a release's promoted RC is withdrawn with it; rc goes below the release's RCs", () => {
+		const plan = planWithdraw(
+			state({
+				versions: ["0.3.0", "0.4.0-rc.0", "0.4.0-rc.1", "0.4.0-rc.2", "0.4.0"],
+				distTags: { latest: "0.4.0", rc: "0.4.0" },
+			}),
+			["0.4.0"],
+			"why",
+			{ ...NO, promoted: { "0.4.0": "0.4.0-rc.2" } },
+		);
+		expect(plan.refused).toBe(null);
+		expect(plan.alongside).toEqual([
+			{ version: "0.4.0-rc.2", release: "0.4.0" },
+		]);
+		expect(plan.deprecate).toEqual([
+			{ version: "0.4.0", message: "withdrawn: why" },
+			{ version: "0.4.0-rc.2", message: "withdrawn: why" },
+		]);
+		expect(plan.tags).toEqual([
+			{ tag: "latest", from: "0.4.0", to: "0.3.0" },
+			{ tag: "rc", from: "0.4.0", to: "0.3.0" },
+		]);
+		// rc on the promoted RC itself: moves too.
+		const onRc = planWithdraw(
+			state({
+				versions: ["0.3.0", "0.4.0-rc.1", "0.4.0-rc.2", "0.4.0"],
+				distTags: { latest: "0.4.0", rc: "0.4.0-rc.2" },
+			}),
+			["0.4.0"],
+			"why",
+			{ ...NO, promoted: { "0.4.0": "0.4.0-rc.2" } },
+		);
+		expect(onRc.tags).toContainEqual({
+			tag: "rc",
+			from: "0.4.0-rc.2",
+			to: "0.3.0",
+		});
+		// Withdrawn already (a rerun): skipped, not listed again.
+		const rerun = planWithdraw(
+			state({
+				versions: ["0.3.0", "0.4.0-rc.2", "0.4.0"],
+				deprecated: { "0.4.0-rc.2": "withdrawn: why" },
+				distTags: { latest: "0.3.0", rc: "0.3.0" },
+			}),
+			["0.4.0"],
+			"why",
+			{ ...NO, promoted: { "0.4.0": "0.4.0-rc.2" } },
+		);
+		expect(rerun.skipped).toEqual(["0.4.0-rc.2"]);
+		expect(rerun.deprecate).toEqual([
+			{ version: "0.4.0", message: "withdrawn: why" },
+		]);
+		// A promoted RC npm doesn't have (never published, or no tag): nothing added.
+		expect(
+			planWithdraw(state(), ["0.4.0"], "why", {
+				...NO,
+				promoted: { "0.4.0": "0.4.0-rc.9" },
+			}).alongside,
+		).toEqual([]);
+	});
+
+	it("rc never lands on any RC of a release being withdrawn, even an RC not named", () => {
+		const plan = planWithdraw(
+			state({
+				versions: ["0.3.0", "0.4.0-rc.1", "0.4.0", "0.5.0-rc.1"],
+				distTags: { latest: "0.4.0", rc: "0.5.0-rc.1" },
+			}),
+			["0.4.0", "0.5.0-rc.1"],
+			"why",
+			NO,
+		);
+		expect(plan.tags).toContainEqual({
+			tag: "rc",
+			from: "0.5.0-rc.1",
+			to: "0.3.0",
+		});
 	});
 
 	it("rc goes to the newest good version at or below it", () => {
@@ -189,6 +269,15 @@ describe("planWithdraw", () => {
 		);
 	});
 
+	it("refuses a reason that is a version: the reason was forgotten", () => {
+		expect(
+			planWithdraw(state(), ["0.4.0", "0.5.0-rc.1"], "0.5.0-rc.1", NO).refused,
+		).toMatch(/reason.*version/);
+		expect(planWithdraw(state(), ["0.4.0"], "v0.3.0", NO).refused).toMatch(
+			/reason.*version/,
+		);
+	});
+
 	it("refuses a reason npm would show on more than one line, or with control or bidi characters", () => {
 		expect(planWithdraw(state(), ["0.4.0"], "two\nlines", NO).refused).toMatch(
 			/reason/,
@@ -196,6 +285,26 @@ describe("planWithdraw", () => {
 		expect(planWithdraw(state(), ["0.4.0"], "x\u202ey", NO).refused).toMatch(
 			/reason/,
 		);
+	});
+});
+
+describe("sameBugCandidates", () => {
+	it("later versions, and the named release's other RCs, not the named or added ones", () => {
+		expect(
+			sameBugCandidates(
+				state({
+					versions: [
+						"0.3.0",
+						"0.4.0-rc.0",
+						"0.4.0-rc.1",
+						"0.4.0-rc.2",
+						"0.4.0",
+						"0.5.0-rc.1",
+					],
+				}),
+				["0.4.0", "0.4.0-rc.2"],
+			),
+		).toEqual(["0.4.0-rc.0", "0.4.0-rc.1", "0.5.0-rc.1"]);
 	});
 });
 
@@ -215,21 +324,17 @@ describe("laterVersions", () => {
 describe("parseDeprecated: npm view's deprecated and version over several versions", () => {
 	it("objects (some deprecated), plain versions (none deprecated) or one value", () => {
 		expect(
-			parseDeprecated(
-				JSON.stringify([
-					{ deprecated: "withdrawn: x", version: "0.4.0" },
-					{ version: "0.3.0" },
-				]),
-			),
+			parseDeprecated([
+				{ deprecated: "withdrawn: x", version: "0.4.0" },
+				{ version: "0.3.0" },
+			]),
 		).toEqual({ "0.4.0": "withdrawn: x" });
-		expect(parseDeprecated(JSON.stringify(["0.3.0", "0.4.0"]))).toEqual({});
-		expect(
-			parseDeprecated(JSON.stringify({ deprecated: "d", version: "0.4.0" })),
-		).toEqual({ "0.4.0": "d" });
-		expect(parseDeprecated("")).toEqual({});
+		expect(parseDeprecated(["0.3.0", "0.4.0"])).toEqual({});
+		expect(parseDeprecated({ deprecated: "d", version: "0.4.0" })).toEqual({
+			"0.4.0": "d",
+		});
+		expect(parseDeprecated(undefined)).toEqual({});
 		// A deprecated field that isn't a string: not deprecated.
-		expect(
-			parseDeprecated(JSON.stringify([{ deprecated: 1, version: "0.4.0" }])),
-		).toEqual({});
+		expect(parseDeprecated([{ deprecated: 1, version: "0.4.0" }])).toEqual({});
 	});
 });

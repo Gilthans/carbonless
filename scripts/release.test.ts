@@ -3001,8 +3001,10 @@ describe("pnpm release withdraw (the owner's, with npm's OTP)", () => {
 		answer = true,
 		deprecated = [] as { version: string; deprecated?: string }[],
 		codes = [] as number[],
+		tags = "",
 	} = {}) {
 		const fake = fakeIo({
+			"git ls-remote": tags,
 			"npm --version": "12.2.1\n",
 			"npm view carbonless-review dist-tags versions": npmView(
 				{ latest: "0.4.0", rc: "0.5.0-rc.2" },
@@ -3059,6 +3061,33 @@ describe("pnpm release withdraw (the owner's, with npm's OTP)", () => {
 			["npm", "dist-tag", "add", "carbonless-review@0.3.0", "latest"],
 		]);
 		expect(w.lines.at(-1)).toBe("Now ship a fix: pnpm release hotfix v0.4.0");
+	});
+
+	it("withdraws the RC a release was promoted from (its tag on the same commit), and lists the release's other RCs", async () => {
+		const A = "a".repeat(40);
+		const w = withdrawIo({
+			tags: [
+				`${"1".repeat(40)}\trefs/tags/v0.4.0`,
+				// Annotated: the commit is the peeled line's.
+				`${A}\trefs/tags/v0.4.0^{}`,
+				`${"2".repeat(40)}\trefs/tags/v0.4.0-rc.0`,
+				`${A}\trefs/tags/v0.4.0-rc.1`,
+			].join("\n"),
+		});
+		await withdraw(w.io, {
+			versions: ["0.4.0"],
+			why: "x",
+			deprecateOnly: false,
+		});
+		expect(w.calls).toContain("git ls-remote --tags origin v0.4.0 v0.4.0-rc.*");
+		expect(w.lines).toContain(
+			"  0.4.0-rc.1: 0.4.0 was promoted from it, withdrawn with it",
+		);
+		expect(w.ran).toEqual([
+			["npm", "deprecate", "carbonless-review@0.4.0", "withdrawn: x"],
+			["npm", "deprecate", "carbonless-review@0.4.0-rc.1", "withdrawn: x"],
+			["npm", "dist-tag", "add", "carbonless-review@0.3.0", "latest"],
+		]);
 	});
 
 	it("a reason with shell characters reaches npm as it is, as one argument", async () => {
