@@ -25,6 +25,12 @@ export interface DocUnit {
 	key: string;
 	old: LineRanges;
 	new: LineRanges;
+	/**
+	 * The new line a unit with no line on either side sits by (an orphan
+	 * run of base lines only, CAR-216/328: they have a base number, no
+	 * number here): its block is the unit's, as a line added there would be.
+	 */
+	place?: number;
 }
 
 /** Both sides' text, line `n` at index `n - 1`. */
@@ -205,7 +211,11 @@ export function buildDoc(opts: {
 	for (const u of units) {
 		const nodes = new Set<number>();
 		const olds = linesOf(u.old);
-		const news = linesOf(u.new);
+		// A unit of no line here sits by its place, as a line added there.
+		const news =
+			olds.length === 0 && size(u.new) === 0 && u.place !== undefined
+				? [Math.max(u.place, 1)]
+				: linesOf(u.new);
 		// A blank line goes with the block before it, unless the unit has
 		// lines of its own text: then those say where it is (a removed
 		// section's blank line must not pull its neighbour in).
@@ -586,4 +596,70 @@ export function lineAnchor(
 		if (o < line && (before === undefined || n > before)) before = n;
 	}
 	return (before === undefined ? null : onNew(before)) ?? first();
+}
+
+/**
+ * An orphan piece's lines (CAR-216: changed against the base, unchanged
+ * since the compared patch set, not reviewed there), from its row in the
+ * since view's hunks: the base's removed lines (no number here) and the
+ * added ones, which the Rendered view shows as source under the piece's
+ * block (CAR-328: rendered, its block reads as unchanged since). `place`:
+ * the new line it sits by when it has no added line (0: the file's top,
+ * its first block). Null when its row isn't there, or no place is (the
+ * view then shows Text: principle 2).
+ */
+export function orphanSource(
+	hunks: readonly {
+		newStart: number;
+		newCount: number;
+		lines: readonly DiffLine[];
+	}[],
+	piece: { hunk: number; line: number; key?: string },
+	/** The piece's cluster (the viewed snapshot's, against the base). */
+	cluster?: { newStart: number; newCount: number },
+): { del: string[]; add: string[]; place?: number } | null {
+	const lines = hunks[piece.hunk]?.lines;
+	const first = lines?.[piece.line];
+	if (!lines || !first?.orphan) return null;
+	const del: string[] = [];
+	const add: string[] = [];
+	let i = piece.line;
+	for (; i < lines.length; i++) {
+		const l = lines[i] as DiffLine;
+		if (!l.orphan || l.kind === "context" || l.clusterKey !== piece.key) break;
+		(l.kind === "del" ? del : add).push(l.text);
+	}
+	if (add.length > 0) return { del, add };
+	// Lines a cluster replaced sit by what replaced them, its first added
+	// line (their add twin, another piece's); a removal by the line of text
+	// above it (a blank one goes with the block above), else below.
+	if (cluster && cluster.newCount > 0) {
+		return { del, add, place: cluster.newStart };
+	}
+	// Scans stop at the first fit (no copy: a file can have thousands).
+	const pick = (from: number, step: 1 | -1, text: boolean) => {
+		for (let j = from; j >= 0 && j < lines.length; j += step) {
+			const l = lines[j] as DiffLine;
+			if (l.newNo !== undefined && (!text || l.text.trim() !== "")) {
+				return l.newNo;
+			}
+		}
+		return undefined;
+	};
+	// The line above the hunk: a hunk with no new line (a run of removals
+	// only: an untouched file's orphan hunk, engine.ts orphanHunks) starts
+	// after it, as git numbers one; 0 is the file's top.
+	const hunk = hunks[piece.hunk];
+	const top = hunk
+		? hunk.newCount === 0
+			? hunk.newStart
+			: hunk.newStart - 1
+		: -1;
+	const place =
+		pick(piece.line - 1, -1, true) ??
+		(top >= 1 ? top : undefined) ??
+		pick(i, 1, true) ??
+		pick(i, 1, false) ??
+		(top === 0 ? 0 : undefined);
+	return place === undefined ? null : { del, add, place };
 }

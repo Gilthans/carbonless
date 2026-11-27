@@ -1040,6 +1040,378 @@ describe("MarkdownView, since view", () => {
 		expect(screen.queryByTestId("since-empty")).toBeNull();
 	});
 
+	describe('"not reviewed in PS1" rows (CAR-216 orphans, CAR-328)', () => {
+		// The head; the compared patch set's side is the same but for line 8.
+		const HEAD_MD = [
+			"# Title", // 1
+			"",
+			"New para one.", // 3: an orphan, "Old para one." in the base
+			"",
+			"- item a", // 5
+			"- item b", // 6: "- item gone" was under it in the base (orphan)
+			"",
+			"Last para.", // 8: "Final para." at PS1 (the interdiff's change)
+		];
+		const OLD_MD = [...HEAD_MD.slice(0, 7), "Final para."];
+		const ctx = (n: number): DiffLine => ({
+			kind: "context",
+			oldNo: n,
+			newNo: n,
+			text: HEAD_MD[n - 1] as string,
+		});
+		const cluster = (
+			key: string,
+			o: Partial<ClusterView> & Pick<ClusterView, "removed" | "added">,
+		): ClusterView => ({
+			key,
+			kind: "lines",
+			oldStart: 0,
+			oldCount: o.removed.length,
+			newStart: 0,
+			newCount: o.added.length,
+			lines: o.removed.length + o.added.length,
+			state: "unreviewed",
+			...o,
+		});
+		/** As the server sends them: placeOrphans' rows, sincePieces' pieces. */
+		const orphanFixture = (): DocFixture => {
+			const hunk = {
+				oldStart: 1,
+				oldCount: 8,
+				newStart: 1,
+				newCount: 8,
+				lines: [
+					ctx(1),
+					ctx(2),
+					// An orphan pair: the removed line has its base number only.
+					{
+						kind: "del",
+						text: "Old para one.",
+						clusterKey: "k1",
+						baseNo: 3,
+						orphan: true,
+					},
+					{
+						kind: "add",
+						newNo: 3,
+						text: "New para one.",
+						clusterKey: "k1",
+						orphan: true,
+					},
+					ctx(4),
+					ctx(5),
+					ctx(6),
+					// A removal only: no number on either side here.
+					{
+						kind: "del",
+						text: "- item gone",
+						clusterKey: "k3",
+						baseNo: 7,
+						orphan: true,
+					},
+					ctx(7),
+					{
+						kind: "del",
+						oldNo: 8,
+						text: "Final para.",
+						clusterKey: "k2",
+						baseNo: 9,
+					},
+					{ kind: "add", newNo: 8, text: "Last para.", clusterKey: "k2" },
+				] as DiffLine[],
+			};
+			const pieces: SincePiece[] = [
+				{
+					hunk: 0,
+					line: 2,
+					key: "k1",
+					orphan: true,
+					owns: [[0, 2]],
+					old: [],
+					new: [[3, 4]],
+				},
+				{
+					hunk: 0,
+					line: 7,
+					key: "k3",
+					orphan: true,
+					owns: [[0, 1]],
+					old: [],
+					new: [],
+				},
+				{
+					hunk: 0,
+					line: 9,
+					key: "k2",
+					owns: [[0, 2]],
+					old: [[8, 9]],
+					new: [[8, 9]],
+				},
+			];
+			const fx = docFixture(OLD_MD, HEAD_MD, [], { since: true });
+			return {
+				file: {
+					...fx.file,
+					clusters: [
+						cluster("k1", {
+							oldStart: 3,
+							newStart: 3,
+							removed: ["Old para one."],
+							added: ["New para one."],
+						}),
+						cluster("k3", {
+							oldStart: 7,
+							newStart: 6,
+							removed: ["- item gone"],
+							added: [],
+						}),
+						cluster("k2", {
+							oldStart: 9,
+							newStart: 8,
+							removed: ["Old final."],
+							added: ["Last para."],
+						}),
+					],
+				},
+				hunks: {
+					hunks: [hunk],
+					newLineCount: HEAD_MD.length,
+					pieces,
+					markdownBlocks: true,
+				},
+				// The context route: the interdiff's unchanged lines, all of them.
+				context: [1, 2, 3, 4, 5, 6, 7].map(ctx),
+			};
+		};
+		const kinds = new Map<string, KindEntry>(
+			["k1", "k2", "k3"].map((k) => [
+				k,
+				{ key: k, kind: "reworked", from: 1 } as KindEntry,
+			]),
+		);
+
+		it("render: each orphan run on its block with its box, its lines as source under it; nothing dropped", async () => {
+			const onShowText = vi.fn();
+			const onToggle = vi.fn();
+			const fx = orphanFixture();
+			show(fx, { from: 1, kinds, onShowText, onToggle, sideBySide: true });
+			const root = await doc();
+			expect(onShowText).not.toHaveBeenCalled();
+			expectCoverage(root, ["p:0:2", "p:0:7", "p:0:9"]);
+			// The orphan pair: on the paragraph at line 3 (block 1).
+			const para = rowOf(root, "p:0:2") as HTMLElement;
+			expect(para).toHaveAttribute("data-block", "1");
+			expect(para.querySelector('[data-kind="unreviewed"]')).toHaveTextContent(
+				"not reviewed in PS1",
+			);
+			const lines = (row: HTMLElement) =>
+				[
+					...row.querySelectorAll<HTMLElement>(
+						'[data-testid="md-orphan"] [data-testid="md-hidden-line"]',
+					),
+				].map((l) => `${l.dataset.kind}:${l.textContent?.slice(1)}`);
+			expect(lines(para)).toEqual(["del:Old para one.", "add:New para one."]);
+			// The removal only: on the item above it ("- item b", block 3).
+			const list = rowOf(root, "p:0:7") as HTMLElement;
+			expect(list).toHaveAttribute("data-block", "3");
+			expect(lines(list)).toEqual(["del:- item gone"]);
+			// The interdiff's own change: as before, no orphan rows.
+			const last = rowOf(root, "p:0:9") as HTMLElement;
+			expect(last.querySelector('[data-testid="md-orphan"]')).toBeNull();
+			// Its box ticks its piece of the cluster.
+			await userEvent.click(
+				boxOf(root, "p:0:7")?.querySelector("input") as HTMLInputElement,
+			);
+			expect(onToggle).toHaveBeenCalledWith(fx.file.clusters[1], [[0, 1]]);
+		});
+
+		it("a removal-only orphan with no new line to sit by fails closed to Text", async () => {
+			const onShowText = vi.fn();
+			const fx = orphanFixture();
+			// Its row gone from the hunks: no place for it.
+			const pieces = (fx.hunks.pieces ?? []).map((p) =>
+				p.key === "k3" ? { ...p, hunk: 5 } : p,
+			);
+			show(
+				{ ...fx, hunks: { ...fx.hunks, pieces } },
+				{ from: 1, kinds, onShowText },
+			);
+			await waitFor(() => expect(onShowText).toHaveBeenCalled());
+		});
+
+		/**
+		 * A file the interdiff doesn't touch (fix round 1): its rows are
+		 * orphans only, in engine.ts orphanHunks' hunks (no context; a
+		 * removal-only hunk's newStart is the line above it, 0 at the top).
+		 */
+		const UNTOUCHED = [
+			"# Other", // 1
+			"",
+			"Para one.", // 3
+			"",
+			"## Keep", // 5
+			"",
+			"End.", // 7
+		];
+		const IMG = "<img src=x onerror=alert(1)>";
+		const SCRIPT = "<script>alert(1)</script>";
+		const orphanDel = (key: string, text: string): DiffLine => ({
+			kind: "del",
+			text,
+			clusterKey: key,
+			baseNo: 1,
+			orphan: true,
+		});
+		const untouchedFixture = (): DocFixture => {
+			const fx = docFixture(UNTOUCHED, UNTOUCHED, [], { since: true });
+			const hunk = (newStart: number, newCount: number, lines: DiffLine[]) => ({
+				oldStart: newStart,
+				oldCount: 0,
+				newStart,
+				newCount,
+				lines,
+			});
+			return {
+				file: {
+					...fx.file,
+					clusters: [
+						// A removal at the very top of the file.
+						cluster("k0", { removed: ["Top line."], added: [] }),
+						// A replaced line and, under it, a removal: two runs, one block.
+						cluster("k2", {
+							oldStart: 4,
+							newStart: 3,
+							removed: ["Para 1."],
+							added: ["Para one."],
+						}),
+						cluster("k1", {
+							oldStart: 5,
+							newStart: 3,
+							removed: ["Para 1b."],
+							added: [],
+						}),
+						// A removal mid-file, after "## Keep" (markup as text).
+						cluster("k3", {
+							oldStart: 8,
+							newStart: 5,
+							removed: [IMG, SCRIPT],
+							added: [],
+						}),
+					],
+				},
+				hunks: {
+					hunks: [
+						hunk(0, 0, [orphanDel("k0", "Top line.")]),
+						hunk(3, 1, [
+							orphanDel("k2", "Para 1."),
+							{
+								kind: "add",
+								newNo: 3,
+								text: "Para one.",
+								clusterKey: "k2",
+								orphan: true,
+							},
+							orphanDel("k1", "Para 1b."),
+						]),
+						hunk(5, 0, [orphanDel("k3", IMG), orphanDel("k3", SCRIPT)]),
+					],
+					newLineCount: UNTOUCHED.length,
+					pieces: [
+						{
+							hunk: 0,
+							line: 0,
+							key: "k0",
+							orphan: true,
+							owns: [[0, 1]],
+							old: [],
+							new: [],
+						},
+						{
+							hunk: 1,
+							line: 0,
+							key: "k2",
+							orphan: true,
+							owns: [[0, 2]],
+							old: [],
+							new: [[3, 4]],
+						},
+						{
+							hunk: 1,
+							line: 2,
+							key: "k1",
+							orphan: true,
+							owns: [[0, 1]],
+							old: [],
+							new: [],
+						},
+						{
+							hunk: 2,
+							line: 0,
+							key: "k3",
+							orphan: true,
+							owns: [[0, 2]],
+							old: [],
+							new: [],
+						},
+					],
+					markdownBlocks: true,
+				},
+				// The context route of an untouched file: every line, old = new.
+				context: UNTOUCHED.map((text, i) => ({
+					kind: "context",
+					oldNo: i + 1,
+					newNo: i + 1,
+					text,
+				})),
+			};
+		};
+
+		it("an untouched file's removals: the top one on the first block, a mid-file one on the block it follows; runs of one block each in order; markup as text (fix round 1)", async () => {
+			const onShowText = vi.fn();
+			show(untouchedFixture(), {
+				from: 1,
+				kinds,
+				onShowText,
+				sideBySide: true,
+			});
+			const root = await doc();
+			expect(onShowText).not.toHaveBeenCalled();
+			expectCoverage(root, ["p:0:0", "p:1:0", "p:1:2", "p:2:0"]);
+			expect(rowOf(root, "p:0:0")).toHaveAttribute("data-block", "0");
+			// After "## Keep" (block 2), not on the blank line above it.
+			const keep = rowOf(root, "p:2:0") as HTMLElement;
+			expect(keep).toHaveAttribute("data-block", "2");
+			// Two runs on "Para one.": each its own rows, in order.
+			const para = rowOf(root, "p:1:0") as HTMLElement;
+			expect(rowOf(root, "p:1:2")).toBe(para);
+			expect(para).toHaveAttribute("data-block", "1");
+			const runs = [
+				...para.querySelectorAll<HTMLElement>('[data-testid="md-orphan"]'),
+			].map((run) =>
+				[
+					...run.querySelectorAll<HTMLElement>(
+						'[data-testid="md-hidden-line"]',
+					),
+				].map((l) => `${l.dataset.kind}:${l.textContent?.slice(1)}`),
+			);
+			expect(runs).toEqual([
+				["del:Para 1.", "add:Para one."],
+				["del:Para 1b."],
+			]);
+			// Markup in a source row is text, never an element.
+			const source = keep.querySelector('[data-testid="md-orphan"]');
+			expect(source?.querySelector("img, script")).toBeNull();
+			expect(
+				[
+					...(source?.querySelectorAll<HTMLElement>(
+						'[data-testid="md-hidden-line"]',
+					) ?? []),
+				].map((l) => l.textContent?.slice(1)),
+			).toEqual([IMG, SCRIPT]);
+			expect(document.querySelector('img[src="x"]')).toBeNull();
+		});
+	});
+
 	it("a file the author left alone since says so", async () => {
 		const fx = docFixture(NEW, NEW, [], { since: true });
 		show({ ...fx, hunks: { ...fx.hunks, hunks: [], pieces: [] } }, { from: 1 });

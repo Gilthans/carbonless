@@ -794,6 +794,133 @@ test("the since view: one box per piece on its block; a tick in Rendered is the 
 	await expectNoPageOverflow(page);
 });
 
+test('the since view renders "not reviewed in PS1" rows: on their blocks, as source, every box there and ticking them all finishes the file (CAR-328)', async ({
+	page,
+	pr,
+	startCrb,
+}) => {
+	const OTHER = "docs/other.md";
+	const p = await pr({
+		base: {
+			...fixture.base,
+			[OTHER]: "Top line.\n\n# Other\n\nMid para.\n\nGone para.\n\n## Keep\n",
+		},
+		files: [
+			{
+				message: "docs",
+				files: {
+					...fixture.files[0]?.files,
+					// Removals at the top and mid-file, a paragraph added.
+					[OTHER]: "# Other\n\nMid para.\n\n## Keep\n\nAdded in PS1.\n",
+				},
+			},
+		],
+	});
+	const s = await startCrb();
+	await openFiles(page, s.url);
+	// PS1: only the notes reviewed; README and other.md left unread.
+	const notes = await openRendered(page, NOTES);
+	await marksReady(page, notes);
+	await notes.getByRole("button", { name: "Mark remaining reviewed" }).click();
+	await expect(page.getByTestId("sync-notices")).toHaveCount(0, GIT_WAIT);
+	p.moveHead({ message: "rework", files: { [README]: PS2 } });
+	await page.reload();
+	await expect(page.getByTestId("ps-tail")).toHaveAttribute(
+		"data-state",
+		"head",
+		GIT_WAIT,
+	);
+	await page
+		.getByTestId("head-toast")
+		.getByRole("button", { name: "View" })
+		.click();
+	await expect(
+		page
+			.getByTestId("ps-node-ps1")
+			.getByRole("button", { name: "comparison base" }),
+	).toBeVisible();
+	// README: changed since PS1 and orphan rows (never read in PS1).
+	const section = fileSection(page, README);
+	await section.getByRole("button", { name: "Expand file" }).click();
+	await expect(section.getByTestId("md-doc")).toBeVisible(GIT_WAIT);
+	await shownAs(section, "markdown");
+	// Orphan lines show as source on their block, chipped: the "Gone"
+	// section (base lines only) on the item above it, "- two".
+	const orphanLine = (text: string) =>
+		section.getByTestId("md-block").filter({
+			has: page
+				.getByTestId("md-orphan")
+				.getByTestId("md-hidden-line")
+				.filter({ hasText: text }),
+		});
+	const goneRow = orphanLine("Gone text.");
+	await expect(goneRow).toHaveCount(1);
+	await expect(goneRow.getByRole("listitem")).toHaveText("two");
+	await expect(goneRow.locator('[data-kind="unreviewed"]').first()).toHaveText(
+		"not reviewed in PS1",
+	);
+	// The base's intro line, which PS1 replaced: on the intro.
+	await expect(orphanLine("Intro old words here.")).toContainText(
+		"Intro newer words here.",
+	);
+	// Every box of Text is in Rendered: nothing dropped.
+	const rendered = section.getByRole("checkbox", {
+		name: "Mark cluster reviewed",
+	});
+	const n = await rendered.count();
+	await viewButton(section, "Text").click();
+	await shownAs(section, "text");
+	await expect(
+		section.getByRole("checkbox", { name: "Mark cluster reviewed" }),
+	).toHaveCount(n);
+	await viewButton(section, "Rendered").click();
+	await expect(section.getByTestId("md-doc")).toBeVisible();
+	await shot(section, "markdown-since-orphans");
+	// Ticking every box in Rendered finishes the file.
+	await marksReady(page, section);
+	const unticked = section.getByRole("checkbox", {
+		name: "Mark cluster reviewed",
+		checked: false,
+	});
+	for (let left = n; left > 0; left--) {
+		await unticked.first().click();
+		await expect(unticked).toHaveCount(left - 1);
+	}
+	await expect(
+		section.getByRole("button", { name: "Expand file" }),
+	).toBeVisible(GIT_WAIT);
+	// other.md: unchanged since PS1, its rows all orphans: Rendered too.
+	const other = fileSection(page, OTHER);
+	// Finishing README may have opened it (the move-on).
+	const otherDoc = other.getByTestId("md-doc");
+	const expandOther = other.getByRole("button", { name: "Expand file" });
+	await expect(otherDoc.or(expandOther)).toBeVisible(GIT_WAIT);
+	if (await expandOther.isVisible()) await expandOther.click();
+	await expect(otherDoc).toBeVisible(GIT_WAIT);
+	await shownAs(other, "markdown");
+	const otherRow = (text: string) =>
+		other.getByTestId("md-block").filter({
+			has: page
+				.getByTestId("md-orphan")
+				.getByTestId("md-hidden-line")
+				.filter({ hasText: text }),
+		});
+	// The top removal on the first block; the mid-file one on the block
+	// it followed; the added paragraph on its own.
+	await expect(otherRow("Top line.").getByRole("heading")).toHaveText("Other");
+	await expect(otherRow("Gone para.")).toContainText("Mid para.");
+	await expect(otherRow("Added in PS1.")).toHaveCount(1);
+	// Every box of Text is in Rendered.
+	const otherBoxes = other.getByRole("checkbox", {
+		name: "Mark cluster reviewed",
+	});
+	const m = await otherBoxes.count();
+	await viewButton(other, "Text").click();
+	await shownAs(other, "text");
+	await expect(otherBoxes).toHaveCount(m);
+	await expectNoPageOverflow(page);
+});
+
 /*
  * Comments and threads on blocks (CAR-167, spec "Comments" and "Threads"):
  * a block's comment button comments on its last cluster's changed lines;

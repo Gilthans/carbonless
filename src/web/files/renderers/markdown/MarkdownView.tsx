@@ -100,6 +100,7 @@ import {
 	hiddenChange,
 	type LineAnchor,
 	lineAnchor,
+	orphanSource,
 	rebuildSides,
 	type Tone,
 } from "./markdownDoc";
@@ -286,6 +287,16 @@ export function MarkdownView(props: {
 						onSinceMark: (p, cross) => marks.current.onSinceMark?.(p, cross),
 					});
 					if (!mark) continue;
+					// An orphan run's lines (CAR-328): base lines have no number
+					// here, so it sits by its rows; none found shows Text.
+					const source = piece.orphan
+						? orphanSource(
+								hunks.data?.hunks ?? [],
+								piece,
+								piece.key === undefined ? undefined : clusters.get(piece.key),
+							)
+						: undefined;
+					if (source === null) return "failed" as const;
 					const entry = piece.key ? props.kinds?.get(piece.key) : undefined;
 					const control: UnitControl = {
 						cluster: mark.cluster,
@@ -301,12 +312,14 @@ export function MarkdownView(props: {
 								: undefined,
 						carried: mark.whole?.carried,
 						sinceOnly: piece.orphan ? "unreviewed" : piece.kind,
+						...(source ? { orphan: { del: source.del, add: source.add } } : {}),
 					};
 					if (ignoreWs && control.ws) continue;
 					units.push({
 						key: `p:${piece.hunk}:${piece.line}`,
 						old: piece.old,
 						new: piece.new,
+						...(source?.place === undefined ? {} : { place: source.place }),
 						control,
 					});
 				}
@@ -1194,8 +1207,12 @@ export function MarkdownView(props: {
 		// A change the rendering doesn't show (an HTML comment, a dropped
 		// attribute, a blank line, old rendering as new): its changed lines
 		// as source under the block, each side in its column (principle 2).
+		// Not an orphan run's: its lines show as source below, all of them.
 		const hid = hiddenChange({
-			row,
+			row: {
+				...row,
+				units: row.units.filter((k) => !units.get(k)?.orphan),
+			},
 			oldHtml,
 			newHtml,
 			units: model.lines,
@@ -1226,6 +1243,38 @@ export function MarkdownView(props: {
 			unified = under(unified, rows(true, true));
 			if (dels.length > 0) left = under(left, rows(true, false));
 			if (adds.length > 0) right = under(right, rows(false, true));
+		}
+		// Orphan runs (CAR-216/328): changed against the base, unchanged since
+		// the compared patch set, so the rendering shows no change of theirs;
+		// their lines as source, as the line view shows them (principle 2).
+		// Each run on its own, in order: its removed lines, then its added.
+		const orphans = controls.flatMap(({ key, u }) =>
+			u.orphan ? [{ key, ...u.orphan }] : [],
+		);
+		if (orphans.length > 0) {
+			const label = `Not reviewed in PS${from}`;
+			const rows = (
+				<>
+					{orphans.map((o) => (
+						<HiddenChange
+							key={o.key}
+							del={o.del}
+							add={o.add}
+							label={label}
+							testId="md-orphan"
+						/>
+					))}
+				</>
+			);
+			const under = (cell: ReactNode, more: ReactNode) => (
+				<>
+					{cell}
+					{more}
+				</>
+			);
+			unified = under(unified, rows);
+			// Base lines aren't the compared patch set's: all on the new side.
+			right = under(right, rows);
 		}
 		const chips = controls.flatMap(({ key, u }) => {
 			const chip = unitChips(u, from);
@@ -1419,9 +1468,13 @@ export function MarkdownView(props: {
 function HiddenChange(props: {
 	del: readonly string[];
 	add: readonly string[];
+	/** Its icon's name: why the lines show as source. */
+	label?: string;
+	testId?: string;
 	delWords?: readonly (readonly Mark[])[];
 	addWords?: readonly (readonly Mark[])[];
 }) {
+	const label = props.label ?? "Not visible when rendered";
 	const row = (
 		kind: "del" | "add",
 		text: string,
@@ -1451,17 +1504,17 @@ function HiddenChange(props: {
 	);
 	return (
 		<div
-			data-testid="md-hidden"
+			data-testid={props.testId ?? "md-hidden"}
 			className="mt-1 flex min-w-0 items-start gap-2"
 		>
-			<Tooltip content="Not visible when rendered" describe={false} lazy>
+			<Tooltip content={label} describe={false} lazy>
 				{(trigger) => (
 					// Focusable without a tab stop, so a tap shows the name.
 					<span
 						{...trigger}
 						tabIndex={-1}
 						role="img"
-						aria-label="Not visible when rendered"
+						aria-label={label}
 						data-testid="md-hidden-icon"
 						className="mt-0.5 shrink-0 text-warn"
 					>
@@ -1543,6 +1596,8 @@ interface UnitControl {
 	carried?: ClusterView["carried"];
 	linesCarried?: ClusterView["linesCarried"];
 	sinceOnly?: "reverted" | "removed" | "unreviewed";
+	/** An orphan run's lines (CAR-216/328), shown as source under its block. */
+	orphan?: { del: string[]; add: string[] };
 }
 
 /** A unit's chips, as the line view's kind row shows them. */
