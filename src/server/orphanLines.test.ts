@@ -315,6 +315,37 @@ describe("lines no since piece shows and nothing carries (CAR-216)", () => {
 		expect(done.progress.lines.reviewed).toBe(done.progress.lines.total);
 	});
 
+	it("a Markdown file unchanged since an unreviewed PS1: its orphan rows keep the Rendered view (CAR-328)", async () => {
+		const DOC = "docs/guide.md";
+		const doc = file("# Guide", "", "Read this first.", "", "- one", "- two");
+		const base = commitOn(pr.mergeBase, { [PATH]: BASE });
+		pr.moveMain(base);
+		const ps1 = push(commitOn(base, { [PATH]: PS1, [DOC]: doc }));
+		const s = await Session.open(pr.arg, process.cwd());
+		const first = await s.review();
+		expect(first.files.find((f) => f.path === DOC)?.markdownBlocks).toBe(true);
+		// PS1: the other file reviewed, the doc not; PS2 changes only the other.
+		await s.setStates(
+			first.revision,
+			fileOf(first).clusters.map((c) => ({
+				key: c.key,
+				state: "reviewed" as const,
+			})),
+		);
+		const head = push(commitOn(ps1, { [PATH]: PS2 }));
+		await s.checkHead();
+		const answer = await settled(s, head);
+		const view = await s.viewHead(head);
+		const index = view.files.find((f) => f.path === DOC)?.index as number;
+		const since = await s.interdiffHunks(1, view.revision, index);
+		// Every line of it is an orphan (not reviewed in PS1)...
+		expect(orphanRows(since)).toHaveLength(6);
+		// ...and the since view offers Rendered for it, as for a changed one.
+		expect(since.markdownBlocks).toBe(true);
+		expect(answer.files.find((f) => f.path === DOC)?.markdownBlocks).toBe(true);
+		expect(since.newLineCount).toBe(6);
+	});
+
 	it("works across a rebase: the base moved on between PS1 and PS2", async () => {
 		// Main moves on away from the PR's lines: PS2 is rebased onto it.
 		const later = (text: string) => `${text}\n\ndef helper():\n    return 1\n`;

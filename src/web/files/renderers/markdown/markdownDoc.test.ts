@@ -1,10 +1,12 @@
 import { describe, expect, it } from "vitest";
+import type { DiffLine } from "../../../../shared/types";
 import { docFixture, type Edit } from "./docFixture";
 import {
 	blockCommentSpan,
 	blocksOf,
 	buildDoc,
 	lineAnchor,
+	orphanSource,
 	rebuildSides,
 } from "./markdownDoc";
 
@@ -330,5 +332,81 @@ describe("lineAnchor", () => {
 		const at = setup();
 		expect(at("RIGHT", 99)).toEqual({ block: 3 });
 		expect(at("LEFT", 99)).not.toBeNull();
+	});
+});
+
+describe("orphanSource (CAR-328)", () => {
+	const del = (text: string, key = "o"): DiffLine => ({
+		kind: "del",
+		text,
+		clusterKey: key,
+		baseNo: 1,
+		orphan: true,
+	});
+	const ctx = (n: number): DiffLine => ({
+		kind: "context",
+		oldNo: n,
+		newNo: n,
+		text: `l${n}`,
+	});
+	it("an orphan pair's lines, no place (its added line places it)", () => {
+		const add: DiffLine = {
+			kind: "add",
+			newNo: 2,
+			text: "new",
+			clusterKey: "o",
+			orphan: true,
+		};
+		const hunks = [{ newStart: 1, lines: [ctx(1), del("old"), add, ctx(3)] }];
+		expect(orphanSource(hunks, { hunk: 0, line: 1, key: "o" })).toEqual({
+			del: ["old"],
+			add: ["new"],
+		});
+	});
+	it("replaced lines sit by their cluster's first added line", () => {
+		const lines = [ctx(4), del("a"), ctx(5)];
+		expect(
+			orphanSource(
+				[{ newStart: 4, lines }],
+				{ hunk: 0, line: 1, key: "o" },
+				{
+					newStart: 9,
+					newCount: 2,
+				},
+			),
+		).toEqual({ del: ["a"], add: [], place: 9 });
+	});
+	it("a removal: the line of text above in its hunk, else the line above the hunk, else below; its run ends at another", () => {
+		const blank = (n: number): DiffLine => ({ ...ctx(n), text: "" });
+		const removal = { newStart: 0, newCount: 0 };
+		const of = (newStart: number, lines: DiffLine[], line: number) =>
+			orphanSource([{ newStart, lines }], { hunk: 0, line, key: "o" }, removal);
+		expect(
+			of(4, [ctx(4), blank(5), del("a"), del("b"), del("c", "p"), ctx(6)], 2),
+		).toEqual({
+			del: ["a", "b"],
+			add: [],
+			place: 4,
+		});
+		expect(of(5, [blank(5), del("a"), ctx(6)], 1)).toEqual({
+			del: ["a"],
+			add: [],
+			place: 4,
+		});
+		expect(of(1, [del("a"), blank(1), ctx(2)], 0)).toEqual({
+			del: ["a"],
+			add: [],
+			place: 2,
+		});
+	});
+	it("null when its row isn't an orphan's (the view shows Text)", () => {
+		expect(orphanSource([], { hunk: 0, line: 0, key: "o" })).toBeNull();
+		expect(
+			orphanSource([{ newStart: 1, lines: [ctx(1)] }], {
+				hunk: 0,
+				line: 0,
+				key: "o",
+			}),
+		).toBeNull();
 	});
 });

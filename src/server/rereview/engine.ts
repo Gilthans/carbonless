@@ -1046,10 +1046,17 @@ export function interdiffFileHunks(
 	withOrphans = true,
 ): FileHunks {
 	const { entry, file } = interdiffFileAt(traced, answer, index);
-	const targetClusters =
-		target.files.find((f) => f.path === entry.path)?.clusters ?? [];
-	const withFile = (hunks: FileHunks) =>
-		withFileLevel(hunks, traced, target, answer, entry, file);
+	const targetFile = target.files.find((f) => f.path === entry.path);
+	const targetClusters = targetFile?.clusters ?? [];
+	// A file the interdiff doesn't touch (its rows only orphans, CAR-216)
+	// is Markdown as the viewed snapshot's is: both its since-view sides are
+	// that snapshot's head, and an orphan run is never cut (CAR-328: else
+	// the since view offered no Rendered view of it).
+	const markdown = !file && targetFile?.markdownBlocks === true;
+	const withFile = (hunks: FileHunks) => {
+		const out = withFileLevel(hunks, traced, target, answer, entry, file);
+		return markdown ? { ...out, markdownBlocks: true as const } : out;
+	};
 	const plain = withFile(
 		sinceFileHunks(traced, entry, file, targetClusters, [], sources),
 	);
