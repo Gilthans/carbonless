@@ -11,6 +11,9 @@ import {
 	ALIGN_CHARS,
 	ALIGN_WORD_OPS,
 	alignCluster,
+	alignGroups,
+	GROUP_MAX_LINES,
+	joinedLength,
 	lineSimilarity,
 	PAIR_MIN_SIMILARITY,
 } from "./linePairing";
@@ -424,4 +427,394 @@ describe("alignCluster", () => {
 			}),
 		);
 	});
+});
+
+describe("alignGroups", () => {
+	/** Every line in view run 0. */
+	const one = (n: number) => new Array<number>(n).fill(0);
+	/** alignGroups with today's pairs (alignCluster) and one view run. */
+	const groups = (dels: string[], adds: string[]) =>
+		alignGroups(
+			dels,
+			adds,
+			alignCluster(dels, adds),
+			one(dels.length),
+			one(adds.length),
+		);
+	const split = [
+		"def load(",
+		"    path,",
+		"    retries=3,",
+		"    timeout=30,",
+		"):",
+	];
+	it("a pure split is one group of five", () => {
+		const dels = ["def load(path, retries=3, timeout=30):"];
+		expect(alignCluster(dels, split)).toEqual([]);
+		expect(groups(dels, split)).toEqual({
+			pairs: [],
+			groups: [{ one: "del", at: 0, from: 0, to: 5 }],
+		});
+	});
+	it("a wrapped comment groups over today's 0.55 pair", () => {
+		// CAR-221's shape, made-up text: the comment grew and wrapped; today
+		// its first line pairs at 0.556 and the second reads as plain added.
+		const dels = ["// Scale each row by the factor, matrix rows first"];
+		const adds = [
+			"// Scale each input row and each column by the",
+			"// factor, matrix rows first, then the columns",
+		];
+		expect(lineSimilarity(dels[0] as string, adds[0] as string)).toBeCloseTo(
+			0.556,
+			3,
+		);
+		expect(alignCluster(dels, adds)).toEqual([[0, 0]]);
+		expect(groups(dels, adds)).toEqual({
+			pairs: [],
+			groups: [{ one: "del", at: 0, from: 0, to: 2 }],
+		});
+	});
+	it("a join is one group", () => {
+		const dels = ["const total = items", "  .map(price)", "  .reduce(sum, 0);"];
+		const adds = ["const total = items.map(price).reduce(sum, 1);"];
+		expect(alignCluster(dels, adds)).toEqual([[0, 0]]);
+		expect(groups(dels, adds)).toEqual({
+			pairs: [],
+			groups: [{ one: "add", at: 0, from: 0, to: 3 }],
+		});
+	});
+	it("a split next to a pair", () => {
+		// Unequal (2 removed, 6 added), so groups are looked for. The closing
+		// `):` could also start a group with the return line (it holds its
+		// `)`); the split holding it instead keeps the return line's pair.
+		const dels = [
+			"def load(path, retries=3, timeout=30):",
+			"    return open(path)",
+		];
+		const adds = [...split, "    return open(path, 'r')"];
+		expect(alignCluster(dels, adds)).toEqual([[1, 5]]);
+		expect(groups(dels, adds)).toEqual({
+			pairs: [[1, 5]],
+			groups: [{ one: "del", at: 0, from: 0, to: 5 }],
+		});
+	});
+	it("near miss: a list item added (step 2's case 1) is no group", () => {
+		// `'beta'` → `'beta',` + `'gamma'`: the joined text scores 0.67, but
+		// `'gamma'` holds nothing `'beta',` left of the old line.
+		const { dels, adds } = pairingCluster("01-list-item.ts");
+		expect(groups(dels, adds)).toEqual({ pairs: [[0, 0]], groups: [] });
+	});
+	it("near miss: a `}` added after a changed line is no group", () => {
+		expect(groups(["if (ready) {"], ["if (isReady) {", "}"])).toEqual({
+			pairs: [[0, 0]],
+			groups: [],
+		});
+	});
+	it("step 2's seven cases keep their pairs and get no group", () => {
+		for (const file of [
+			"01-list-item.ts",
+			"02-comment-above.ts",
+			"03-removed-middle.ts",
+			"04-nothing-similar.ts",
+			"05-helper-above.go",
+			"06-clear-touch.go",
+			"07-extract-method.ts",
+		]) {
+			for (const { dels, adds } of pairingClusters(file)) {
+				expect(groups(dels, adds), file).toEqual({
+					pairs: alignCluster(dels, adds),
+					groups: [],
+				});
+			}
+		}
+	});
+
+	/** `call(a0, a1, …)` and its split: one argument a line. */
+	const call = (args: number) => {
+		const names = Array.from({ length: args }, (_, i) => `arg${i}`);
+		return {
+			line: `call(${names.join(", ")});`,
+			run: [
+				"call(",
+				...names.map((x, i) => `  ${x}${i < args - 1 ? "," : ");"}`),
+			],
+		};
+	};
+	it("a split into GROUP_MAX_LINES lines groups; into one more, none", () => {
+		expect(GROUP_MAX_LINES).toBe(20);
+		const at20 = call(19);
+		expect(at20.run).toHaveLength(20);
+		expect(groups([at20.line], at20.run).groups).toEqual([
+			{ one: "del", at: 0, from: 0, to: 20 },
+		]);
+		// 21 lines: no group at all (not one of the first 20, in doubt).
+		const at21 = call(20);
+		expect(at21.run).toHaveLength(21);
+		expect(groups([at21.line], at21.run)).toEqual({
+			pairs: alignCluster([at21.line], at21.run),
+			groups: [],
+		});
+		// The same for a join.
+		expect(groups(at21.run, [at21.line]).groups).toEqual([]);
+		expect(groups(at20.run, [at20.line]).groups).toEqual([
+			{ one: "add", at: 0, from: 0, to: 20 },
+		]);
+	});
+	it("a joined text of WORD_DIFF_MAX characters is no group; one less groups", () => {
+		// The run's lines joined with a line end between each two.
+		expect(joinedLength(["ab", "cde"])).toBe(6);
+		const head = Array.from({ length: 40 }, (_, i) => `w${i}`).join(" ");
+		const tail = Array.from({ length: 40 }, (_, i) => `v${i}`).join(" ");
+		const line = `${head} ${tail}`;
+		const run = (len: number) => {
+			const second = tail.padStart(len - head.length - 1, " ");
+			const out = [head, second];
+			expect(joinedLength(out)).toBe(len);
+			return out;
+		};
+		expect(groups([line], run(WORD_DIFF_MAX - 1)).groups).toEqual([
+			{ one: "del", at: 0, from: 0, to: 2 },
+		]);
+		expect(groups([line], run(WORD_DIFF_MAX)).groups).toEqual([]);
+	});
+	it("a group stops at its view run's end", () => {
+		const dels = ["def load(path, retries=3, timeout=30):"];
+		// The run's last two lines are in the next view run: the group is the
+		// part in the removed line's run.
+		expect(alignGroups(dels, split, [], [0], [0, 0, 0, 1, 1])).toEqual({
+			pairs: [],
+			groups: [{ one: "del", at: 0, from: 0, to: 3 }],
+		});
+		// Only its first line in the removed line's run: no group.
+		expect(alignGroups(dels, split, [], [0], [0, 1, 1, 1, 1])).toEqual({
+			pairs: [],
+			groups: [],
+		});
+	});
+	it("with a budget, takes its estimate out; none once it doesn't fit", () => {
+		const dels = ["def load(path, retries=3, timeout=30):"];
+		// One removed line of 14 tokens (1 word step) against the windows
+		// from added lines 0-3, of 15, 12, 10 and 6 tokens (line 4's window
+		// is one line, never a group; one removed line, so no join).
+		const cost = 15 + 12 + 10 + 6;
+		const fit = { left: cost };
+		expect(alignGroups(dels, split, [], [0], one(5), fit).groups).toHaveLength(
+			1,
+		);
+		expect(fit.left).toBe(0);
+		const short = { left: cost - 1 };
+		expect(alignGroups(dels, split, [], [0], one(5), short).groups).toEqual([]);
+		expect(short.left).toBeLessThan(0);
+		// Once below 0, nothing more.
+		expect(
+			alignGroups(dels, split, [], [0], one(5), { left: -1 }).groups,
+		).toEqual([]);
+	});
+
+	// Properties over random stretches of a small vocabulary.
+	const vocab = fc.constantFrom("a", "b", "c", "d", "(", ")", ",", "=", " ");
+	const text = fc
+		.array(vocab, { minLength: 0, maxLength: 8 })
+		.map((t) => t.join(""));
+	/** Non-decreasing view-run indices, one per line. */
+	const runsFor = (n: number) =>
+		fc.array(fc.boolean(), { minLength: n, maxLength: n }).map((cuts) => {
+			let r = 0;
+			return cuts.map((cut, i) => (i > 0 && cut ? ++r : r));
+		});
+	const stretch = fc
+		.tuple(
+			fc.array(text, { minLength: 1, maxLength: 6 }),
+			fc.array(text, { minLength: 1, maxLength: 24 }),
+			fc.boolean(),
+		)
+		.chain(([x, y, flip]) => {
+			const [dels, adds] = flip ? [y, x] : [x, y];
+			return fc.tuple(
+				fc.constant(dels),
+				fc.constant(adds),
+				runsFor(dels.length).map((r) => r.map((v) => v % 2)),
+				runsFor(adds.length).map((r) => r.map((v) => v % 2)),
+			);
+		});
+	const words = (t: string) => tokenize(t).filter((x) => !/^\s+$/u.test(x));
+	it("property: non-crossing, one item a line, groups well formed, pairs from today's", () => {
+		fc.assert(
+			fc.property(stretch, ([dels, adds, runDel, runAdd]) => {
+				const today = alignCluster(dels, adds);
+				const got = alignGroups(dels, adds, today, runDel, runAdd);
+				// Each item as its del range and add range.
+				const spans = [
+					...got.pairs.map(([i, j]) => [i, i + 1, j, j + 1]),
+					...got.groups.map((g) =>
+						g.one === "del"
+							? [g.at, g.at + 1, g.from, g.to]
+							: [g.from, g.to, g.at, g.at + 1],
+					),
+				].sort((x, y) => (x[0] as number) - (y[0] as number)) as [
+					number,
+					number,
+					number,
+					number,
+				][];
+				for (let k = 1; k < spans.length; k++) {
+					const [, de, , ae] = spans[k - 1] as [number, number, number, number];
+					const [ds, , as] = spans[k] as [number, number, number, number];
+					expect(ds).toBeGreaterThanOrEqual(de); // one item a line,
+					expect(as).toBeGreaterThanOrEqual(ae); // never crossing
+				}
+				const inGroup = (side: "del" | "add", i: number) =>
+					got.groups.some((g) =>
+						g.one === side ? g.at === i : i >= g.from && i < g.to,
+					);
+				for (const [i, j] of today) {
+					const kept = got.pairs.some(([p, q]) => p === i && q === j);
+					// A pair of today's is dropped only for a group holding a line of it.
+					if (!kept) expect(inGroup("del", i) || inGroup("add", j)).toBe(true);
+				}
+				for (const [i, j] of got.pairs) expect(today).toContainEqual([i, j]);
+				for (const g of got.groups) {
+					const [oneTexts, runTexts, runOne, runRun] =
+						g.one === "del"
+							? [dels, adds, runDel, runAdd]
+							: [adds, dels, runAdd, runDel];
+					const n = g.to - g.from;
+					expect(n).toBeGreaterThanOrEqual(2);
+					expect(n).toBeLessThanOrEqual(GROUP_MAX_LINES);
+					const lines = runTexts.slice(g.from, g.to);
+					for (let k = g.from; k < g.to; k++)
+						expect(runRun[k]).toBe(runOne[g.at]);
+					const oneText = oneTexts[g.at] as string;
+					expect(
+						lineSimilarity(oneText, lines.join("\n")),
+					).toBeGreaterThanOrEqual(PAIR_MIN_SIMILARITY);
+					expect(joinedLength(lines)).toBeLessThan(WORD_DIFF_MAX);
+					// Every line holds part of it, in order, from what is left.
+					const left = new Map<string, number>();
+					for (const t of words(oneText)) left.set(t, (left.get(t) ?? 0) + 1);
+					for (const l of lines) {
+						let took = 0;
+						for (const t of words(l)) {
+							const c = left.get(t) ?? 0;
+							if (c > 0) {
+								left.set(t, c - 1);
+								took++;
+							}
+						}
+						expect(took).toBeGreaterThan(0);
+					}
+				}
+			}),
+			{ numRuns: 500 },
+		);
+	});
+	it("property: with no group, the pairs are today's", () => {
+		fc.assert(
+			fc.property(stretch, ([dels, adds, runDel, runAdd]) => {
+				const today = alignCluster(dels, adds);
+				const got = alignGroups(dels, adds, today, runDel, runAdd);
+				if (got.groups.length === 0) expect(got.pairs).toEqual(today);
+			}),
+		);
+	});
+
+	// CPU (CLAUDE.md, test/cpu.ts): ratios to a reference measured in the
+	// same test, never an absolute time.
+	const LOADED = 60_000;
+	/**
+	 * The costliest stretch the group guard lets through: removed lines of
+	 * 1,000 punctuation tokens (32 word steps each), added lines that are
+	 * their 50-token pieces, cycled, so every start has a 20-line window
+	 * (1,019 characters joined, every line holding part of it, the 21st
+	 * finding nothing left). `adds` added lines.
+	 */
+	const worst = (adds: number, seed = 11) => {
+		const line = punctuation(1, 1000, seed)[0] as string;
+		const pieces = Array.from({ length: 20 }, (_, k) =>
+			line.slice(50 * k, 50 * k + 50),
+		);
+		return {
+			dels: [line, line],
+			adds: Array.from({ length: adds }, (_, k) => pieces[k % 20] as string),
+		};
+	};
+	/** The group estimate of `worst(adds)`: 2 lines × 32 × the windows' tokens. */
+	const worstOps = (adds: number) => {
+		let tokens = 0;
+		for (let s = 0; s < adds; s++) {
+			const len = Math.min(20, adds - s);
+			if (len >= 2) tokens += 50 * len;
+		}
+		return 2 * 32 * tokens;
+	};
+	it("the costliest stretch inside ALIGN_WORD_OPS groups; one line more, none", () => {
+		expect(worstOps(56)).toBeLessThanOrEqual(ALIGN_WORD_OPS);
+		expect(worstOps(57)).toBeGreaterThan(ALIGN_WORD_OPS);
+		const inside = worst(56);
+		const got = alignGroups(inside.dels, inside.adds, [], one(2), one(56));
+		expect(got.groups.length).toBeGreaterThan(0);
+		const over = worst(57);
+		expect(
+			alignGroups(over.dels, over.adds, [], one(2), one(57)).groups,
+		).toEqual([]);
+	});
+	it(
+		"alignGroups on the costliest stretch inside its guard stays near its yardstick",
+		() => {
+			// 2 removed lines x 56 starts, each streamed once over its 20-line
+			// window (2.97 million word steps). The yardstick shares no code
+			// with the LCS: the lines tokenized plus the same word steps in a
+			// plain loop (plainWordSteps), as the alignCluster 50 x 50 test.
+			// Scoring each window length afresh instead of streaming is about
+			// 10x the word steps.
+			const { dels, adds } = worst(56);
+			const ops = worstOps(56);
+			const { best, ref, ratio } = bestCpuRatio(
+				() => alignGroups(dels, adds, [], one(2), one(56)),
+				() => {
+					for (const l of [...dels, ...adds]) tokenize(l);
+					plainWordSteps(ops);
+				},
+			);
+			console.info(
+				`alignGroups worst stretch: ${best} µs, ${ratio.toFixed(2)}x tokenizing and ${ops} plain word steps (${ref} µs)`,
+			);
+			expect(ratio).toBeLessThan(12);
+		},
+		LOADED,
+	);
+	it(
+		"alignGroups on a run 4x as long costs what four of a quarter do",
+		() => {
+			// One removed line of 5 pieces of 10 words; the added lines cycle
+			// its pieces, so every start's window holds 5 lines (the 6th finds
+			// nothing left). 80 added lines against four stretches of 20: the
+			// same windows but for the ends, so linear reads about 1x; work
+			// per start that grows with the stretch reads about 4x.
+			const words = Array.from({ length: 50 }, (_, i) => `w${i}`);
+			const line = words.join(" ");
+			const pieces = Array.from({ length: 5 }, (_, k) =>
+				words.slice(10 * k, 10 * k + 10).join(" "),
+			);
+			const run = (n: number) =>
+				Array.from({ length: n }, (_, k) => pieces[k % 5] as string);
+			const long = run(80);
+			const quarter = run(20);
+			expect(alignGroups([line], long, [], [0], one(80)).groups).toHaveLength(
+				1,
+			);
+			const { best, ref, ratio } = bestCpuRatio(
+				() => alignGroups([line], long, [], [0], one(80)),
+				() => {
+					for (let k = 0; k < 4; k++)
+						alignGroups([line], quarter, [], [0], one(20));
+				},
+			);
+			console.info(
+				`alignGroups 1x80: ${best} µs, ${ratio.toFixed(2)}x four of 1x20 (${ref} µs)`,
+			);
+			expect(ratio).toBeLessThan(2);
+		},
+		LOADED,
+	);
 });
