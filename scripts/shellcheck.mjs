@@ -189,24 +189,11 @@ export function maskExpressions(s) {
 export function workflowRunBlocks(text, file = "workflow") {
 	const lines = text.split("\n");
 	const blocks = [];
-	let windowsJob = false;
-	let inJobs = false;
+	const { inJobs, windows } = jobLines(lines);
 	for (let i = 0; i < lines.length; i++) {
 		const l = lines[i];
-		// Steps live under the top-level `jobs:` (`on: … inputs: run:` and
-		// the top-level `defaults: run:` are no steps).
-		if (/^\S/.test(l) && !l.startsWith("#"))
-			inJobs = /^jobs:\s*(?:#.*)?$/.test(l);
-		if (!inJobs) continue;
-		// A job (two-space key under `jobs:`): note whether it runs on Windows.
-		if (/^ {2}[\w-]+:\s*(?:#.*)?$/.test(l)) {
-			windowsJob = false;
-			for (let j = i + 1; j < lines.length; j++) {
-				if (/^ {0,2}\S/.test(lines[j])) break;
-				const runsOn = lines[j].replace(/\s+#.*$/, "");
-				if (/^ {4}runs-on:.*windows/.test(runsOn)) windowsJob = true;
-			}
-		}
+		if (!inJobs[i]) continue;
+		const windowsJob = windows[i];
 		const m = /^(\s*)(- )?run:(?:\s+(.*))?$/.exec(l);
 		if (!m) continue;
 		const keyIndent = m[1].length + (m[2] ? 2 : 0);
@@ -286,6 +273,44 @@ export function workflowRunBlocks(text, file = "workflow") {
 		}
 	}
 	return blocks;
+}
+
+/**
+ * For each line of a workflow: whether it is under the top-level `jobs:`
+ * (`on: … inputs: run:` and the top-level `defaults: run:` are no steps),
+ * and whether it belongs to a job (a two-space key under `jobs:`) whose
+ * `runs-on:` names Windows.
+ */
+function jobLines(lines) {
+	const inJobs = [];
+	const windows = [];
+	let jobs = false;
+	let win = false;
+	for (let i = 0; i < lines.length; i++) {
+		const l = lines[i];
+		if (/^\S/.test(l) && !l.startsWith("#"))
+			jobs = /^jobs:\s*(?:#.*)?$/.test(l);
+		if (jobs && /^ {2}[\w-]+:\s*(?:#.*)?$/.test(l)) {
+			win = false;
+			for (let j = i + 1; j < lines.length; j++) {
+				if (/^ {0,2}\S/.test(lines[j])) break;
+				const runsOn = lines[j].replace(/\s+#.*$/, "");
+				if (/^ {4}runs-on:.*windows/.test(runsOn)) win = true;
+			}
+		}
+		inJobs.push(jobs);
+		windows.push(jobs && win);
+	}
+	return { inJobs, windows };
+}
+
+/**
+ * The 1-based numbers of the lines inside a job that runs on Windows: the
+ * part of a workflow whose `run:` steps are PowerShell and left out.
+ */
+export function windowsJobLines(text) {
+	const { windows } = jobLines(text.split("\n"));
+	return new Set(windows.flatMap((w, i) => (w ? [i + 1] : [])));
 }
 
 /**

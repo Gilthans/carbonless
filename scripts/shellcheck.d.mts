@@ -19,6 +19,7 @@ export type RunBlock = {
 	script: string;
 };
 export function workflowRunBlocks(text: string, file?: string): RunBlock[];
+export function windowsJobLines(text: string): Set<number>;
 export function blockFile(block: RunBlock): string;
 export function remapGcc(
 	out: string,
